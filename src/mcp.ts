@@ -1,0 +1,194 @@
+// Remote MCP server (Streamable HTTP, stateless JSON responses). The main door for agents.
+import * as core from './core';
+import type { Ctx } from './core';
+
+const SUPPORTED = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
+export const SERVER_INFO = { name: 'kunla', version: '0.1.0' };
+
+const key = { type: 'string', description: 'Task key, e.g. MKT-42' };
+const links = {
+  type: 'array', description: 'Links to the work: PR, doc, file, message',
+  items: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' } }, required: ['url'] },
+};
+
+type Tool = { name: string; description: string; inputSchema: object; run: (c: Ctx, a: any) => Promise<unknown>; readOnly?: boolean };
+
+export const TOOLS: Tool[] = [
+  {
+    name: 'whoami', readOnly: true,
+    description: 'Your Kunla member profile (person or AI), sponsor, and the projects you can see.',
+    inputSchema: { type: 'object', properties: {} },
+    run: (c) => core.whoami(c),
+  },
+  {
+    name: 'next_task', readOnly: true,
+    description: 'The best next thing for you: your task in progress, then work assigned to you, then reviews waiting on you, then open Ready work. Returns the full brief, playbook, project rules and ready-made references.',
+    inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Limit to a project key, e.g. MKT' } } },
+    run: (c, a) => core.nextTask(c, a.project).then((r) => r ?? { message: 'Nothing waiting for you. Use log_work to record work you do outside the queue.' }),
+  },
+  {
+    name: 'list_tasks', readOnly: true,
+    description: 'Search tasks. Filter by project key, status (inbox, ready, in_progress, blocked, review, done; comma separated), assignee ("me" or a name), or text.',
+    inputSchema: { type: 'object', properties: { project: { type: 'string' }, status: { type: 'string' }, assignee: { type: 'string' }, q: { type: 'string' }, limit: { type: 'number' } } },
+    run: (c, a) => core.listTasks(c, a),
+  },
+  {
+    name: 'get_task', readOnly: true,
+    description: "One task with its brief, acceptance criteria, the project's playbook and 'apply next time' rules, deliverables, reviews, history, and how to cite it (commit trailer, branch, doc source line).",
+    inputSchema: { type: 'object', properties: { key }, required: ['key'] },
+    run: (c, a) => core.taskDetail(c, a.key),
+  },
+  {
+    name: 'claim_task',
+    description: 'Take a Ready task atomically so nobody else works on it. For AIs the claim is a lease that lapses after a quiet period; any update renews it. Returns the full task.',
+    inputSchema: { type: 'object', properties: { key }, required: ['key'] },
+    run: async (c, a) => { await core.claimTask(c, a.key); return core.taskDetail(c, a.key); },
+  },
+  {
+    name: 'heartbeat',
+    description: 'Keep your claim on a task alive while you work without other updates.',
+    inputSchema: { type: 'object', properties: { key }, required: ['key'] },
+    run: (c, a) => core.heartbeat(c, a.key),
+  },
+  {
+    name: 'update_task',
+    description: 'Add a progress note, change status, or mark blocked with a question for a person. A blocked question goes to the decision inbox.',
+    inputSchema: {
+      type: 'object', required: ['key'],
+      properties: {
+        key, note: { type: 'string', description: 'Progress or handoff note' },
+        status: { type: 'string', enum: ['ready', 'in_progress', 'done', 'declined'] },
+        blocked_question: { type: 'string', description: 'What you need answered to continue' },
+        blocked_on: { type: 'string', description: 'Who should answer (name); empty means anyone' },
+        title: { type: 'string' }, brief: { type: 'string' }, criteria: { type: 'array', items: { type: 'string' } },
+        priority: { type: 'number', description: '0 urgent to 3 low' },
+      },
+    },
+    run: (c, a) => core.updateTask(c, a.key, a),
+  },
+  {
+    name: 'log_work',
+    description: "Record work in one sentence. With a task key it adds to that task. Without one it creates a task with its own key, so work started in a chat still lands in the record. Use status 'review' to send it for review.",
+    inputSchema: {
+      type: 'object', required: ['summary'],
+      properties: {
+        summary: { type: 'string', description: 'What was done, in one or two sentences' },
+        task: { type: 'string', description: 'Task key, if the work belongs to one' },
+        project: { type: 'string', description: 'Project key for a new task (defaults to the first project)' },
+        title: { type: 'string' }, deliverables: links,
+        status: { type: 'string', enum: ['in_progress', 'review', 'done'], description: "For a new task; default 'done'" },
+      },
+    },
+    run: async (c, a) => { const t = await core.logWork(c, a); return core.taskDetail(c, t.key); },
+  },
+  {
+    name: 'submit_for_review',
+    description: 'Hand finished work to a reviewer. Needs a short summary and at least one deliverable link.',
+    inputSchema: { type: 'object', required: ['key', 'summary', 'deliverables'], properties: { key, summary: { type: 'string' }, deliverables: links, reviewer: { type: 'string' } } },
+    run: (c, a) => core.submitForReview(c, a.key, a),
+  },
+  {
+    name: 'review_task',
+    description: "Approve, or request changes. Say what was wrong, and optionally add a rule to apply next time; rules are sent with every future task in the project.",
+    inputSchema: {
+      type: 'object', required: ['key', 'verdict'],
+      properties: {
+        key, verdict: { type: 'string', enum: ['approved', 'changes_requested'] },
+        comment: { type: 'string' }, what_was_wrong: { type: 'string' },
+        rule: { type: 'string', description: "'Apply next time' rule for this project" },
+      },
+    },
+    run: (c, a) => core.reviewTask(c, a.key, a),
+  },
+  {
+    name: 'create_task',
+    description: 'Create a task. Tasks from AIs land in the Inbox as proposals for a person to accept, unless status is ready.',
+    inputSchema: {
+      type: 'object', required: ['project', 'title'],
+      properties: {
+        project: { type: 'string' }, title: { type: 'string' }, brief: { type: 'string' },
+        criteria: { type: 'array', items: { type: 'string' } }, priority: { type: 'number' },
+        assignee: { type: 'string' }, reviewer: { type: 'string' }, parent: { type: 'string' },
+        status: { type: 'string', enum: ['inbox', 'ready'] },
+      },
+    },
+    run: (c, a) => core.createTask(c, a),
+  },
+  {
+    name: 'decision_inbox', readOnly: true,
+    description: 'What is waiting on a person: reviews, questions from blocked tasks, proposals, and tasks flagged after repeated review rounds.',
+    inputSchema: { type: 'object', properties: {} },
+    run: (c) => core.inbox(c),
+  },
+  {
+    name: 'answer_question',
+    description: 'Answer a blocked task’s question; the task goes back to its worker.',
+    inputSchema: { type: 'object', required: ['key', 'answer'], properties: { key, answer: { type: 'string' } } },
+    run: (c, a) => core.answer(c, a.key, a.answer),
+  },
+  {
+    name: 'triage_proposal',
+    description: 'Accept a proposal from the Inbox (it becomes Ready) or decline it.',
+    inputSchema: { type: 'object', required: ['key', 'accept'], properties: { key, accept: { type: 'boolean' }, note: { type: 'string' } } },
+    run: (c, a) => core.triage(c, a.key, a),
+  },
+  {
+    name: 'project_status', readOnly: true,
+    description: 'Project progress: counts by status, who (person or AI) is on what, blockers, recent activity, and the share of updates recorded by agents.',
+    inputSchema: { type: 'object', properties: { project: { type: 'string' } } },
+    run: (c, a) => core.projectStatus(c, a.project),
+  },
+];
+
+type Rpc = { jsonrpc: '2.0'; id?: string | number | null; method: string; params?: any };
+
+const ok = (id: Rpc['id'], result: unknown) => ({ jsonrpc: '2.0', id, result });
+const err = (id: Rpc['id'], code: number, message: string) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
+
+export const INSTRUCTIONS = `Kunla is the team's record of work, shared by people and AIs.
+Working agreement:
+1. Before starting, call next_task or get_task; follow the brief, the playbook and every project rule.
+2. Cite the task key in everything you produce (commit trailer, PR title, doc source line); get_task gives the exact text.
+3. Record progress with log_work (one sentence). If work has no task yet, log_work creates one.
+4. When done, submit_for_review with at least one deliverable link. If you are stuck, update_task with blocked_question.`;
+
+export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
+  if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');
+  const isNotification = msg.id === undefined;
+  switch (msg.method) {
+    case 'initialize': {
+      const asked = msg.params?.protocolVersion;
+      return ok(msg.id, {
+        protocolVersion: SUPPORTED.includes(asked) ? asked : SUPPORTED[0],
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: SERVER_INFO,
+        instructions: INSTRUCTIONS,
+      });
+    }
+    case 'ping': return ok(msg.id, {});
+    case 'tools/list':
+      return ok(msg.id, {
+        tools: TOOLS.map((t) => ({
+          name: t.name, description: t.description, inputSchema: t.inputSchema,
+          annotations: { readOnlyHint: !!t.readOnly, destructiveHint: false, openWorldHint: false },
+        })),
+      });
+    case 'tools/call': {
+      const tool = TOOLS.find((t) => t.name === msg.params?.name);
+      if (!tool) return err(msg.id, -32602, `Unknown tool ${msg.params?.name}`);
+      try {
+        const result = await tool.run(c, msg.params?.arguments ?? {});
+        const nudges = await core.reminders(c);
+        const content = [{ type: 'text', text: JSON.stringify(result, null, 2) }];
+        if (nudges.length) content.push({ type: 'text', text: 'Reminder: ' + nudges.join(' ') });
+        return ok(msg.id, { content, isError: false });
+      } catch (e) {
+        if (e instanceof core.KunlaError) return ok(msg.id, { content: [{ type: 'text', text: e.message }], isError: true });
+        throw e;
+      }
+    }
+    default:
+      if (isNotification) return null; // notifications/initialized etc.
+      return err(msg.id, -32601, `Method not found: ${msg.method}`);
+  }
+}

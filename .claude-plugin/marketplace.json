@@ -1,0 +1,16 @@
+{
+  "name": "kunla",
+  "owner": {
+    "name": "Spiking Labs"
+  },
+  "plugins": [
+    {
+      "name": "kunla",
+      "source": "./plugins/claude-code",
+      "description": "Connects Claude Code to Kunla, the team's record of work."
+    }
+  ],
+  "metadata": {
+    "description": "Kunla: the team's record of work for people and AIs."
+  }
+}

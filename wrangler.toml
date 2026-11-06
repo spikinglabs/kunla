@@ -1,0 +1,21 @@
+name = "kunla"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+
+# The web app is plain static files, served for free by Workers static assets.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/mcp/*", "/oauth/*", "/.well-known/*", "/t/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kunla"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+migrations_dir = "migrations"
+
+[vars]
+# Minutes an AI's claim stays alive without a heartbeat.
+LEASE_MINUTES = "30"
+# Set a secret SETUP_TOKEN (wrangler secret put SETUP_TOKEN) so only you can run first-time setup.

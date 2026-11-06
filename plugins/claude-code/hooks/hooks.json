@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/kunla.mjs\" hook session-start", "timeout": 20 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/kunla.mjs\" hook prompt", "timeout": 10 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/kunla.mjs\" hook stop", "timeout": 20 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/kunla.mjs\" hook session-end", "timeout": 20 }] }
+    ]
+  }
+}

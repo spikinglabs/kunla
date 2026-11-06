@@ -1,0 +1,8 @@
+{
+  "name": "kunla",
+  "version": "0.1.0",
+  "description": "Connects Claude Code to Kunla, the team's record of work: loads the task's brief and rules at session start, cites the task in commits, and records progress without being asked.",
+  "author": { "name": "Spiking Labs" },
+  "homepage": "https://github.com/spikinglabs/kunla",
+  "license": "Apache-2.0"
+}
