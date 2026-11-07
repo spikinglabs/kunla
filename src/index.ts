@@ -133,7 +133,7 @@ api.get('/briefing', async (c) => c.json(await views.briefing(c.get('ctx'), Numb
 api.get('/changes', async (c) => c.json(await views.changes(c.get('ctx'))));
 api.get('/progress', async (c) => c.json(await views.progress(c.get('ctx'))));
 api.get('/pulse', async (c) => c.json(await views.pulse(c.get('ctx'))));
-api.get('/map', async (c) => c.json(await views.workMap(c.get('ctx'), Math.min(14, Number(c.req.query('days') || 5)))));
+api.get('/map', async (c) => c.json(await views.workMap(c.get('ctx'), Math.min(14, Math.max(0.25, Number(c.req.query('days')) || 5)))));
 api.post('/tasks/:key/comment', async (c) => c.json(await core.updateTask(c.get('ctx'), c.req.param('key'), { note: (await c.req.json<any>()).text })));
 api.patch('/rules/:id', async (c) => { await core.setRuleActive(c.get('ctx'), c.req.param('id'), !!(await c.req.json<any>()).active); return c.json({ ok: true }); });
 

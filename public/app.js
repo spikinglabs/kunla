@@ -429,53 +429,130 @@ function progress(s) {
 }
 
 // ---------- work map ----------
-let mapDays = 5;
+// Range is how far back the map looks; zoom is how wide the time axis is drawn (pinch, or − / +).
+const MAP_RANGES = [['6h', 0.25], ['12h', 0.5], ['1 day', 1], ['3 days', 3], ['7 days', 7], ['14 days', 14]];
+const MAP_ZOOMS = [1, 1.5, 2, 3, 4, 6, 8];
+let mapDays = null; // null until the first visit picks a range that fits recent activity
+let mapZoom = 1;
+let mapData = null;
+
+// The smallest range that still shows the latest handful of work, so the first view isn't a few slivers next to "now".
+async function fitMapRange() {
+  const m = await api('GET', '/api/map?days=14');
+  const end = new Date(m.end).getTime();
+  const starts = m.lanes.flatMap((l) => l.segments.map((s) => new Date(s.start).getTime())).sort((x, y) => y - x);
+  if (!starts.length) return 1;
+  const need = ((end - starts[Math.min(starts.length, 8) - 1]) / 86400_000) * 1.15;
+  return (MAP_RANGES.find(([, d]) => d >= need) || MAP_RANGES[MAP_RANGES.length - 1])[1];
+}
+
 async function viewMap() {
   renderShell('map');
-  const m = await api('GET', `/api/map?days=${mapDays}`);
+  if (mapDays == null) mapDays = await fitMapRange();
+  mapData = await api('GET', `/api/map?days=${mapDays}`);
+  const m = mapData;
+  const E = new Date(m.end).getTime();
+  const longest = Math.max(1, ...m.waits.map((w) => E - new Date(w.since).getTime()));
+  $app.innerHTML = html`<div class="head"><div><h1>Work map</h1>
+      <p class="sub">Who worked on what, person or agent. Solid is work, dashed is work waiting on someone, lime is a decision. Nobody filled this in; it comes from the record.</p></div></div>
+    <div class="map-tools"><div class="row map-ranges">${join(MAP_RANGES.map(([label, d]) => html`<button class="pill ${d === mapDays ? 'on' : ''}" data-act="click:days" data-n="${d}">${label}</button>`))}</div>
+      <div class="zoom" role="group" aria-label="Zoom"><button class="btn sm" data-act="click:zoomOut" aria-label="Zoom out">−</button><span id="zoomv">${mapZoom}×</span><button class="btn sm" data-act="click:zoomIn" aria-label="Zoom in">+</button></div></div>
+    <div class="card"><div class="map" id="map"></div></div>
+    <div class="row map-key" style="margin:14px 4px 0"><span><i style="background:var(--ink)"></i>Working</span><span><i style="border:1.5px dashed var(--wait)"></i>Waiting on someone</span>
+      <span><i style="background:var(--lime)"></i>A decision</span><span><i style="background:var(--sunk)"></i>Night</span><span class="muted">Pinch or use − / + to zoom. Tap a bar to open the task.</span></div>
+    <div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Where work waits now</h2><span class="muted" style="font-size:13px">Oldest first. Each one is a person, not an agent.</span></div>
+      ${raw(m.waits.length ? html`<div class="waits">${join(m.waits.map((w) => { const ms = E - new Date(w.since).getTime(); return html`<a href="#/t/${w.key}"><span class="key">${w.key}</span>
+        <span class="t">${w.title}<small>${w.who}: ${w.label.replace(w.key + ' ', '')}</small></span><span class="len"><i style="width:${(ms / longest) * 100}%"></i></span><span class="for">${span(ms)}</span></a>`; }))}</div>`
+      : '<p class="muted">Nothing is waiting. Every task is either moving or done.</p>')}</div>`;
+  const setZoom = (z) => { const keep = mapAnchor(); mapZoom = z; drawMap(keep); };
+  bind($app, {
+    days: (el) => { mapDays = Number(el.dataset.n); viewMap(); },
+    zoomIn: () => setZoom(MAP_ZOOMS.find((z) => z > mapZoom) ?? mapZoom),
+    zoomOut: () => setZoom([...MAP_ZOOMS].reverse().find((z) => z < mapZoom) ?? mapZoom),
+  });
+  drawMap();
+  pinchZoom($('map'));
+}
+
+const mapLabelW = () => (innerWidth < 700 ? 112 : 200);
+const mapTrackW = (zoom) => Math.max(($app.clientWidth || innerWidth) - mapLabelW() - 48, 260) * zoom;
+
+// Where the view is, as a fraction of the time axis, so zooming keeps the same moment in front of you.
+function mapAnchor() {
+  const sc = $('map');
+  if (!sc || !sc.scrollWidth) return null;
+  const lw = mapLabelW();
+  const track = sc.scrollWidth - lw;
+  return (sc.scrollLeft + (sc.clientWidth - lw) / 2) / track;
+}
+function restoreAnchor(f) {
+  const sc = $('map');
+  const lw = mapLabelW();
+  if (f == null) { sc.scrollLeft = sc.scrollWidth; return; } // first draw: show "now"
+  sc.scrollLeft = f * (sc.scrollWidth - lw) - (sc.clientWidth - lw) / 2;
+}
+
+function drawMap(anchor = null) {
+  const m = mapData; const box = $('map');
+  if (!m || !box) return;
   const S = new Date(m.start).getTime();
   const E = new Date(m.end).getTime();
   const pad = (E - S) * 0.03;
   const R = E + pad - S;
-  const x = (iso) => ((new Date(iso).getTime() - S) / R) * 100;
+  const x = (t) => ((typeof t === 'number' ? t : new Date(t).getTime()) - S) / R * 100;
+  const lw = mapLabelW(); const tw = mapTrackW(mapZoom);
+  // Ticks: the finest step that leaves room for a label, from 1 hour to 1 day.
+  const pxPerHour = tw / (R / 3600_000);
+  const step = [1, 2, 3, 6, 12, 24].find((h) => h * pxPerHour >= 58) ?? 24;
+  const ticks = [];
+  const t0 = new Date(S); t0.setMinutes(0, 0, 0); t0.setHours(Math.ceil(t0.getHours() / step) * step);
+  for (let t = new Date(t0); t.getTime() < E + pad; t.setHours(t.getHours() + step)) ticks.push(new Date(t));
+  const tickLabel = (d) => (d.getHours() === 0 ? dayShort(d) : hhmm(d));
   const days = [];
   const d0 = new Date(S); d0.setHours(0, 0, 0, 0);
   for (let d = new Date(d0); d.getTime() < E + pad; d.setDate(d.getDate() + 1)) days.push(new Date(d));
   const nights = days.map((d) => {
     const a = new Date(d); a.setHours(20, 0, 0, 0);
     const b = new Date(d); b.setDate(b.getDate() + 1); b.setHours(7, 0, 0, 0);
-    const l = Math.max(0, (a.getTime() - S) / R * 100); const r = Math.min(100, (b.getTime() - S) / R * 100);
+    const l = Math.max(0, x(a.getTime())); const r = Math.min(100, x(b.getTime()));
     return r > l ? `<i class="night" style="left:${l}%;width:${r - l}%"></i>` : '';
-  }).join('') + (() => { const b = new Date(d0); b.setHours(7, 0, 0, 0); const r = (b.getTime() - S) / R * 100; return r > 0 ? `<i class="night" style="left:0;width:${r}%"></i>` : ''; })();
-  const grid = days.map((d) => { const l = (d.getTime() - S) / R * 100; return l >= 0 ? `<i class="grid-line" style="left:${l}%"></i>` : ''; }).join('');
-  const nowX = x(m.end);
+  }).join('') + (() => { const b = new Date(d0); b.setHours(7, 0, 0, 0); const r = x(b.getTime()); return r > 0 ? `<i class="night" style="left:0;width:${Math.min(100, r)}%"></i>` : ''; })();
+  const grid = ticks.map((d) => `<i class="grid-line ${d.getHours() === 0 ? 'day' : ''}" style="left:${x(d.getTime())}%"></i>`).join('');
+  const nowX = x(E);
   const lanes = m.lanes.filter((l) => l.segments.length || members.find((mm) => mm.id === l.id)?.active);
   const seg = (s) => {
     const l = Math.max(0, x(s.start));
     const r = Math.min(nowX, x(s.end ?? m.end));
-    const w = Math.max(s.kind === 'decide' ? 0.6 : 0.35, r - l);
+    const w = Math.max(0, r - l);
     const text = s.kind === 'decide' ? '' : s.kind === 'wait' ? s.label.replace(`${s.key} `, '') : s.title;
-    return html`<a class="seg ${s.kind} ${s.live ? 'live' : ''}" href="#/t/${s.key}" style="left:${l}%;width:${w}%" title="${s.label} · ${when(s.start)}–${s.end ? clock(s.end) : 'now'}"><span>${text}</span></a>`;
+    return html`<a class="seg ${s.kind} ${s.live ? 'live' : ''}" href="#/t/${s.key}" style="left:${l}%;width:${w}%" title="${s.label} · ${when(s.start)}–${s.end ? clock(s.end) : 'now'}" aria-label="${s.label}"><span>${text}</span></a>`;
   };
-  const longest = Math.max(1, ...m.waits.map((w) => E - new Date(w.since).getTime()));
-  $app.innerHTML = html`<div class="head"><div><h1>Work map</h1>
-      <p class="sub">Who worked on what, person or agent. Solid is work, dashed is work waiting on someone, lime is a decision. Nobody filled this in; it comes from the record.</p></div>
-      <div class="row">${join([3, 5, 7, 14].map((n) => html`<button class="pill ${n === mapDays ? 'on' : ''}" data-act="click:days" data-n="${n}">${n} days</button>`))}</div></div>
-    <div class="card"><div class="map"><div class="map-in">
-      <div class="map-days"><div></div><div class="track">${join(days.map((d) => { const l = (d.getTime() - S) / R * 100; return l >= -2 ? html`<span class="d" style="left:${Math.max(0, l)}%">${dayShort(d)}</span>` : ''; }))}<i class="now" style="left:${nowX}%"></i></div></div>
-      ${join(lanes.map((l) => html`<div class="lane"><div class="who">${raw(av(l, '', l.segments.some((s) => s.live)))}<span class="grow"><span class="name" style="font-weight:600;font-size:14px">${l.name}</span>
-        <small>${l.kind === 'ai' ? PLATFORM[l.platform] || 'Agent' : 'Person'}</small></span></div>
-        <div class="track">${raw(nights)}${raw(grid)}${join(l.segments.map(seg))}<i class="now bare" style="left:${nowX}%"></i></div></div>`))}
-    </div></div></div>
-    <div class="row map-key" style="margin:14px 4px 0"><span><i style="background:var(--ink)"></i>Working</span><span><i style="border:1.5px dashed var(--wait)"></i>Waiting on someone</span>
-      <span><i style="background:var(--lime)"></i>A decision</span><span><i style="background:var(--sunk)"></i>Night</span></div>
-    <div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Where work waits now</h2><span class="muted" style="font-size:13px">Oldest first. Each one is a person, not an agent.</span></div>
-      ${raw(m.waits.length ? html`<div class="waits">${join(m.waits.map((w) => { const ms = E - new Date(w.since).getTime(); return html`<a href="#/t/${w.key}"><span class="key">${w.key}</span>
-        <span class="t">${w.title}<small>${w.who}: ${w.label.replace(w.key + ' ', '')}</small></span><span class="len"><i style="width:${(ms / longest) * 100}%"></i></span><span class="for">${span(ms)}</span></a>`; }))}</div>`
-      : '<p class="muted">Nothing is waiting. Every task is either moving or done.</p>')}</div>`;
-  bind($app, { days: (el) => { mapDays = Number(el.dataset.n); viewMap(); } });
-  const sc = $app.querySelector('.map');
-  if (sc) sc.scrollLeft = sc.scrollWidth;
+  box.innerHTML = html`<div class="map-in" style="--label:${lw}px;width:${lw + tw}px">
+    <div class="map-days"><div class="who"></div><div class="track">${join(ticks.map((d) => { const l = x(d.getTime()); return l >= 0 && l < 97 ? html`<span class="d ${d.getHours() === 0 ? 'day' : ''}" style="left:${l}%">${tickLabel(d)}</span>` : ''; }))}<i class="now" style="left:${nowX}%"></i></div></div>
+    ${raw(lanes.length ? '' : '<p class="muted" style="padding:16px 0">No work recorded in this range. Try a longer one.</p>')}
+    ${join(lanes.map((l) => html`<div class="lane"><div class="who">${raw(av(l, '', l.segments.some((s) => s.live)))}<span class="grow"><span class="name">${l.name}</span>
+      <small>${l.kind === 'ai' ? PLATFORM[l.platform] || 'Agent' : 'Person'}</small></span></div>
+      <div class="track">${raw(nights)}${raw(grid)}${join(l.segments.map(seg))}<i class="now bare" style="left:${nowX}%"></i></div></div>`))}
+  </div>`;
+  const zv = $('zoomv'); if (zv) zv.textContent = `${Math.round(mapZoom * 10) / 10}×`;
+  restoreAnchor(anchor);
+}
+
+// Two-finger pinch on the map stretches the time axis live, then redraws the ticks when you let go.
+function pinchZoom(el) {
+  if (!el) return;
+  let d0 = 0, z0 = 1, f = null;
+  const dist = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  el.addEventListener('touchstart', (e) => { if (e.touches.length === 2) { d0 = dist(e); z0 = mapZoom; f = mapAnchor(); } }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (e.touches.length !== 2 || !d0) return;
+    e.preventDefault();
+    mapZoom = Math.min(8, Math.max(1, z0 * dist(e) / d0));
+    const inner = el.querySelector('.map-in');
+    if (inner) inner.style.width = `${mapLabelW() + mapTrackW(mapZoom)}px`;
+    restoreAnchor(f);
+  }, { passive: false });
+  el.addEventListener('touchend', (e) => { if (d0 && e.touches.length < 2) { d0 = 0; drawMap(f); } });
 }
 
 // ---------- task: review and teach ----------
