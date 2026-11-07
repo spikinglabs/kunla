@@ -1,6 +1,7 @@
 // Remote MCP server (Streamable HTTP, stateless JSON responses). The main door for agents.
 import * as core from './core';
 import type { Ctx } from './core';
+import * as views from './views';
 
 const SUPPORTED = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 export const SERVER_INFO = { name: 'kunla', version: '0.1.0' };
@@ -131,6 +132,12 @@ export const TOOLS: Tool[] = [
     description: 'Accept a proposal from the Inbox (it becomes Ready) or decline it.',
     inputSchema: { type: 'object', required: ['key', 'accept'], properties: { key, accept: { type: 'boolean' }, note: { type: 'string' } } },
     run: (c, a) => core.triage(c, a.key, a),
+  },
+  {
+    name: 'team_pulse', readOnly: true,
+    description: 'What every person and agent is doing right now: working, waiting on a review, blocked, or idle. Use it to avoid duplicate work and to see who is free.',
+    inputSchema: { type: 'object', properties: {} },
+    run: (c) => views.pulse(c),
   },
   {
     name: 'project_status', readOnly: true,

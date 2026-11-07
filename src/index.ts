@@ -5,6 +5,7 @@ import type { Context } from 'hono';
 import * as core from './core';
 import { handleRpc, TOOLS } from './mcp';
 import { oauth } from './oauth';
+import * as views from './views';
 
 export interface Env {
   DB: D1Database;
@@ -109,7 +110,11 @@ api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), awai
 api.get('/projects', async (c) => c.json(await core.listProjects(c.env.DB)));
 api.post('/projects', async (c) => c.json(await core.createProject(c.get('ctx'), await c.req.json())));
 api.patch('/projects/:key', async (c) => c.json(await core.updateProject(c.get('ctx'), c.req.param('key'), await c.req.json())));
-api.get('/rules', async (c) => c.json(await core.listRules(c.env.DB, c.req.query('project'))));
+api.get('/rules', async (c) => c.json(await views.rulesWithReach(c.env.DB, c.req.query('project'))));
+api.get('/briefing', async (c) => c.json(await views.briefing(c.get('ctx'), Number(c.req.query('hours') || 24))));
+api.get('/pulse', async (c) => c.json(await views.pulse(c.get('ctx'))));
+api.get('/map', async (c) => c.json(await views.workMap(c.get('ctx'), Math.min(14, Number(c.req.query('days') || 5)))));
+api.post('/tasks/:key/comment', async (c) => c.json(await core.updateTask(c.get('ctx'), c.req.param('key'), { note: (await c.req.json<any>()).text })));
 api.patch('/rules/:id', async (c) => { await core.setRuleActive(c.get('ctx'), c.req.param('id'), !!(await c.req.json<any>()).active); return c.json({ ok: true }); });
 
 app.route('/api', api);
