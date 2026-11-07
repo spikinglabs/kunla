@@ -224,6 +224,39 @@ describe('hierarchy and steering', () => {
   });
 });
 
+describe('later (parked tasks)', () => {
+  it('parks a review out of the inbox and away from agents, and brings it back', async () => {
+    const t = await tool(ai, 'log_work', { summary: 'Draft ready', status: 'review', deliverables: [{ url: 'https://x.test/d' }] });
+    const key = t.data.key;
+    expect((await call('GET', '/api/inbox', human)).body.items.some((i: any) => i.task.key === key)).toBe(true);
+    const p = await call('POST', `/api/tasks/${key}/park`, human, {});
+    expect(p.body).toMatchObject({ status: 'parked', returns_to: 'review', snoozed_until: null });
+    expect((await call('GET', '/api/inbox', human)).body.items.some((i: any) => i.task.key === key)).toBe(false);
+    expect((await call('POST', `/api/tasks/${key}/claim`, ai)).body.error).toContain('parked');
+    expect((await call('GET', `/api/tasks/${key}`, ai)).body.status).toBe('parked');
+    const u = await call('POST', `/api/tasks/${key}/unpark`, human);
+    expect(u.body.status).toBe('review');
+    expect((await call('GET', '/api/inbox', human)).body.items.some((i: any) => i.task.key === key)).toBe(true);
+  });
+  it('snoozed tasks come back by themselves, and in-progress work returns as Ready', async () => {
+    const t = await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Partner list' });
+    await call('POST', `/api/tasks/${t.body.key}/claim`, ai);
+    const soon = new Date(Date.now() + 60_000).toISOString();
+    expect((await call('POST', `/api/tasks/${t.body.key}/park`, human, { until: soon })).body.returns_to).toBe('ready');
+    expect((await call('POST', `/api/tasks/${t.body.key}/park`, human, { until: '2000-01-01' })).status).toBe(400);
+    expect((await tool(ai, 'next_task')).data.task?.key).not.toBe(t.body.key);
+    await env.DB.prepare(`UPDATE tasks SET snoozed_until = ? WHERE key = ?`).bind(new Date(Date.now() - 1000).toISOString(), t.body.key).run();
+    const back = await call('GET', `/api/tasks/${t.body.key}`, human);
+    expect(back.body.status).toBe('ready');
+    expect(back.body.history.some((e: any) => e.type === 'unparked')).toBe(true);
+  });
+  it('agents can park via update_task when a person asks', async () => {
+    const t = await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Someday idea' });
+    const r = await tool(ai, 'update_task', { key: t.body.key, status: 'parked', note: 'L said later' });
+    expect(r.data.status).toBe('parked');
+  });
+});
+
 describe('managing connections', () => {
   it('reuses an agent connected twice under the same name', async () => {
     const again = await call('POST', '/api/members', human, { name: "l's claude code", kind: 'ai', platform: 'claude-code' });
