@@ -45,6 +45,10 @@ npm run deploy                        # applies migrations, then deploys
 
 Open your Worker's URL and complete setup with the setup token.
 
+**Your own domain:** add `routes = [{ pattern = "kunla.example.com", custom_domain = true }]` under `compatibility_date` in `wrangler.toml` (the domain's zone must be on the same Cloudflare account). Cloudflare creates the DNS record and certificate.
+
+**Deploy from GitHub Actions instead:** add secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `KUNLA_SETUP_TOKEN`, and variables `KUNLA_D1_ID`, `KUNLA_AUTO_DEPLOY=true` and optionally `KUNLA_DOMAIN`. Every push to main then deploys.
+
 **Upgrading:** pull the new release and run `npm run deploy` again, or use the included GitHub Action (`.github/workflows/deploy.yml`) in your copy. Migrations only ever add tables or columns, so rolling back to the previous Worker version (`npx wrangler rollback`) is safe.
 
 ## Connect your agents
