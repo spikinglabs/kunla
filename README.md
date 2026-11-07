@@ -85,7 +85,11 @@ kunla submit "Drafted the page" --link https://github.com/org/repo/pull/7
 
 Pull requests and commits that mention a task key (`KD-12` in the PR title, branch name, description or a commit message, such as the `Task:` trailer) then update the task without anyone calling `log_work`.
 
-1. In Kunla, open **Team → Connect GitHub** (admins only) and click **Make the secret**. Kunla shows the secret once. You can instead set it as a Worker secret: `wrangler secret put GITHUB_WEBHOOK_SECRET`.
+**One click (recommended).** In Kunla, open **Team → Connect GitHub** (admins only), type your GitHub organization (or leave it empty for your own account) and click **Connect with GitHub**. GitHub asks you to create the Kunla app (Kunla fills in everything through GitHub's [manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest)), then to pick repositories. That's it: the app's webhook delivers events with no secret to paste, and approved PRs merge with short-lived installation tokens, so there is no personal token either. The app asks for the fewest permissions that work: *Metadata*, *Pull requests* and *Checks* read, and *Contents* read, or write only when you tick "Kunla merges a PR when you approve its task" (GitHub's merge API needs it). One app serves the whole Kunla; each workspace installs it on its own repositories, and the installation decides which workspace a delivery updates. To add repositories later, click **Choose repositories** in the same dialog.
+
+**By hand (no GitHub App).** Under *Set it up by hand instead*:
+
+1. Click **Make a webhook secret**. Kunla shows the secret once. You can instead set it as a Worker secret: `wrangler secret put GITHUB_WEBHOOK_SECRET`.
 2. In the GitHub repository (or organization), open **Settings → Webhooks → Add webhook** and fill in:
    - **Payload URL**: `https://<your-kunla>/hooks/github`
    - **Content type**: `application/json`
@@ -110,7 +114,7 @@ A parent task finishes only when its last sub-task does, even when its PR merges
 
 When the work on a task is a GitHub pull request, the review card says **Approve and merge PR #N** and shows the PR's checks. Approving merges it (squash):
 
-- **With a GitHub token in Kunla** (Team → Connect GitHub → Merge on approve; a fine-grained token with *Pull requests* and *Contents: Read and write*, or the Worker secret `GITHUB_TOKEN`, which counts for the first workspace only; each workspace keeps its own token), Kunla merges it itself. Green checks: merged at once. Checks still running: it merges when GitHub reports the check suite finished (tick **Check suites** on the webhook). Red checks or a conflict: the task goes back to In progress with the reason, and the agent is woken to fix it.
+- **With the Kunla GitHub App installed on the repository** (with merging ticked), or **a GitHub token in Kunla** (Team → Connect GitHub → Set it up by hand → Merge on approve; a fine-grained token with *Pull requests* and *Contents: Read and write*, or the Worker secret `GITHUB_TOKEN`, which counts for the first workspace only; each workspace keeps its own token), Kunla merges it itself. Green checks: merged at once. Checks still running: it merges when GitHub reports the check suite finished (tick **Check suites** on the webhook). Red checks or a conflict: the task goes back to In progress with the reason, and the agent is woken to fix it.
 - **Without a token**, the agent's wake-up call says to merge the PR once checks are green.
 
 The merge commit carries the `Task:` trailer, and the webhook then records the merge on the task.
@@ -164,6 +168,7 @@ src/core.ts        the record of work: plain SQL, no Cloudflare-only features
 src/mcp.ts         MCP tools (Streamable HTTP, stateless)
 src/oauth.ts       OAuth 2.1 + PKCE + dynamic client registration for chat connectors
 src/github.ts      GitHub webhooks: signature check, task keys, status changes
+src/githubapp.ts   the Kunla GitHub App: manifest registration, installs, installation tokens
 migrations/        D1 schema (additive only)
 plugins/claude-code/  Claude Code plugin and the kunla CLI
 skills/kunla-chat/ skill for claude.ai
@@ -174,7 +179,7 @@ Live views ask one tiny question every 30 seconds ("has anything changed?", a si
 
 ## Not in v1 yet
 
-In-chat interactive views (MCP Apps), Tiny Foundation and other knowledge providers, a GitHub App (one-click install instead of a webhook per repo), Jira mirroring, Docker and Postgres, Codex-specific hooks, refresh tokens for OAuth, and per-project permissions.
+In-chat interactive views (MCP Apps), Tiny Foundation and other knowledge providers, Jira mirroring, Docker and Postgres, Codex-specific hooks, refresh tokens for OAuth, and per-project permissions.
 
 ## License
 

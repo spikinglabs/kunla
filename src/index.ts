@@ -11,6 +11,7 @@ import * as github from './github';
 import * as wake from './wake';
 import * as merge from './merge';
 import * as continuous from './continuous';
+import * as ghapp from './githubapp';
 
 export interface Env {
   DB: D1Database;
@@ -78,6 +79,10 @@ app.post('/hooks/github', async (c) => {
   const r = await github.handleWebhook(ctx, c.req.raw, c.env.GITHUB_WEBHOOK_SECRET);
   return c.json(r.body, r.status as any);
 });
+// The Kunla GitHub App round trips (browser navigations from github.com, so no bearer token: a
+// one-time state the admin's own request made ties each one to their workspace).
+app.get('/hooks/github/app/created', async (c) => c.redirect(await ghapp.created(c.env.DB, c.req.query('code'), c.req.query('state'))));
+app.get('/hooks/github/app/installed', async (c) => c.redirect(await ghapp.installed(c.env.DB, c.req.query('installation_id'), c.req.query('state'))));
 app.get('/t/:key', (c) => c.redirect(`/app/#/t/${encodeURIComponent(c.req.param('key').toUpperCase())}`));
 
 // ---------- MCP ----------
@@ -179,6 +184,7 @@ api.patch('/rules/:id', async (c) => { await core.setRuleActive(c.get('ctx'), c.
 
 api.get('/integrations/github', async (c) => c.json(await github.connectionInfo(c.get('ctx'), c.env.GITHUB_WEBHOOK_SECRET)));
 api.post('/integrations/github', async (c) => c.json(await github.rotateSecret(c.get('ctx'), c.env.GITHUB_WEBHOOK_SECRET)));
+api.post('/integrations/github/app', async (c) => c.json(await ghapp.start(c.get('ctx'), await c.req.json().catch(() => ({})))));
 api.put('/integrations/github/token', async (c) => c.json(await merge.setToken(c.get('ctx'), (await c.req.json<any>()).token ?? null)));
 // The PR behind a task in Review, with its checks, so the review card can say "Approve and merge PR #N".
 api.get('/tasks/:key/pr', async (c) => {
@@ -186,7 +192,7 @@ api.get('/tasks/:key/pr', async (c) => {
   const t = await core.getTask(ctx, c.req.param('key'));
   const pr = await merge.taskPr(c.env.DB, t.id);
   if (!pr) return c.json({ pr: null });
-  const token = await merge.getToken(ctx);
+  const token = await merge.tokenFor(ctx, pr);
   if (!token) return c.json({ pr, merge_by: 'agent' });
   try { return c.json({ pr, merge_by: 'kunla', ...(await merge.prState(token, pr)) }); }
   catch (e) { return c.json({ pr, merge_by: 'kunla', error: (e as Error).message }); }

@@ -2,8 +2,9 @@
 // so nobody (person or agent) has to call log_work for work GitHub already knows about.
 // One route, signature-verified, no polling: GitHub calls us only when something happens.
 import * as core from './core';
-import { onCheckSuite, getToken } from './merge';
+import { onCheckSuite, getToken, canMerge } from './merge';
 import type { Status, Task } from './core';
+import * as ghapp from './githubapp';
 
 export const GITHUB_EVENTS = ['pull_request', 'push', 'check_suite'];
 const SECRET_KEY = 'github_webhook_secret';
@@ -84,6 +85,8 @@ export async function connectionInfo(c: core.Ctx, envSecret?: string) {
     events: GITHUB_EVENTS,
     secret_set: !!(await getSecret(c.db, c.space)) || !!env,
     merge_token_set: !!(await getToken(c)),
+    merge_ready: await canMerge(c),
+    app: await ghapp.info(c),
     last_delivery_at: last?.at ?? null,
     repos, recent,
     rejected: rejected && (!last?.at || String(rejected.created_at) > last.at) ? rejected : null,
@@ -223,8 +226,9 @@ export function describe(kind: string, r: Result): string {
   if (r.status === 401) return 'Rejected: the secret does not match';
   if (b.error) return String(b.error);
   if (b.pong) return 'Ping received: connected';
+  if (b.uninstalled) return `Kunla app uninstalled from ${b.uninstalled === true ? 'an account' : b.uninstalled}`;
   if (b.duplicate) return 'Already received (GitHub resent it)';
-  if (b.ignored) return `Ignored ${String(b.ignored).replace('pull_request.', 'pull request ')} (not needed)`;
+  if (b.ignored) return `Ignored ${String(b.ignored).replace('pull_request.', 'pull request ').replace(/_/g, ' ')} (not needed)`;
   if (Array.isArray(b.updated)) return b.updated.length ? 'Updated ' + b.updated.map((u: any) => u.to && u.to !== u.from ? `${u.key} → ${u.to.replace('_', ' ')}` : u.key).join(', ') : 'No task key found in the title, branch or description';
   if (Array.isArray(b.linked)) return b.linked.length ? `Linked commits to ${b.linked.join(', ')}` : 'No task key found in the commit messages';
   if (Array.isArray(b.merged)) return b.merged.length ? `Checks finished: ${b.merged.join(', ')}` : 'Checks finished';
@@ -253,11 +257,30 @@ export async function handleWebhook(base: core.Ctx, req: Request, envSecret?: st
 
 async function verifyAndApply(base: core.Ctx, req: Request, raw: string, kind: string, envSecret?: string): Promise<{ result: Result; space: string | null }> {
   const secrets = await allSecrets(base.db, envSecret);
-  if (!secrets.length) return { space: null, result: { status: 503, body: { error: 'GitHub is not connected yet. An admin creates the secret in Kunla (Team → Connect GitHub).' } } };
+  const app = await ghapp.getApp(base.db);
+  if (!secrets.length && !app) return { space: null, result: { status: 503, body: { error: 'GitHub is not connected yet. An admin connects it in Kunla (Team → Connect GitHub).' } } };
+  const sig = req.headers.get('x-hub-signature-256');
+  // The Kunla GitHub App signs every delivery with its own secret; the installation says the workspace.
+  if (app && await verifySignature([app.webhook_secret], raw, sig)) return fromApp(base, req, raw, kind);
   let space: string | null = null;
-  for (const s of secrets) if (await verifySignature([s.secret], raw, req.headers.get('x-hub-signature-256'))) { space = s.space; break; }
+  for (const s of secrets) if (await verifySignature([s.secret], raw, sig)) { space = s.space; break; }
   if (!space) return { space: null, result: { status: 401, body: { error: 'Bad signature.' } } };
   return { space, result: await apply({ ...base, space }, req, raw, kind, space) };
+}
+
+async function fromApp(base: core.Ctx, req: Request, raw: string, kind: string): Promise<{ result: Result; space: string | null }> {
+  let p: any;
+  try { p = JSON.parse(raw); } catch { return { space: null, result: { status: 400, body: { error: 'Payload is not JSON.' } } }; }
+  const id = p?.installation?.id;
+  const link = id ? await ghapp.getInstallation(base.db, id) : null;
+  if (kind === 'ping') return { space: link?.space ?? null, result: { status: 200, body: { ok: true, pong: true } } };
+  if (kind === 'installation' && p.action === 'deleted' && id) {
+    await ghapp.forget(base.db, id);
+    return { space: link?.space ?? null, result: { status: 200, body: { ok: true, uninstalled: p.installation?.account?.login ?? true } } };
+  }
+  if (kind === 'installation' || kind === 'installation_repositories') return { space: link?.space ?? null, result: { status: 202, body: { ignored: kind } } };
+  if (!link) return { space: null, result: { status: 202, body: { error: `The Kunla app is installed on ${p?.installation?.account?.login ?? 'an account'} but not linked to a workspace. Click Connect with GitHub in Kunla.` } } };
+  return { space: link.space, result: await apply({ ...base, space: link.space }, req, raw, kind, link.space) };
 }
 
 async function apply(base: core.Ctx, req: Request, raw: string, kind: string, space: string): Promise<Result> {

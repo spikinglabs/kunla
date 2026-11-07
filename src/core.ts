@@ -1,5 +1,5 @@
 import { wakeMember, publicCallback, type Wake } from './wake';
-import { taskPr, getToken, mergeApproved } from './merge';
+import { taskPr, tokenFor, mergeApproved } from './merge';
 import * as continuous from './continuous';
 
 // Kunla core: the record of work. Everything here is plain SQL over a D1-compatible
@@ -690,7 +690,7 @@ export async function reviewTask(c: Ctx, key: string, input: {
     await event(c, t.id, 'flagged', `${t.review_rounds + 1} review rounds; a person should look at the brief.`, {}, null);
   // Approve in Kunla = merge the PR: Kunla merges it itself when it has a GitHub token, otherwise the woken agent does.
   const pr = input.verdict === 'approved' ? await taskPr(c.db, t.id) : null;
-  const byKunla = !!pr && !!(await getToken(c));
+  const byKunla = !!pr && !!(await tokenFor(c, pr));
   if (pr && byKunla) {
     const job = () => mergeApproved(c, t, pr);
     if (c.defer) c.defer(job); else await job();
