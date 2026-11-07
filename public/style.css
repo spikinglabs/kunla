@@ -484,3 +484,26 @@ a.inline-link:hover { border-color: var(--ink-2); }
 .via .btn { margin-left: 4px; }
 .via q { font-style: italic; color: var(--ink); }
 .via a { color: var(--ink-2); }
+
+/* ---------- appearance (KD-35): System / Light / Dark ---------- */
+.segctl { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: var(--sunk); border: 1px solid var(--rule); }
+.segctl button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-2); cursor: pointer; font-size: 13px; font-weight: 500; }
+.segctl button svg { width: 14px; height: 14px; flex: none; }
+.segctl button:hover { color: var(--ink); }
+.segctl button[aria-checked="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--rule-2); }
+@media (max-width: 380px) { .theme-row .segctl button span { display: none; } .theme-row .segctl button { padding: 0 10px; } }
+
+/* Dark polish: the inverted pieces read as glare on a dark canvas, so they turn into raised dark surfaces. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brain { box-shadow: inset 0 0 0 1px var(--rule); }
+  :root:not([data-theme="light"]) .tabbar { background: var(--sunk); box-shadow: inset 0 0 0 1px var(--rule-2), 0 12px 30px -12px rgba(0,0,0,.8); }
+  :root:not([data-theme="light"]) .tabbar a { color: var(--ink); }
+  :root:not([data-theme="light"]) .tabbar a.on { color: var(--on-lime); }
+  :root:not([data-theme="light"]) .palette { background: rgba(0,0,0,.62); }
+}
+:root[data-theme="dark"] .brain { box-shadow: inset 0 0 0 1px var(--rule); }
+:root[data-theme="dark"] .tabbar { background: var(--sunk); box-shadow: inset 0 0 0 1px var(--rule-2), 0 12px 30px -12px rgba(0,0,0,.8); }
+:root[data-theme="dark"] .tabbar a { color: var(--ink); }
+:root[data-theme="dark"] .tabbar a.on { color: var(--on-lime); }
+:root[data-theme="dark"] .palette { background: rgba(0,0,0,.62); }
+.theme-row .label { flex: 1 0 auto; }
