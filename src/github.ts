@@ -2,9 +2,10 @@
 // so nobody (person or agent) has to call log_work for work GitHub already knows about.
 // One route, signature-verified, no polling: GitHub calls us only when something happens.
 import * as core from './core';
+import { onCheckSuite, getToken } from './merge';
 import type { Status, Task } from './core';
 
-export const GITHUB_EVENTS = ['pull_request', 'push'];
+export const GITHUB_EVENTS = ['pull_request', 'push', 'check_suite'];
 const SECRET_KEY = 'github_webhook_secret';
 const MAX_KEYS = 20;          // a PR citing more tasks than this is almost surely noise
 const MAX_COMMITS = 50;       // a push carries at most 20 commits in the payload anyway
@@ -73,6 +74,7 @@ export async function connectionInfo(c: core.Ctx, envSecret?: string) {
     content_type: 'application/json',
     events: GITHUB_EVENTS,
     secret_set: !!(await getSecret(c.db, c.space)) || !!env,
+    merge_token_set: !!(await getToken(c)),
     last_delivery_at: last?.at ?? null,
   };
 }
@@ -234,5 +236,7 @@ export async function handleWebhook(base: core.Ctx, req: Request, envSecret?: st
   const c = systemCtx(base);
   if (kind === 'pull_request') return onPullRequest(c, payload);
   if (kind === 'push') return onPush(c, payload);
+  // Approved PRs that were waiting for their checks merge when GitHub reports the suite finished.
+  if (kind === 'check_suite') return { status: 200, body: { ok: true, merged: await onCheckSuite(c, payload) } };
   return { status: 202, body: { ignored: kind } };
 }

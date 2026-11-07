@@ -168,7 +168,8 @@ Working agreement:
 4. When done, submit_for_review with at least one deliverable link. If you are stuck, update_task with blocked_question.
 5. Split big work into sub-tasks with create_task parent; search before creating so nobody files the same work twice.
 6. Pass session (a link to this chat or agent session) when you claim, log work or submit, so people can open the conversation from the task later.
-7. A parked task was put off by a person on purpose. Do not resume it, claim it, or ask about it unless the user brings it up.`;
+7. A parked task was put off by a person on purpose. Do not resume it, claim it, or ask about it unless the user brings it up.
+8. Approved means merge: when a person approves a task whose deliverable is your open PR, squash-merge it once checks pass, unless Kunla already did.`;
 
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');

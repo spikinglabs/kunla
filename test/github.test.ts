@@ -82,7 +82,7 @@ describe('signature', () => {
     const a = await call('POST', '/api/members', human, { name: 'Bot', kind: 'ai' });
     expect((await call('POST', '/api/integrations/github', a.body.token)).status).toBe(403);
     const info = await call('GET', '/api/integrations/github', human);
-    expect(info.body).toMatchObject({ webhook_url: 'https://kunla.test/hooks/github', events: ['pull_request', 'push'], secret_set: true });
+    expect(info.body).toMatchObject({ webhook_url: 'https://kunla.test/hooks/github', events: ['pull_request', 'push', 'check_suite'], secret_set: true });
     expect(info.body.secret).toBeUndefined();
   });
 });

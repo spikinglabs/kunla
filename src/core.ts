@@ -1,4 +1,5 @@
 import { wakeMember, publicCallback, type Wake } from './wake';
+import { taskPr, getToken, mergeApproved } from './merge';
 
 // Kunla core: the record of work. Everything here is plain SQL over a D1-compatible
 // database, so the same code runs on Cloudflare D1, a SQLite file, or (later) Postgres.
@@ -42,6 +43,9 @@ export interface Ctx {
   now?: () => Date;
   /** Hand off a wake-up call for an agent; the Worker sends it after the response. Absent means no wake-ups. */
   notify?: (w: Wake) => void;
+  /** Run work after the response (the Worker uses waitUntil); absent means run it inline. */
+  defer?: (job: () => Promise<unknown>) => void;
+  githubToken?: string;
 }
 
 const id = () => crypto.randomUUID();
@@ -630,7 +634,15 @@ export async function reviewTask(c: Ctx, key: string, input: {
   await event(c, t.id, input.verdict, [input.comment, input.what_was_wrong, waiting].filter(Boolean).join('\n') || null, { review_id: rid, rule_id: ruleId, waiting_on: open });
   if (input.verdict === 'changes_requested' && t.review_rounds + 1 >= MAX_REVIEW_ROUNDS)
     await event(c, t.id, 'flagged', `${t.review_rounds + 1} review rounds; a person should look at the brief.`, {}, null);
-  await wakeMember(c, t.assignee_id, input.verdict, t, [input.comment, input.what_was_wrong, input.rule ? `New rule: ${input.rule}` : null].filter(Boolean).join('\n') || null);
+  // Approve in Kunla = merge the PR: Kunla merges it itself when it has a GitHub token, otherwise the woken agent does.
+  const pr = input.verdict === 'approved' ? await taskPr(c.db, t.id) : null;
+  const byKunla = !!pr && !!(await getToken(c));
+  if (pr && byKunla) {
+    const job = () => mergeApproved(c, t, pr);
+    if (c.defer) c.defer(job); else await job();
+  }
+  await wakeMember(c, t.assignee_id, input.verdict, t, [input.comment, input.what_was_wrong, input.rule ? `New rule: ${input.rule}` : null].filter(Boolean).join('\n') || null,
+    pr ? { merge: pr.url, by_kunla: byKunla } : {});
   return getTask(c, t.id);
 }
 
