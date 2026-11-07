@@ -19,3 +19,7 @@ migrations_dir = "migrations"
 # Minutes an AI's claim stays alive without a heartbeat.
 LEASE_MINUTES = "30"
 # Set a secret SETUP_TOKEN (wrangler secret put SETUP_TOKEN) so only you can run first-time setup.
+
+# Start of each UTC day: wake agents in continuous mode that stopped on a daily budget.
+[triggers]
+crons = ["2 0 * * *"]

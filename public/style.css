@@ -298,6 +298,9 @@ details.playbook pre { white-space: pre-wrap; font-size: 12.5px; background: rgb
 .stats div { background: var(--canvas); border-radius: 10px; padding: 10px; }
 .stats b { display: block; font-size: 20px; letter-spacing: -.02em; }
 .stats small { color: var(--muted); font-size: 12px; }
+.continuous { font-size: 13.5px; padding: 8px 10px; border-radius: 10px; border-left: 3px solid var(--lime); background: var(--canvas); }
+.continuous.stopped { border-left-color: var(--wait); }
+.continuous .muted { font-size: 12.5px; margin-top: 2px; }
 .secret { font: 13px/1.4 var(--mono); padding: 12px; border-radius: 12px; background: var(--brain); color: var(--lime); word-break: break-all; }
 pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: var(--brain); color: var(--on-brain); overflow-x: auto; margin: 0; }
 

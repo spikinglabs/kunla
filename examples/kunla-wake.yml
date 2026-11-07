@@ -11,10 +11,14 @@
 #
 # Kunla then sends kunla-approved, kunla-changes-requested, kunla-answered or kunla-assigned, and this job
 # starts Claude Code with the Kunla tools and the next step to take.
+#
+# Continuous mode (Team > the agent > Manage > Continuous mode): the agent keeps taking the next ready task
+# until next_task says stop, and Kunla sends kunla-work-ready when new work turns up after it stopped.
+# Raise timeout-minutes and --max-turns if you want one run to get through several tasks.
 name: Kunla wake-up
 on:
   repository_dispatch:
-    types: [kunla-approved, kunla-changes-requested, kunla-answered, kunla-assigned]
+    types: [kunla-approved, kunla-changes-requested, kunla-answered, kunla-assigned, kunla-work-ready]
 concurrency:
   group: kunla-wake      # one wake-up at a time; a newer one waits for the running one
   cancel-in-progress: false
@@ -46,3 +50,6 @@ jobs:
             Next step: ${{ github.event.client_payload.next }}
             Follow AGENTS.md and the Kunla working agreement: cite the task key in commits and PRs, log progress
             with log_work, and finish with submit_for_review and a link to your PR.
+            If next_task returns continuous.go true, you are in continuous mode: after each task, call next_task
+            again and take the next one. A question on one task (update_task blocked_question) is not a reason to
+            stop; move on. Stop when next_task returns continuous.go false.

@@ -119,17 +119,27 @@ The merge commit carries the `Task:` trailer, and the webhook then records the m
 
 When you approve an agent's work, send it back, answer its question or hand it a task, Kunla can call that agent's **wake-up URL** so it carries on by itself within seconds, instead of waiting for someone to nudge it. Set it per agent in **Team → Manage → Wake it up**.
 
-- Every call is a POST with a JSON body (`event`, `task` with key, title, status and link, `note`, `by`, and `next`, a one-line instruction for the agent), signed with `X-Kunla-Signature-256` (HMAC-SHA256 of the body with the secret shown when you save the URL). Events: `approved`, `changes_requested`, `answered`, `assigned`.
+- Every call is a POST with a JSON body (`event`, `task` with key, title, status and link, `note`, `by`, and `next`, a one-line instruction for the agent), signed with `X-Kunla-Signature-256` (HMAC-SHA256 of the body with the secret shown when you save the URL). Events: `approved`, `changes_requested`, `answered`, `assigned`, and `work_ready` for agents in continuous mode.
 - Kunla sends it after answering the person, retries once, and records *woke the agent* or *could not wake the agent* in the task's history. No polling, no queue: one request per decision.
 - **Claude Code:** use GitHub's `repository_dispatch`. Set the URL to `https://api.github.com/repos/OWNER/REPO/dispatches` with a fine-grained GitHub token (Contents: read and write), and copy [`examples/kunla-wake.yml`](examples/kunla-wake.yml) into `.github/workflows/`. Kunla sends `kunla-approved` and friends; the workflow starts Claude Code with the Kunla tools and the next step.
 - **Codex, OpenHands, your own runner:** point the URL at anything that starts the agent (a GitHub Action the same way, a small server, a serverless function) and check the signature.
 - **claude.ai chats** can't be woken from outside. The next time the chat calls `next_task`, it gets the decision.
 
+## Continuous mode
+
+Turn it on per agent in **Team → Manage → Continuous mode**, and the agent works through ready tasks one by one without anyone handing them out.
+
+- `next_task` tells it what to do next with `continuous.go: true` and a reminder to call `next_task` again after submitting. A question on one task (`blocked_question`) is not a reason to stop: it moves on to the next task.
+- It stops (`continuous.go: false`, with a `stop_reason`) only when it is truly stuck or reaches a limit: `nothing_ready`, `waiting_on_people` (everything it could do waits on an answer or on sub-tasks), `tasks_budget`, `cost_budget`, `tokens_budget`, `review_limit` or `ended`.
+- Limits, all optional: new tasks per day, cost per day (USD), tokens per day, tasks waiting for review at most, and an end time. Days are UTC. Cost and tokens count what the agent reports with `cost_usd` and `tokens` on `log_work`, `update_task` or `submit_for_review`. A limit stops new work only; the agent always finishes the task it holds, and `claim_task` refuses new work past a limit.
+- When it stopped because nothing was ready, because everything waited on people, or because too much waited for review, Kunla calls its wake-up URL with `work_ready` as soon as new work is ready in its lane (one agent per new task, so agents don't race). A cron at the start of each UTC day wakes agents that stopped on a daily budget.
+- Only the agent's sponsor or an admin can change these settings. The Team page shows whether each agent is running or why it stopped, with today's use against its limits.
+
 
 | Tool | What it does |
 |---|---|
 | `whoami` | Your member profile, sponsor and projects |
-| `next_task` | Your task in progress, then assigned work, then reviews for you, then open Ready work in your lane, focused projects first |
+| `next_task` | Your task in progress, then assigned work, then reviews for you, then open Ready work in your lane, focused projects first; in continuous mode, whether to keep going or why to stop |
 | `list_tasks`, `get_task` | Search; one task with brief, playbook, rules, history and citation text |
 | `claim_task`, `heartbeat` | Take a task atomically; keep the lease alive |
 | `update_task` | Note, status, or `blocked_question` for a person |
