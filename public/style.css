@@ -507,3 +507,19 @@ a.inline-link:hover { border-color: var(--ink-2); }
 :root[data-theme="dark"] .tabbar a.on { color: var(--on-lime); }
 :root[data-theme="dark"] .palette { background: rgba(0,0,0,.62); }
 .theme-row .label { flex: 1 0 auto; }
+
+/* Kinds of work (KD-37) and written outcomes */
+.kind { display: inline-block; vertical-align: 1px; margin-right: 6px; padding: 0 6px; border-radius: 5px; font: 600 10.5px/17px var(--mono); text-transform: uppercase; letter-spacing: .02em; color: var(--ink-2); background: var(--canvas); border: 1px solid var(--rule-2); white-space: nowrap; }
+.kind.k-code { color: var(--muted); }
+.kind.k-discussion, .kind.k-learning, .kind.k-reading { border-style: dashed; }
+.kindpick select { height: 26px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--rule-2); background: var(--surface); color: var(--ink); font-size: 13px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.ltype { font: 600 10.5px/1 var(--mono); text-transform: uppercase; color: var(--muted); }
+.notes { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 12px; background: var(--canvas); }
+.notes .nhead { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 13.5px; margin-bottom: 6px; }
+.notes .prose { font-size: 15px; overflow-wrap: anywhere; }
+details.notes summary { cursor: pointer; list-style: none; }
+details.notes summary::-webkit-details-marker { display: none; }
+details.notes .nprev { display: block; color: var(--ink-2); font-size: 14.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+details.notes[open] .nprev { display: none; }
+.finish p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; }

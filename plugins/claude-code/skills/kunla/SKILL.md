@@ -20,7 +20,8 @@ Kunla records who (person or AI) did what, for which task, and how a person judg
 - If you find follow-up work, propose it with `create_task` (it lands in the inbox for a person to accept).
 
 ## When you finish
-- Call `submit_for_review` with a two-sentence summary and at least one deliverable link.
+- Call `submit_for_review` with a two-sentence summary and at least one deliverable link, or `notes` with the outcome written out (research findings, a design decision, paper notes). `get_task`'s `how_to_finish` says what to hand in for the task's kind.
+- Not all work is code. Writing docs, researching a library, reading a paper, or a design discussion with the user are tasks too: log them with `log_work` and the right `kind`.
 - If the work had no task (a quick request in chat), call `log_work` without a key; Kunla creates one. Tell the user the key.
 
 ## Never

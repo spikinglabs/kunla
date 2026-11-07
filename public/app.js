@@ -64,6 +64,19 @@ const av = (m, cls = '', live = false) => m ? html`<span class="av ${m.kind === 
 const who = (m, fallback = 'Nobody yet', cls = 'sm') => m ? html`<span class="who">${raw(av(m, cls))}<span class="name">${m.name}</span></span>` : html`<span class="muted">${fallback}</span>`;
 const PLATFORM = { 'claude-code': 'Claude Code', 'claude-ai': 'claude.ai', codex: 'Codex', chat: 'Chat app', other: 'MCP agent' };
 const kindLine = (m) => m.kind === 'ai' ? `Agent${m.platform ? ' · ' + (PLATFORM[m.platform] || m.platform) : ''}${m.sponsor ? ' · sponsored by ' + m.sponsor : ''}` : 'Person';
+// Kinds of work (KD-37): not only code. The server guesses a kind when nobody set one.
+const KIND = { code: 'Code', writing: 'Writing', research: 'Research', reading: 'Reading', learning: 'Learning', discussion: 'Discussion', marketing: 'Marketing', sales: 'Sales', data: 'Data', design: 'Design', other: 'Other' };
+const kindChip = (k) => (k && k !== 'other' && KIND[k] ? html`<span class="kind k-${k}">${KIND[k]}</span>` : '');
+const LINK_TYPE = { pr: 'PR', issue: 'Issue', commit: 'Commit', repo: 'Repo', doc: 'Doc', sheet: 'Sheet', slides: 'Slides', form: 'Form', paper: 'Paper', chat: 'Chat', post: 'Post', video: 'Video', design: 'Design', file: 'File' };
+const linkPill = (d) => { let host = d.url; try { host = new URL(d.url).hostname.replace(/^www\./, ''); } catch {}
+  return html`<a class="pill" href="${d.url}" target="_blank" rel="noopener" title="${d.title || d.url}">${raw(LINK_TYPE[d.type] ? html`<span class="ltype">${LINK_TYPE[d.type]}</span>` : '')}<span class="pill-t">${d.title || host}</span> ↗</a>`; };
+// Written outcomes: paper notes, decisions from a discussion, findings. Long ones fold.
+const notesBlock = (notes, { fold = false } = {}) => (notes?.length ? notes.map((n) => {
+  const long = fold && n.body.length > 600;
+  const head = html`<div class="nhead"><b>${n.title || 'Notes'}</b><span class="muted">${n.author ? n.author + ' · ' : ''}${agoLong(n.created_at)}</span></div>`;
+  return long ? html`<details class="notes"><summary>${raw(head)}<span class="nprev">${n.body.slice(0, 220)}…</span></summary><div class="prose">${prose(n.body)}</div></details>`
+    : html`<div class="notes">${raw(head)}<div class="prose">${prose(n.body)}</div></div>`;
+}).join('') : '');
 const STATUS = { inbox: 'Proposed', ready: 'Ready', in_progress: 'In progress', blocked: 'Waiting on an answer', review: 'In review', done: 'Done', declined: 'Declined', parked: 'Later' };
 const projectOf = (key) => projects.find((p) => key?.startsWith(p.key + '-'));
 const firstName = (n) => n?.split(' ')[0] ?? '';
@@ -290,7 +303,7 @@ function decisionCard(item, { solo = false } = {}) {
   const t = item.task;
   const p = projectOf(t.key);
   const worker = t.assignee;
-  const head = (label) => html`<div class="row" style="justify-content:space-between"><span class="eyebrow">${label} · ${t.key}${p ? ' · ' + p.name : ''}</span>
+  const head = (label) => html`<div class="row" style="justify-content:space-between"><span class="eyebrow">${label} · ${t.key}${p ? ' · ' + p.name : ''}${raw(t.kind && t.kind !== 'other' ? ' · ' + esc(KIND[t.kind] || '') : '')}</span>
     ${raw(solo ? '' : html`<a class="btn quiet sm" href="#/t/${t.key}">Open</a>`)}</div>`;
   const title = solo ? '' : html`<h2><a href="#/t/${t.key}">${t.title}</a></h2>`;
   if (item.kind === 'review') {
@@ -299,7 +312,8 @@ function decisionCard(item, { solo = false } = {}) {
       ${raw(head(solo ? 'Waiting on your review' : 'Review'))}${raw(title)}
       <div class="byline">${raw(who(worker, t.deliverables?.some((d) => /^https:\/\/github\.com\//.test(d.url)) ? 'GitHub' : 'Someone'))}<span>sent this ${agoLong(t.updated_at)}${round}</span></div>
       ${raw(t.summary ? html`<p class="said">${prose(t.summary)}</p>` : '')}
-      ${raw(t.deliverables?.length ? html`<div class="links">${join(t.deliverables.map((d) => html`<a class="pill" href="${d.url}" target="_blank" rel="noopener" title="${d.title || d.url}"><span class="pill-t">${d.title || new URL(d.url).hostname}</span> ↗</a>`))}</div>` : '')}
+      ${raw(t.deliverables?.length ? html`<div class="links">${join(t.deliverables.map(linkPill))}</div>` : '')}
+      ${raw(notesBlock(t.notes, { fold: true }))}
       ${raw(t.criteria?.length ? html`<div><div class="label" style="margin-bottom:6px">Tick what's met</div><div class="checks">${join(t.criteria.map((c, i) => html`<label class="check"><input type="checkbox" name="c${i}" data-crit="${c}"><span>${c}</span></label>`))}</div></div>` : '')}
       <div class="field"><label for="n-${t.key}">Note to ${callName(worker) || 'the worker'}</label>
         <textarea id="n-${t.key}" name="note" rows="2" placeholder="Optional when approving. Say what to fix when sending it back."></textarea></div>
@@ -728,7 +742,7 @@ async function viewTask(key) {
   let decision = '';
   if (t.status === 'review' && !isWorker) {
     const sub = hist.filter((e) => e.type === 'submitted').pop();
-    decision = decisionCard({ kind: 'review', task: { ...t, summary: sub?.note, deliverables: t.deliverables } }, { solo: true });
+    decision = decisionCard({ kind: 'review', task: { ...t, summary: sub?.note, deliverables: t.deliverables, notes: t.notes } }, { solo: true });
   } else if (t.status === 'blocked') decision = decisionCard({ kind: 'question', task: t }, { solo: true });
   else if (t.status === 'inbox') decision = decisionCard({ kind: 'proposal', task: t }, { solo: true });
   const mark = new Set(['submitted', 'approved', 'changes_requested', 'blocked', 'answered', 'rule_added']);
@@ -743,6 +757,7 @@ async function viewTask(key) {
         ${raw(t.parent ? html`<span>/</span><a href="#/t/${t.parent.key}">${t.parent.key} ${t.parent.title}</a>` : '')}<span>/</span><span class="mono">${t.key}</span></div>
       <h1>${t.title}</h1>
       <div class="row"><span class="pill ${t.status === 'review' ? 'lime' : t.status === 'blocked' ? 'warn' : t.status === 'done' ? 'on' : ''}">${STATUS[t.status]}</span>
+        <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join(Object.entries(KIND).map(([k, l]) => html`<option value="${k}" ${t.kind === k ? 'selected' : ''}>${l}</option>`))}</select></label>
         <div class="people"><span>${raw(who(t.assignee, 'Nobody yet'))}</span>${raw(t.reviewer ? html`<span class="muted">reviewed by</span><span>${raw(who(t.reviewer))}</span>` : '')}
         ${raw(t.created_by ? html`<span class="muted">asked by ${t.created_by.name}</span>` : '')}</div></div>
       ${raw(decision ? html`<div class="card" style="margin-top:24px">${raw(decision)}</div>` : '')}
@@ -756,7 +771,7 @@ async function viewTask(key) {
         <form class="row" data-act="submit:addsub" style="margin-top:10px;flex-wrap:nowrap"><input name="title" placeholder="${subs.length ? 'Add another sub-task' : 'Split this into sub-tasks: type one and press Enter'}" aria-label="New sub-task"><button class="btn sm">Add</button></form>
         ${raw(subs.length ? '<p class="muted" style="font-size:13px;margin-top:8px">When every sub-task is finished, this task finishes on its own.</p>' : '')}</div>` : '')}
       ${raw(t.criteria.length && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>Done when</h3><ul class="crit ${t.status === 'done' ? 'met' : ''}">${join(t.criteria.map((c) => html`<li>${c}</li>`))}</ul></div>` : '')}
-      ${raw(t.deliverables.length && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>The work</h3><div class="links">${join(t.deliverables.map((d) => html`<a class="pill" href="${d.url}" target="_blank" rel="noopener" title="${d.title || d.url}"><span class="pill-t">${d.title || d.url}</span> ↗</a>`))}</div></div>` : '')}
+      ${raw((t.deliverables.length || t.notes?.length) && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>The work</h3>${raw(t.deliverables.length ? html`<div class="links">${join(t.deliverables.map(linkPill))}</div>` : '')}${raw(notesBlock(t.notes))}</div>` : '')}
       ${raw(t.sessions?.length ? html`<div class="sec"><h3>Worked on in</h3><div class="links">${join(t.sessions.map((x) => x.url
         ? html`<a class="pill" href="${x.url}" target="_blank" rel="noopener" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}"><span class="pill-t">${sessionLabel(x.url)}${x.member ? ' · ' + x.member : ''}</span> ↗</a>`
         : html`<span class="pill" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}"><code class="pill-t">${x.ref}</code></span>`))}</div></div>` : '')}
@@ -772,13 +787,17 @@ async function viewTask(key) {
       <div class="brain"><h3>Sent with this task</h3>
         ${raw(t.rules.length ? html`<ol class="rules-mini" style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px;font-size:14px">${join(t.rules.map((r) => html`<li>${r.text}${raw(r.project === t.workspace.key ? ' <span class="m-ws">everywhere</span>' : '')}</li>`))}</ol>` : '<p class="s" style="color:#b9b6ac;font-size:13.5px">No rules yet.</p>')}
         ${raw(t.playbook ? html`<details class="playbook"><summary>Playbook</summary><pre>${t.playbook}</pre></details>` : '')}</div>
-      <div class="card pad"><h3>Cite it anywhere</h3><div class="cite">${join([['Commit trailer', t.references.commit_trailer], ['Branch', t.references.branch], ['Doc source line', t.references.doc_source_line], ['Link', t.references.link]].map(([l, v]) => html`<button type="button" data-act="click:copy" data-v="${v}"><small>${l}</small><code>${v}</code></button>`))}</div></div>
+      ${raw(t.how_to_finish && OPEN.has(t.status) ? html`<div class="card pad finish"><h3>Finished looks like</h3><p>${t.how_to_finish.hand_in.replace(/^./, (x) => x.toUpperCase())}</p><p class="muted">${t.how_to_finish.approval}</p></div>` : '')}
+      <div class="card pad"><h3>Cite it anywhere</h3><div class="cite">${join((t.kind === 'code'
+        ? [['Commit trailer', t.references.commit_trailer], ['Branch', t.references.branch], ['Doc source line', t.references.doc_source_line], ['Link', t.references.link]]
+        : [['Doc source line', t.references.doc_source_line], ['In a message', t.references.message_line], ['Link', t.references.link], ['Commit trailer', t.references.commit_trailer]]).map(([l, v]) => html`<button type="button" data-act="click:copy" data-v="${v}"><small>${l}</small><code>${v}</code></button>`))}</div></div>
     </aside></div>`;
   const reload = () => viewTask(key);
   const text = () => $app.querySelector('.composer textarea').value.trim();
   bind($app, {
     ...decisionHandlers(reload),
     later: () => showLater(t.key, reload),
+    kind: async (el) => { await api('PATCH', `/api/tasks/${t.key}`, { kind: el.value }); toast(`${t.key} is ${KIND[el.value].toLowerCase()} work now.`); reload(); },
     unpark: async () => { const r = await api('POST', `/api/tasks/${t.key}/unpark`); toast(`${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     undodecision: async () => { const r = await api('POST', `/api/tasks/${t.key}/decision/undo`); toast(`Undone. ${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     addsub: async (f) => {
@@ -795,9 +814,9 @@ async function viewTask(key) {
 // ---------- tasks: one list that stays useful at hundreds of tasks ----------
 // You manage views, not lists: pick a filter and a grouping, save it, and come back to it.
 const VIEWS_KEY = 'kunla.views';
-const tv = { mode: 'list', group: 'project', filter: 'open', q: '' };
+const tv = { mode: 'list', group: 'project', filter: 'open', q: '', kind: '' };
 try { Object.assign(tv, JSON.parse(localStorage.getItem('kunla.tv') || '{}')); } catch {}
-const saveTv = () => { try { localStorage.setItem('kunla.tv', JSON.stringify({ mode: tv.mode, group: tv.group, filter: tv.filter })); } catch {} };
+const saveTv = () => { try { localStorage.setItem('kunla.tv', JSON.stringify({ mode: tv.mode, group: tv.group, filter: tv.filter, kind: tv.kind })); } catch {} };
 const savedViews = () => { try { return JSON.parse(localStorage.getItem(VIEWS_KEY) || '[]'); } catch { return []; } };
 const OPEN = new Set(['inbox', 'ready', 'in_progress', 'blocked', 'review']);
 const DAY = 86400000;
@@ -810,7 +829,7 @@ const FILTERS = {
   week: ['Done this week', (t) => t.status === 'done' && Date.now() - new Date(t.updated_at) < 7 * DAY],
   all: ['Everything', () => true],
 };
-const GROUPS = { project: 'Project', person: 'Person', status: 'Status' };
+const GROUPS = { project: 'Project', person: 'Person', status: 'Status', kind: 'Kind' };
 const STATUS_ORDER = ['blocked', 'review', 'in_progress', 'ready', 'inbox', 'parked', 'done', 'declined'];
 
 async function viewTasks(project) {
@@ -819,7 +838,8 @@ async function viewTasks(project) {
   const p = projects.find((x) => x.key === project) || (project === me.workspace.key ? { key: project, name: 'No project' } : null);
   const draw = () => {
     const ql = tv.q.trim().toLowerCase();
-    const pass = (t) => FILTERS[tv.filter][1](t) && (!ql || t.key.toLowerCase().includes(ql) || t.title.toLowerCase().includes(ql) || (t.assignee?.name ?? '').toLowerCase().includes(ql));
+    if (tv.kind && !KIND[tv.kind]) tv.kind = '';
+    const pass = (t) => FILTERS[tv.filter][1](t) && (!tv.kind || t.kind === tv.kind) && (!ql || t.key.toLowerCase().includes(ql) || t.title.toLowerCase().includes(ql) || (t.assignee?.name ?? '').toLowerCase().includes(ql));
     const shown = all.filter(pass);
     const keys = new Set(shown.map((t) => t.key));
     const counts = Object.fromEntries(Object.keys(FILTERS).map((k) => [k, all.filter(FILTERS[k][1]).length]));
@@ -830,6 +850,7 @@ async function viewTasks(project) {
         <div class="row">${join(Object.entries(FILTERS).map(([k, [label]]) => html`<button class="pill ${tv.filter === k ? 'on' : ''}" data-act="click:filter" data-k="${k}">${label} <span class="mono" style="opacity:.6">${counts[k]}</span></button>`))}</div>
         <div class="row" style="margin-left:auto">
           <input class="search" placeholder="Filter by words, key or person" value="${tv.q}" data-act="input:q" aria-label="Filter">
+          <select data-act="change:kindf" aria-label="Kind of work"><option value="">All kinds</option>${join(Object.entries(KIND).filter(([k]) => all.some((t) => t.kind === k)).map(([k, l]) => html`<option value="${k}" ${tv.kind === k ? 'selected' : ''}>${l} · ${all.filter((t) => t.kind === k && FILTERS[tv.filter][1](t)).length}</option>`))}</select>
           ${raw(tv.mode === 'list' ? html`<select data-act="change:group" aria-label="Group by">${join(Object.entries(GROUPS).map(([k, l]) => html`<option value="${k}" ${tv.group === k ? 'selected' : ''}>Group by ${l.toLowerCase()}</option>`))}</select>` : '')}
           <div class="seg-toggle"><button class="${tv.mode === 'list' ? 'on' : ''}" data-act="click:mode" data-m="list">List</button><button class="${tv.mode === 'board' ? 'on' : ''}" data-act="click:mode" data-m="board">Board</button></div>
         </div></div>
@@ -845,12 +866,13 @@ async function viewTasks(project) {
       // Top-level rows are tasks whose parent is not shown; sub-tasks nest under their parent.
       const tops = shown.filter((t) => !t.parent || !keys.has(t.parent));
       const kids = (k) => shown.filter((t) => t.parent === k);
-      const groupOf = (t) => tv.group === 'project' ? (t.project ?? '') : tv.group === 'person' ? (t.assignee?.name ?? '') : t.status;
-      const order = tv.group === 'project' ? [...projects.map((x) => x.key), ''] : tv.group === 'status' ? STATUS_ORDER : null;
+      const groupOf = (t) => tv.group === 'project' ? (t.project ?? '') : tv.group === 'person' ? (t.assignee?.name ?? '') : tv.group === 'kind' ? (t.kind || 'other') : t.status;
+      const order = tv.group === 'project' ? [...projects.map((x) => x.key), ''] : tv.group === 'status' ? STATUS_ORDER : tv.group === 'kind' ? Object.keys(KIND) : null;
       const gkeys = [...new Set(tops.map(groupOf))].sort((a, b) => order ? order.indexOf(a) - order.indexOf(b) : (a || '~').localeCompare(b || '~'));
       const label = (g) => {
         if (tv.group === 'project') { const pr = projects.find((x) => x.key === g); return pr ? html`${raw(pr.focus ? '<span class="focus-dot"></span>' : '')}${pr.name} <span class="key">${pr.key}</span>${raw(pr.ends_at ? ` <span class="muted" style="font-weight:400;font-size:13px">${esc(endsIn(pr.ends_at))}</span>` : '')}` : 'No project'; }
         if (tv.group === 'person') return g || 'Nobody yet';
+        if (tv.group === 'kind') return KIND[g] || 'Other';
         return STATUS[g];
       };
       body = gkeys.length ? join(gkeys.map((g) => { const rows = tops.filter((t) => groupOf(t) === g); return html`<section class="card group"><h2>${raw(label(g))} <span class="muted mono" style="font-size:12px;font-weight:400">${rows.length}</span></h2>
@@ -863,27 +885,28 @@ async function viewTasks(project) {
       filter: (el) => { tv.filter = el.dataset.k; saveTv(); draw(); },
       mode: (el) => { tv.mode = el.dataset.m; saveTv(); draw(); },
       group: (el) => { tv.group = el.value; saveTv(); draw(); },
+      kindf: (el) => { tv.kind = el.value; saveTv(); draw(); },
       q: (el) => { tv.q = el.value; clearTimeout(draw.t); draw.t = setTimeout(() => { draw(); const i = $app.querySelector('.search'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 180); },
       save: () => {
-        const name = prompt('Name this view', `${FILTERS[tv.filter][0]}${p ? ' · ' + p.name : ''}${tv.q ? ' · ' + tv.q : ''}`);
+        const name = prompt('Name this view', `${FILTERS[tv.filter][0]}${tv.kind ? ' · ' + KIND[tv.kind] : ''}${p ? ' · ' + p.name : ''}${tv.q ? ' · ' + tv.q : ''}`);
         if (!name) return;
-        const list = savedViews(); list.push({ name, hash: location.hash || '#/tasks', mode: tv.mode, group: tv.group, filter: tv.filter, q: tv.q });
+        const list = savedViews(); list.push({ name, hash: location.hash || '#/tasks', mode: tv.mode, group: tv.group, filter: tv.filter, q: tv.q, kind: tv.kind });
         try { localStorage.setItem(VIEWS_KEY, JSON.stringify(list)); } catch {}
         toast(`Saved “${name}”.`); draw();
       },
-      view: (el) => { const v = savedViews()[Number(el.dataset.i)]; Object.assign(tv, { mode: v.mode, group: v.group, filter: v.filter, q: v.q || '' }); saveTv(); if (location.hash === v.hash) draw(); else location.hash = v.hash; },
+      view: (el) => { const v = savedViews()[Number(el.dataset.i)]; Object.assign(tv, { mode: v.mode, group: v.group, filter: v.filter, q: v.q || '', kind: v.kind || '' }); saveTv(); if (location.hash === v.hash) draw(); else location.hash = v.hash; },
       unsave: (el) => { const list = savedViews(); list.splice(Number(el.dataset.i), 1); try { localStorage.setItem(VIEWS_KEY, JSON.stringify(list)); } catch {} draw(); },
     });
   };
   draw();
 }
 function tcard(t) {
-  return html`<a class="card tcard" href="#/t/${t.key}"><span class="key">${t.key}${t.parent ? ' · under ' + t.parent : ''}</span><span class="t">${t.title}</span>
+  return html`<a class="card tcard" href="#/t/${t.key}"><span class="key">${t.key}${t.parent ? ' · under ' + t.parent : ''}</span><span class="t">${raw(kindChip(t.kind))}${t.title}</span>
     <span class="f">${raw(who(t.assignee, t.status === 'ready' ? 'Anyone' : '—'))}<span class="key">${t.subtasks ? `${t.subtasks.done}/${t.subtasks.total} · ` : ''}${ago(t.updated_at)}</span></span></a>`;
 }
 function trow(t, child = false) {
   return html`<a class="trow ${child ? 'child' : ''}" href="#/t/${t.key}"><span class="st-dot s-${t.status}" title="${STATUS[t.status]}"></span><span class="key">${t.key}</span>
-    <span class="t">${t.title}${raw(t.subtasks ? ` <span class="subcount">${t.subtasks.done}/${t.subtasks.total}</span>` : '')}</span>
+    <span class="t">${raw(tv.group === 'kind' ? '' : kindChip(t.kind))}${t.title}${raw(t.subtasks ? ` <span class="subcount">${t.subtasks.done}/${t.subtasks.total}</span>` : '')}</span>
     <span class="stx">${STATUS[t.status]}</span><span class="w">${raw(who(t.assignee, t.status === 'ready' ? 'Anyone' : ''))}</span><span class="key">${ago(t.updated_at)}</span></a>`;
 }
 
@@ -1154,7 +1177,7 @@ function hookStatus(info) {
 
 const PROJECT_NOTE = `Use the Kunla connector as this project's record of work.
 - When a task key like MKT-42 comes up, call get_task and follow its brief, criteria, playbook and rules.
-- When you finish something for the team (a draft, analysis or plan), call log_work with one sentence and links, and tell me the task key.
+- All work counts, not only code. When we reach an outcome (a decision, a draft, research findings, notes on a paper, something I learned), call log_work yourself with one sentence, its kind, and the outcome in notes or links, then tell me the task key. Once per outcome, not every message.
 - Put the task's citation line under the title of documents you write.
 - If a decision belongs to a person, set the task blocked with the question instead of guessing.`;
 
