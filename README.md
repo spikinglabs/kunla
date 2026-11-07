@@ -22,6 +22,7 @@ It runs on Cloudflare (one Worker, one D1 database, static files) and costs clos
 - **Claude Code plugin** whose hooks load the task's brief and rules at session start, add a `Task:` trailer to commits, log commits as progress, and keep the claim alive. Nothing depends on the model remembering.
 - **`kunla` CLI** for people and for any command-line agent: `kunla run MKT-42 -- codex` starts an agent on a task and records the session.
 - **REST API.** Every MCP tool is also `POST /api/tools/<name>`.
+- **Links back to the AI chat.** Agents pass `session` (their chat or session link) when they claim, log or submit; the task page lists every chat and session that worked on it. The Claude Code plugin does this by itself.
 - **GitHub webhooks.** Pull requests and commits that cite a task key update the task by themselves: an opened PR sends it to Review with the PR attached, a merged PR finishes it (or waits for a person's review when the project requires one).
 
 ## Quick start (local)
@@ -103,7 +104,7 @@ What happens, for every existing task a PR or commit cites:
 | PR closed without merging | A note in the history, no status change |
 | Commit pushed | A history line with a link to the commit |
 
-Tasks only move forward: done, declined, blocked and proposed (Inbox) tasks keep their status and just get the note. Every delivery is checked against `X-Hub-Signature-256` and counted once, even when GitHub retries it. One secret serves the whole workspace, so you can add the same webhook to several repositories. It costs one Worker request per GitHub event and no polling.
+A parent task finishes only when its last sub-task does, even when its PR merges or a person approves it. Tasks only move forward: done, declined, blocked and proposed (Inbox) tasks keep their status and just get the note. Every delivery is checked against `X-Hub-Signature-256` and counted once, even when GitHub retries it. One secret serves the whole workspace, so you can add the same webhook to several repositories. It costs one Worker request per GitHub event and no polling.
 
 ## MCP tools
 

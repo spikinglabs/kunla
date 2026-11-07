@@ -486,6 +486,15 @@ const EVENT = {
   lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `moved it to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
   github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
 };
+// A readable name for the chat or agent session a task links back to.
+function sessionLabel(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'claude.ai') return u.pathname.startsWith('/code/project/') ? 'Claude project thread' : u.pathname.startsWith('/code/') ? 'Claude Code session' : u.pathname.startsWith('/project/') ? 'Claude project' : 'Claude chat';
+    if (u.hostname === 'chatgpt.com' || u.hostname === 'chat.openai.com') return 'ChatGPT chat';
+    return u.hostname;
+  } catch { return url; }
+}
 async function viewTask(key) {
   renderShell('tasks');
   const t = await api('GET', `/api/tasks/${encodeURIComponent(key)}`);
@@ -517,6 +526,9 @@ async function viewTask(key) {
         ${raw(subs.length ? '<p class="muted" style="font-size:13px;margin-top:8px">When every sub-task is finished, this task finishes on its own.</p>' : '')}</div>` : '')}
       ${raw(t.criteria.length && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>Done when</h3><ul class="crit ${t.status === 'done' ? 'met' : ''}">${join(t.criteria.map((c) => html`<li>${c}</li>`))}</ul></div>` : '')}
       ${raw(t.deliverables.length && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>The work</h3><div class="links">${join(t.deliverables.map((d) => html`<a class="pill" href="${d.url}" target="_blank" rel="noopener">${d.title || d.url} ↗</a>`))}</div></div>` : '')}
+      ${raw(t.sessions?.length ? html`<div class="sec"><h3>Worked on in</h3><div class="links">${join(t.sessions.map((x) => x.url
+        ? html`<a class="pill" href="${x.url}" target="_blank" rel="noopener" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}">${sessionLabel(x.url)}${x.member ? ' · ' + x.member : ''} ↗</a>`
+        : html`<span class="pill" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}"><code>${x.ref}</code></span>`))}</div></div>` : '')}
       <div class="sec"><h3>How it got here</h3><div class="trail">${join(hist.map((e) => html`<div class="ev ${mark.has(e.type) ? 'mark' : ''} ${e.type === 'rule_added' ? 'rule' : ''}">
         <span class="when">${when(e.created_at)}</span>${raw(e.actor ? av({ name: e.actor, kind: e.actor_kind }, 'sm') : '<span class="av sm">K</span>')}
         <div><div class="what">${e.actor ?? 'Kunla'} ${(EVENT[e.type] || (() => e.type))(e)}</div>${raw(e.note && e.type !== 'created' ? html`<div class="note">${e.note}</div>` : '')}</div></div>`))}</div></div>
