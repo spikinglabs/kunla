@@ -13,29 +13,44 @@
     const box = document.getElementById('box');
     const q = new URLSearchParams(location.search);
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    // A connector added at /mcp/KEY is for one workspace: sign in with this browser's token for it.
+    const wsKey = (() => { try { return new URL(q.get('resource') || '').pathname.match(/^\/mcp\/([A-Za-z][A-Za-z0-9]{1,9})\/?$/)?.[1]?.toUpperCase() ?? null; } catch { return null; } })();
     let token = null;
     try { token = localStorage.getItem('kunla.token'); } catch {}
-
+    const whoIs = (t) => fetch('/api/me', { headers: { authorization: `Bearer ${t}` } }).then((r) => r.ok ? r.json() : null).catch(() => null);
+    let other = null; // the workspace a pasted token belongs to, when it is the wrong one
+    async function pickToken() {
+      const candidates = [token];
+      try { for (const sp of JSON.parse(localStorage.getItem('kunla.spaces') || '[]')) if (sp.url === location.origin) candidates.push(sp.token); } catch {}
+      for (const t of [...new Set(candidates.filter(Boolean))]) {
+        const me = await whoIs(t);
+        if (me && (!wsKey || me.workspace?.key === wsKey)) { token = t; return me; }
+        if (me && t === token) other = me.workspace?.name;
+      }
+      return null;
+    }
     async function main() {
       const client = await fetch(`/oauth/client/${encodeURIComponent(q.get('client_id') || '')}`).then((r) => r.ok ? r.json() : null);
       if (!client) { box.innerHTML = '<h1>Unknown app</h1><p>This connection request is not valid. Try adding the connector again.</p>'; return; }
-      let me = token ? await fetch('/api/me', { headers: { authorization: `Bearer ${token}` } }).then((r) => r.ok ? r.json() : null) : null;
+      let me = await pickToken();
       if (!me) {
         box.innerHTML = `<h1>Sign in to connect ${esc(client.name)}</h1>
-          <p>Paste your personal Kunla token.</p>
+          <p>Paste your personal Kunla token${wsKey ? ` for the workspace <b>${esc(wsKey)}</b>` : ''}.</p>
+          ${other ? `<p class="warn">That token is for ${esc(other)}, not ${esc(wsKey)}.</p>` : ''}
           <form id="f" class="stack"><div class="field"><label for="tok">Token</label><input id="tok" name="token" type="password" required placeholder="kun_…"></div>
           <button class="primary" style="justify-content:center">Continue</button></form>`;
         document.getElementById('f').onsubmit = (e) => {
           e.preventDefault();
           token = new FormData(e.target).get('token').trim();
-          try { localStorage.setItem('kunla.token', token); } catch {}
+          // Only make it this browser's main token when no workspace was asked for.
+          if (!wsKey) try { localStorage.setItem('kunla.token', token); } catch {}
           main();
         };
         return;
       }
       const defaultName = `${me.name}'s ${client.name}`;
       box.innerHTML = `<h1>Connect ${esc(client.name)} to Kunla</h1>
-        <p>It joins your workspace as an agent you sponsor. It can read tasks, record work and submit work for review, all under its own name.</p>
+        <p>It joins <b>${esc(me.workspace?.name ?? 'your workspace')}</b> as an agent you sponsor. It can read tasks, record work and submit work for review, all under its own name.</p>
         <form id="f" class="stack"><div class="field"><label for="nm">Name in Kunla</label><input id="nm" name="name" value="${esc(defaultName)}" required></div>
         <div class="row"><button class="primary">Allow</button><button type="button" class="ghost" id="deny">Cancel</button></div></form>`;
       document.getElementById('deny').onclick = () => {
@@ -50,7 +65,7 @@
           headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
           body: JSON.stringify({
             client_id: q.get('client_id'), redirect_uri: q.get('redirect_uri'), state: q.get('state'),
-            code_challenge: q.get('code_challenge'), code_challenge_method: q.get('code_challenge_method') || 'S256',
+            code_challenge: q.get('code_challenge'), code_challenge_method: q.get('code_challenge_method') || 'S256', resource: q.get('resource'),
             name: new FormData(e.target).get('name'), platform: /claude/i.test(client.name) ? 'claude-ai' : 'chat',
           }),
         });

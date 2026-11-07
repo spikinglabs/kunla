@@ -468,3 +468,40 @@ describe('upgrading a Kunla made before there were several workspaces', () => {
     expect((await call('GET', '/api/integrations/github', ws.body.token)).body.secret_set).toBe(false);
   });
 });
+
+describe('one MCP address per workspace', () => {
+  it('serves /mcp/KEY for one workspace only and signs claude.ai in to that workspace', async () => {
+    const ws = (await call('POST', '/api/workspaces', human, { name: 'Community', key: 'COM' })).body;
+    const sl = (await call('GET', '/api/me', human)).body.workspace.key;
+    const ping = (path: string, token?: string) => call('POST', path, token, { jsonrpc: '2.0', id: 1, method: 'ping' });
+
+    // Plain /mcp keeps working with any token; /mcp/KEY only with that workspace's tokens.
+    expect((await ping('/mcp', ai)).status).toBe(200);
+    expect((await ping(`/mcp/${sl}`, ai)).status).toBe(200);
+    expect((await ping('/mcp/com', ws.token)).status).toBe(200);
+    const wrong = await ping('/mcp/COM', ai);
+    expect(wrong.status).toBe(401);
+    expect(wrong.headers.get('www-authenticate')).toContain('/.well-known/oauth-protected-resource/mcp/COM');
+    expect((await ping('/mcp/NOPE', ai)).status).toBe(404);
+
+    // OAuth discovery for the workspace address names it as the resource.
+    const pr = await call('GET', '/.well-known/oauth-protected-resource/mcp/COM');
+    expect(pr.body).toMatchObject({ resource: 'https://kunla.test/mcp/COM', authorization_servers: ['https://kunla.test'] });
+    expect((await call('GET', '/.well-known/oauth-authorization-server/mcp/COM')).body.token_endpoint).toBe('https://kunla.test/oauth/token');
+
+    // Approving with a token from another workspace is refused; with the right one the connector joins Community.
+    const reg = await call('POST', '/oauth/register', undefined, { client_name: 'claude.ai', redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] });
+    const approve = (token: string) => call('POST', '/oauth/approve', token, {
+      client_id: reg.body.client_id, redirect_uri: 'https://claude.ai/api/mcp/auth_callback', code_challenge: 'x'.repeat(43), code_challenge_method: 'S256',
+      resource: 'https://kunla.test/mcp/COM',
+    });
+    const refused = await approve(human);
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toContain('Community');
+    const ok = await approve(ws.token);
+    expect(ok.status).toBe(200);
+    const members = (await call('GET', '/api/members', ws.token)).body.map((m: any) => m.name);
+    expect(members).toContain("L's claude.ai");
+    expect((await call('GET', '/api/members', human)).body.map((m: any) => m.name)).not.toContain("L's claude.ai");
+  });
+});

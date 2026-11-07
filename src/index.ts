@@ -80,11 +80,17 @@ app.post('/hooks/github', async (c) => {
 app.get('/t/:key', (c) => c.redirect(`/app/#/t/${encodeURIComponent(c.req.param('key').toUpperCase())}`));
 
 // ---------- MCP ----------
-app.post('/mcp', async (c) => {
+// /mcp takes a token from any workspace. /mcp/<KEY> is the same server for one workspace only, so a
+// chat app that allows one connector per URL (claude.ai) can add one connector per workspace: OAuth on
+// that address signs in to that workspace, and a token from another workspace is turned away.
+async function handleMcp(c: C, wsKey?: string) {
   const ctx = await authenticate(c);
-  if (!ctx) {
-    return c.json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unauthorized' } }, 401, {
-      'WWW-Authenticate': `Bearer resource_metadata="${baseUrl(c)}/.well-known/oauth-protected-resource"`,
+  const space = wsKey ? await core.workspaceByKey(c.env.DB, wsKey) : null;
+  if (wsKey && !space) return c.json({ jsonrpc: '2.0', id: null, error: { code: -32004, message: `No workspace ${wsKey.toUpperCase()} on this Kunla.` } }, 404);
+  if (!ctx || (space && ctx.space !== space.id)) {
+    const meta = `${baseUrl(c)}/.well-known/oauth-protected-resource${space ? `/mcp/${space.key}` : ''}`;
+    return c.json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: ctx ? `This token belongs to another workspace; connect to ${space!.name} again.` : 'Unauthorized' } }, 401, {
+      'WWW-Authenticate': `Bearer resource_metadata="${meta}"`,
     });
   }
   let body: any;
@@ -95,9 +101,13 @@ app.post('/mcp', async (c) => {
   }
   const res = await handleRpc(ctx, body);
   return res ? c.json(res) : c.body(null, 202);
-});
-app.get('/mcp', (c) => c.body(null, 405, { Allow: 'POST' }));
-app.delete('/mcp', (c) => c.body(null, 405, { Allow: 'POST' }));
+}
+app.post('/mcp', (c) => handleMcp(c));
+app.post('/mcp/:ws', (c) => handleMcp(c, c.req.param('ws')));
+for (const path of ['/mcp', '/mcp/:ws']) {
+  app.get(path, (c) => c.body(null, 405, { Allow: 'POST' }));
+  app.delete(path, (c) => c.body(null, 405, { Allow: 'POST' }));
+}
 
 app.route('/', oauth);
 

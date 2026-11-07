@@ -191,6 +191,11 @@ export async function updateProject(c: Ctx, key: string, input: {
   return getProject(c, p.id);
 }
 
+/** A workspace by its key (for per-workspace addresses such as /mcp/KEY). */
+export async function workspaceByKey(db: D1Database, key: string): Promise<Project | null> {
+  return db.prepare(`SELECT * FROM projects WHERE key = ? AND kind = 'workspace'`).bind(key.toUpperCase()).first<Project>();
+}
+
 /** The workspace: the top of the hierarchy. Tasks with no project live here, and its playbook and rules apply everywhere. */
 export async function getWorkspace(c: Ctx): Promise<Project> {
   const w = await c.db.prepare(`SELECT * FROM projects WHERE id = ? AND kind = 'workspace'`).bind(c.space).first<Project>();
