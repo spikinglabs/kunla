@@ -2,6 +2,9 @@
 # set the repository variable KUNLA_AUTO_DEPLOY to "true". Needs secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID,
 # and the repository variable KUNLA_D1_ID (from `wrangler d1 create kunla`) unless wrangler.toml already has the id.
 # Optional secret KUNLA_SETUP_TOKEN: only someone who knows it can run first-time setup.
+# Optional variable KUNLA_DOMAIN (e.g. kunla.example.com): serve Kunla on that hostname as a Workers custom
+# domain. The domain's zone must be in the same Cloudflare account, and the API token needs Zone: Workers Routes
+# Edit, Zone: DNS Edit and Zone: Zone Read for it.
 name: Deploy
 on:
   workflow_dispatch:
@@ -21,6 +24,9 @@ jobs:
       - name: Use your D1 database
         if: vars.KUNLA_D1_ID != ''
         run: sed -i "s/REPLACE_WITH_YOUR_D1_ID/${{ vars.KUNLA_D1_ID }}/" wrangler.toml
+      - name: Use your domain
+        if: vars.KUNLA_DOMAIN != ''
+        run: sed -i '/^compatibility_date/a routes = [{ pattern = "${{ vars.KUNLA_DOMAIN }}", custom_domain = true }]' wrangler.toml
       - run: npm run deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
