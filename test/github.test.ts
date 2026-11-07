@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import app from '../src/index';
 import { makeD1 } from './d1-shim';
 import { findKeys, nextStatus, sign, verifySignature } from '../src/github';
+import { linkApp, APP_SECRET } from './gh-app';
 
 let env: any;
 let human: string;
@@ -18,8 +19,8 @@ const call = async (method: string, path: string, token?: string, body?: unknown
 };
 
 let delivery = 0;
-const hook = async (event: string, payload: unknown, opts: { secret?: string; signature?: string; delivery?: string } = {}) => {
-  const body = JSON.stringify(payload);
+const hook = async (event: string, payload: unknown, opts: { secret?: string; signature?: string; delivery?: string; installation?: number } = {}) => {
+  const body = JSON.stringify({ ...(payload as object), installation: { id: opts.installation ?? 42 } });
   const res = await app.fetch(new Request('https://kunla.test/hooks/github', {
     method: 'POST',
     headers: {
@@ -48,9 +49,8 @@ beforeEach(async () => {
   human = s.body.token;
   await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Pricing page' });       // MKT-1
   await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Launch email' });       // MKT-2
-  const g = await call('POST', '/api/integrations/github', human);
-  expect(g.status).toBe(200);
-  secret = g.body.secret;
+  await linkApp(env.DB);
+  secret = APP_SECRET;
 });
 
 describe('signature', () => {
@@ -63,27 +63,22 @@ describe('signature', () => {
     expect(await verifySignature(['s3cret'], '{"a":1}', null)).toBe(false);
     expect(await verifySignature(['s3cret'], '{"a":1}', 'sha1=abc')).toBe(false);
   });
-  it('rejects deliveries signed with the wrong secret, and replaced secrets', async () => {
+  it('rejects deliveries not signed by the Kunla app', async () => {
     expect((await hook('ping', {}, { secret: 'wrong' })).status).toBe(401);
     expect((await hook('ping', {}, { signature: 'sha256=00' })).status).toBe(401);
     expect((await hook('ping', {})).body).toMatchObject({ pong: true });
-    const old = secret;
-    secret = (await call('POST', '/api/integrations/github', human)).body.secret;
-    expect((await hook('ping', {}, { secret: old })).status).toBe(401);
-    expect((await hook('ping', {})).status).toBe(200);
   });
-  it('says GitHub is not connected when there is no secret, and accepts an env secret', async () => {
+  it('says GitHub is not connected when there is no app', async () => {
     env = { DB: makeD1() };
     expect((await hook('ping', {}, { secret: 'x' })).status).toBe(503);
-    env = { DB: makeD1(), GITHUB_WEBHOOK_SECRET: 'from-env' };
-    expect((await hook('ping', {}, { secret: 'from-env' })).status).toBe(200);
   });
-  it('lets only admins create the secret', async () => {
-    const a = await call('POST', '/api/members', human, { name: 'Bot', kind: 'ai' });
-    expect((await call('POST', '/api/integrations/github', a.body.token)).status).toBe(403);
+  it('shows the app, not secrets', async () => {
     const info = await call('GET', '/api/integrations/github', human);
-    expect(info.body).toMatchObject({ webhook_url: 'https://kunla.test/hooks/github', events: ['pull_request', 'push', 'check_suite'], secret_set: true });
-    expect(info.body.secret).toBeUndefined();
+    expect(info.body).toMatchObject({ webhook_url: 'https://kunla.test/hooks/github', events: ['pull_request', 'push', 'check_suite'], app: { registered: true, installations: [{ id: 42 }] } });
+    expect(JSON.stringify(info.body)).not.toContain(APP_SECRET);
+    const gone = (method: string, path: string) => app.fetch(new Request(`https://kunla.test${path}`, { method, headers: { authorization: `Bearer ${human}`, 'content-type': 'application/json' }, body: '{}' }), env);
+    expect((await gone('POST', '/api/integrations/github')).status).toBe(404); // no more hand-made secrets
+    expect((await gone('PUT', '/api/integrations/github/token')).status).toBe(404); // or personal tokens
   });
 });
 
@@ -196,19 +191,17 @@ describe('pushes', () => {
 });
 
 describe('webhooks with several workspaces', () => {
-  it('routes each delivery to the workspace whose secret signed it', async () => {
+  it('routes each delivery to the workspace its installation is linked to', async () => {
     const ws = (await call('POST', '/api/workspaces', human, { name: 'Community', key: 'COM' })).body;
     await call('POST', '/api/tasks', ws.token, { title: 'Meetup venue' });                     // COM-1
-    const other = (await call('POST', '/api/integrations/github', ws.token)).body.secret;
-    expect(other).not.toBe(secret);
-    // The Community secret can't touch MKT tasks, and the first workspace's secret can't touch COM tasks.
-    const a = await hook('pull_request', pr('opened', {}, { title: 'MKT-1 and COM-1', head: { ref: 'x' } }), { secret: other });
+    await linkApp(env.DB, { 42: 'workspace', 43: ws.workspace.id });
+    // The Community installation can't touch MKT tasks, and the first workspace's can't touch COM tasks.
+    const a = await hook('pull_request', pr('opened', {}, { title: 'MKT-1 and COM-1', head: { ref: 'x' } }), { installation: 43 });
     expect(a.body.updated.map((u: any) => u.key)).toEqual(['COM-1']);
     const b = await hook('pull_request', pr('opened', {}, { number: 8, html_url: 'https://github.com/acme/app/pull/8', title: 'MKT-2 and COM-1', head: { ref: 'y' } }));
     expect(b.body.updated.map((u: any) => u.key)).toEqual(['MKT-2']);
     expect((await call('GET', '/api/tasks/COM-1', ws.token)).body.status).toBe('review');
-    // Each workspace only sees its own last delivery and its own secret.
-    expect((await call('GET', '/api/integrations/github', ws.token)).body.secret_set).toBe(true);
+    expect((await call('GET', '/api/integrations/github', ws.token)).body.app.installations.map((i: any) => i.id)).toEqual([43]);
   });
 });
 
@@ -229,7 +222,7 @@ describe('delivery log', () => {
     expect(i.recent.map((r: any) => r.result)).toEqual(['No task key found in the commit messages', 'Updated MKT-1 → review']);
     expect(i.repos.map((r: any) => r.repo).sort()).toEqual(['acme/app', 'acme/site']);
   });
-  it('shows a delivery rejected for a wrong secret until a good one arrives', async () => {
+  it('shows a delivery from an old webhook until a good one arrives', async () => {
     await hook('ping', { repository: { full_name: 'acme/app' } }, { secret: 'old-secret' });
     let i = await info();
     expect(i.rejected).toMatchObject({ event: 'ping', repo: 'acme/app' });
@@ -237,6 +230,11 @@ describe('delivery log', () => {
     await hook('ping', { repository: { full_name: 'acme/app' } });
     i = await info();
     expect(i.rejected).toBeNull();
+  });
+  it("doesn't mistake the app's own first ping (before it is linked) for an old webhook", async () => {
+    await hook('ping', {}, { installation: 999 });
+    await hook('installation', { action: 'created' }, { installation: 999 });
+    expect((await info()).rejected).toBeNull();
   });
   it('keeps each workspace to its own deliveries', async () => {
     await hook('ping', { repository: { full_name: 'acme/app' } });

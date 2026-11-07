@@ -1090,7 +1090,7 @@ function showManage(m) {
 }
 
 // GitHub: one click with the Kunla GitHub App (Kunla registers it through GitHub's manifest flow, the
-// admin confirms on github.com and picks repositories). The hand-made webhook and token stay as a fallback.
+// admin confirms on github.com and picks repositories).
 const GH_BACK = {
   connected: 'Connected. Pull requests from those repositories now update their tasks.',
   updated: 'Saved your changes on GitHub.',
@@ -1098,15 +1098,11 @@ const GH_BACK = {
   exists: 'The Kunla app was already set up, so nothing changed. Tap Connect with GitHub to add repositories.',
   failed: "GitHub didn't finish connecting. Tap Connect with GitHub to try again.",
 };
-async function showGitHub(secret, back) {
+async function showGitHub(_unused, back) {
   if (back && GH_BACK[back]) toast(GH_BACK[back]);
-  const g = typeof secret === 'string' ? null : await api('GET', '/api/integrations/github');
-  const info = g || showGitHub.last;
-  showGitHub.last = info;
-  const fresh = typeof secret === 'string';
+  const info = await api('GET', '/api/integrations/github');
   const app = info.app || {};
   const installs = app.installations || [];
-  const manual = info.secret_set || info.merge_token_set;
   const appBlock = app.registered
     ? html`<div class="stack" style="gap:8px">
         ${raw(installs.length ? html`<div class="label">Installed on</div><ul class="hooklog">${raw(installs.map((i) => html`<li><b>${i.account || 'GitHub account'}</b><span></span><a href="${i.manage_url}" target="_blank" rel="noopener">Choose repositories</a></li>`).join(''))}</ul>` : '')}
@@ -1117,22 +1113,11 @@ async function showGitHub(secret, back) {
         <label class="row" style="gap:8px;font-size:14px"><input type="checkbox" name="merge" checked> Kunla merges a PR when you approve its task</label>
         <div class="row"><button class="btn go">Connect with GitHub</button></div>
         <p class="muted" style="font-size:13.5px">GitHub opens and asks you to create the Kunla app, then to pick repositories. Two taps. It asks only to read pull requests, checks and code, plus write code if Kunla merges for you.</p></form>`;
-  const manualBlock = html`<details class="hookmore"${manual && !app.registered ? ' open' : ''}><summary>Set it up by hand instead (webhook secret and token)</summary><div class="stack" style="gap:12px;margin-top:10px">
-      <div><button class="btn sm" data-act="click:make">${info.secret_set ? 'Make a new webhook secret' : 'Make a webhook secret'}</button></div>
-      ${raw(info.secret_set ? '<p class="muted" style="font-size:13.5px">A new secret replaces the old one at once; paste it into every repository that uses the old one.</p>' : '')}
-      <form class="stack" style="gap:6px" data-act="submit:token"><div class="label">Merge on approve</div>
-      <p class="muted" style="font-size:13.5px">${info.merge_token_set ? 'Kunla merges a task\'s PR with this token when you approve it (squash, once checks pass).' : 'A fine-grained token with Contents: Read and write on the repositories lets Kunla merge without the app.'}</p>
-      <div class="field"><label for="gh-t">GitHub token</label><input id="gh-t" name="token" type="password" autocomplete="off" placeholder="${info.merge_token_set ? 'Saved. Paste a new one to replace it.' : 'github_pat_...'}"></div>
-      <div class="row"><button class="btn">Save token</button>${raw(info.merge_token_set ? '<button class="btn quiet" type="button" data-act="click:untoken">Remove</button>' : '')}</div></form></div></details>`;
   openSheet(html`<div class="sheet-body stack">
     <div><h2>Connect GitHub</h2><p class="muted">Pull requests and commits that mention a task key (like ${projects[0]?.key || 'MKT'}-12 in the title, branch, description or a commit message) then show up on the task without anyone logging them. An opened PR sends the task to Review with the PR attached; a merged PR finishes it, or waits for a person's review if the project asks for one.</p></div>
-    ${raw(fresh ? '' : hookStatus(info))}
-    ${raw(fresh ? '' : appBlock)}
-    ${raw(fresh ? html`<ol class="steps"><li>In the GitHub repository, open <b>Settings → Webhooks → Add webhook</b>.</li><li>Paste these values. Kunla shows the secret only once.</li></ol>
-      ${raw(copyBlock('Payload URL', info.webhook_url))}${raw(copyBlock('Secret', secret, { secret: true }))}
-      <ol class="steps" start="3"><li>Content type: <b>application/json</b>. Events: choose <b>Let me select individual events</b>, then tick <b>Pull requests</b>, <b>Pushes</b> and <b>Check suites</b>.</li><li>Click <b>Add webhook</b>. GitHub sends a ping, and this page shows when it arrived.</li></ol>` : '')}
-    ${raw(fresh ? '' : manualBlock)}
-    <div class="row"><button class="btn quiet" data-act="click:close">${fresh ? "I've saved it" : 'Close'}</button></div></div>`, {
+    ${raw(hookStatus(info))}
+    ${raw(appBlock)}
+    <div class="row"><button class="btn quiet" data-act="click:close">Close</button></div></div>`, {
     connectApp: async (f) => {
       const d = f?.tagName === 'FORM' ? formData(f) : {};
       const r = await api('POST', '/api/integrations/github/app', { org: d.org || '', merge: f?.tagName === 'FORM' ? !!d.merge : undefined });
@@ -1143,11 +1128,8 @@ async function showGitHub(secret, back) {
       const input = document.createElement('input'); input.type = 'hidden'; input.name = 'manifest'; input.value = r.manifest;
       form.append(input); document.body.append(form); form.submit();
     },
-    token: async (f) => { const v = formData(f).token; if (!v) return toast('Paste a token first.'); await api('PUT', '/api/integrations/github/token', { token: v }); toast('Saved. Approving now merges PRs.'); showGitHub(); },
-    untoken: async () => { await api('PUT', '/api/integrations/github/token', { token: null }); toast('Removed.'); showGitHub(); },
-    make: async () => { const r = await api('POST', '/api/integrations/github'); showGitHub.last = r; showGitHub(r.secret); },
     recheck: () => showGitHub(),
-  }, { sticky: fresh, focus: false });
+  }, { focus: false });
 }
 
 // What GitHub has sent: the state in one sentence, each repository's latest delivery, and the last few.
@@ -1156,17 +1138,17 @@ function hookStatus(info) {
   const ok = (st) => st < 300;
   // One big status a person can read at a glance: connected, wrong secret, waiting, or not set up.
   const names = repos.map((r) => r.repo);
+  const installs = info.app?.installations || [];
   const [state, title, sub] = info.rejected
-    ? ['bad', "GitHub reached Kunla, but the secret doesn't match", `${info.rejected.repo || 'A repository'} tried ${agoLong(info.rejected.created_at)}. Paste the current secret into that webhook, or make a new secret and paste it there.`]
-    : info.last_delivery_at ? ['ok', 'Connected', `Last heard from GitHub ${agoLong(info.last_delivery_at)}${names.length ? ` · ${names.length === 1 ? names[0] : `${names.length} repositories`}` : ''}`]
-    : info.app?.installations?.length ? ['ok', 'Connected', `The Kunla app is installed on ${info.app.installations.map((i) => i.account).join(', ')}. Events show here as they arrive.`]
-    : info.secret_set ? ['wait', 'Waiting for GitHub', "The secret is made, but nothing has arrived yet. If you've added the webhook, check its Recent Deliveries on GitHub (see below)."]
+    ? ['bad', 'An old webhook is still sending', `${info.rejected.repo || 'A repository'} sent an event ${agoLong(info.rejected.created_at)} that the Kunla app didn't sign. Delete the old Kunla webhook in that repository's Settings → Webhooks; the app already delivers everything.`]
+    : installs.length ? ['ok', 'Connected', info.last_delivery_at ? `Last heard from GitHub ${agoLong(info.last_delivery_at)}${names.length ? ` · ${names.length === 1 ? names[0] : `${names.length} repositories`}` : ''}` : `The Kunla app is installed on ${installs.map((i) => i.account).join(', ')}. Events show here as they arrive.`]
+    : info.app?.registered ? ['wait', 'Almost there', 'The Kunla app exists. Tap Connect with GitHub and pick the repositories for this workspace.']
     : ['off', 'Not connected', 'Tap Connect with GitHub and pick the repositories.'];
   const line = html`<div class="hookstate ${state}" role="status"><span class="dot" aria-hidden="true"></span><div><div class="t">${title}</div><div class="s">${sub}</div></div></div>`;
   const repoList = repos.length ? html`<div class="stack" style="gap:6px"><div class="label">Repositories sending events</div><ul class="hooklog">${raw(repos.map((r) => html`<li><b>${r.repo}</b><span class="${ok(r.status) ? '' : 'bad'}">${r.result}</span><time>${agoLong(r.created_at)}</time></li>`).join(''))}</ul></div>` : '';
   const recentList = recent.length ? html`<details class="hookmore"><summary>Last ${recent.length} deliveries</summary><ul class="hooklog">${raw(recent.map((r) => html`<li><b>${r.event.replace('_', ' ')}</b>${r.repo ? html` <span class="muted">${r.repo}</span>` : ''}<span class="${ok(r.status) ? '' : 'bad'}">${r.result}</span><time>${agoLong(r.created_at)}</time></li>`).join(''))}</ul></details>` : '';
-  const help = info.secret_set ? html`<details class="hookmore"${info.last_delivery_at && !info.rejected ? '' : ' open'}><summary>Check it on GitHub</summary><ol class="steps"><li>In the repository, open <b>Settings → Webhooks</b> and click the Kunla webhook (${info.webhook_url}).</li><li>Open <b>Recent Deliveries</b>. A green tick means Kunla answered. A red mark shows Kunla's reply under <b>Response</b>: 401 means the secret doesn't match, and a timeout or 404 means the Payload URL is wrong.</li><li>Click <b>Redeliver</b> on the ping, then <b>Check again</b> here.</li></ol></details>` : '';
-  return html`<div class="stack" style="gap:10px">${raw(line)}${raw(repoList)}${raw(recentList)}${raw(help)}${raw(info.secret_set ? '<div><button class="btn sm" type="button" data-act="click:recheck">Check again</button></div>' : '')}</div>`;
+  const help = installs.length && info.app?.settings_url ? html`<details class="hookmore"><summary>Check it on GitHub</summary><ol class="steps"><li>Open the <a href="${info.app.settings_url}/advanced" target="_blank" rel="noopener">app's Advanced settings</a> on GitHub.</li><li>Under <b>Recent Deliveries</b>, a green tick means Kunla answered. A red mark shows Kunla's reply under <b>Response</b>.</li><li>Click <b>Redeliver</b>, then <b>Check again</b> here.</li></ol></details>` : '';
+  return html`<div class="stack" style="gap:10px">${raw(line)}${raw(repoList)}${raw(recentList)}${raw(help)}${raw(installs.length ? '<div><button class="btn sm" type="button" data-act="click:recheck">Check again</button></div>' : '')}</div>`;
 }
 
 const PROJECT_NOTE = `Use the Kunla connector as this project's record of work.

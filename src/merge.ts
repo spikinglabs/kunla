@@ -3,11 +3,10 @@
 // Kunla merges it itself; without one, the woken agent is told to merge it. Red checks or a conflict
 // send the task back to the agent with the reason. Nothing polls: waiting for checks rides on
 // GitHub's check_suite webhook.
-import { KunlaError, type Ctx, type Task } from './core';
+import { type Ctx, type Task } from './core';
 import { wakeMember } from './wake';
 import { installationToken, getApp, installations } from './githubapp';
 
-const TOKEN_KEY = 'github_token';
 const WAIT_PREFIX = 'merge_wait:';
 const API = 'https://api.github.com';
 
@@ -25,7 +24,7 @@ export function prFromLinks(links: { url: string }[]): PrRef | null {
 }
 
 // Settings are per workspace: the first workspace keeps the plain key, others append ':<space_id>'
-// (the same scheme as the webhook secret). GITHUB_TOKEN, an env var, belongs to the first workspace.
+// (the same scheme as other per-workspace settings).
 async function firstSpace(db: D1Database): Promise<string> {
   const r = await db.prepare(`SELECT id FROM projects WHERE kind = 'workspace' ORDER BY created_at LIMIT 1`).first<{ id: string }>();
   return r?.id ?? 'workspace';
@@ -40,33 +39,15 @@ export async function taskPr(db: D1Database, taskId: string): Promise<PrRef | nu
   return prFromLinks(rows);
 }
 
-/** The personal token an admin stored (or GITHUB_TOKEN), if any. */
-export async function getToken(c: Pick<Ctx, 'db' | 'githubToken' | 'space'>): Promise<string | null> {
-  const key = await scoped(c.db, c.space, TOKEN_KEY);
-  const r = await c.db.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first<{ value: string }>();
-  return r?.value || (key === TOKEN_KEY ? c.githubToken : null) || null;
+/** A token that can act on this PR: a short-lived installation token of the Kunla app, if it's installed here. */
+export async function tokenFor(c: Pick<Ctx, 'db' | 'space'>, pr: PrRef, fetcher: typeof fetch = fetch): Promise<string | null> {
+  return installationToken(c, pr.owner, pr.repo, fetcher).catch(() => null);
 }
 
-/** A token that can act on this PR: the stored personal token, else the Kunla app's installation token. */
-export async function tokenFor(c: Pick<Ctx, 'db' | 'githubToken' | 'space'>, pr: PrRef, fetcher: typeof fetch = fetch): Promise<string | null> {
-  return (await getToken(c)) || (await installationToken(c, pr.owner, pr.repo, fetcher).catch(() => null));
-}
-
-/** Can Kunla merge PRs itself in this workspace? (A personal token, or the app with merge rights installed here.) */
-export async function canMerge(c: Pick<Ctx, 'db' | 'githubToken' | 'space'>): Promise<boolean> {
-  if (await getToken(c)) return true;
+/** Can Kunla merge PRs itself in this workspace? (The app, with merge rights, installed here.) */
+export async function canMerge(c: Pick<Ctx, 'db' | 'space'>): Promise<boolean> {
   const app = await getApp(c.db);
   return !!app?.merge && (await installations(c.db, c.space)).length > 0;
-}
-
-/** An admin stores (or clears) the token Kunla merges with: a fine-grained token with Pull requests and Contents write. */
-export async function setToken(c: Ctx, token: string | null) {
-  if (c.me.kind !== 'human' || !JSON.parse(c.me.roles || '[]').includes('admin')) throw new KunlaError(403, 'Only admins can set the GitHub token.');
-  const key = await scoped(c.db, c.space, TOKEN_KEY);
-  if (token?.trim()) await c.db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
-    .bind(key, token.trim(), new Date().toISOString()).run();
-  else await c.db.prepare('DELETE FROM settings WHERE key = ?').bind(key).run();
-  return { merge_token_set: !!token?.trim() };
 }
 
 const gh = (token: string, fetcher: typeof fetch) => async (method: string, path: string, body?: unknown) => {

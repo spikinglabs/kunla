@@ -10,7 +10,7 @@
 //
 // Permissions are the fewest that work: metadata, pull requests and checks read; contents read, or
 // write only when the admin lets Kunla merge approved PRs (GitHub's merge API needs contents write).
-// The manual webhook secret and personal token in github.ts / merge.ts keep working for self-hosters.
+// This is the only way to connect GitHub: hand-made webhook secrets and personal tokens are gone.
 import { KunlaError, type Ctx } from './core';
 
 const APP_KEY = 'github_app';                 // deployment-wide: {id, slug, pem, webhook_secret, ...}

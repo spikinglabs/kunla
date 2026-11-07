@@ -3,9 +3,10 @@ import app from '../src/index';
 import { makeD1 } from './d1-shim';
 import { sign } from '../src/github';
 import { prFromLinks } from '../src/merge';
+import { linkApp, APP_SECRET } from './gh-app';
 
 let env: any;
-let human: string, ai: string, aiId: string, hookSecret: string;
+let human: string, ai: string, aiId: string;
 let pending: Promise<unknown>[] = [];
 type Gh = { pr: any; runs: any[]; mergeStatus?: number };
 let gh: Gh;
@@ -32,6 +33,8 @@ beforeEach(async () => {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ method: init?.method ?? 'GET', url, body });
     if (url.includes('agent.test')) return new Response('ok');
+    if (url.endsWith('/repos/acme/app/installation')) return json({ id: 42 });
+    if (url.endsWith('/app/installations/42/access_tokens')) return json({ token: 'ghs_install' }, 201);
     if (url.endsWith('/pulls/7')) return json(gh.pr);
     if (url.includes('/check-runs')) return json({ check_runs: gh.runs });
     if (url.endsWith('/pulls/7/merge')) return gh.mergeStatus ? json({ message: 'Base branch was modified' }, gh.mergeStatus) : json({ sha: 'merged1', merged: true });
@@ -42,7 +45,6 @@ beforeEach(async () => {
   const a = await call('POST', '/api/members', human, { name: 'Coder', kind: 'ai' });
   ai = a.body.token; aiId = a.body.member.id;
   await call('PUT', `/api/members/${aiId}/wake`, human, { url: 'https://agent.test/wake' });
-  hookSecret = (await call('POST', '/api/integrations/github', human)).body.secret;
   await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Pricing page' });
   await call('POST', '/api/tasks/MKT-1/claim', ai);
   await call('POST', '/api/tasks/MKT-1/submit', ai, { summary: 'Done', deliverables: [{ url: 'https://github.com/acme/app/pull/7' }] });
@@ -51,7 +53,7 @@ beforeEach(async () => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 const approve = () => call('POST', '/api/tasks/MKT-1/review', human, { verdict: 'approved' });
-const setToken = () => call('PUT', '/api/integrations/github/token', human, { token: 'ghp_merge' });
+const setToken = () => linkApp(env.DB);
 const wakeBody = () => calls.find((c) => c.url.includes('agent.test'))?.body;
 
 describe('approve = merge', () => {
@@ -68,9 +70,8 @@ describe('approve = merge', () => {
   });
 
   it('with a token and green checks, squash-merges the PR and notes it', async () => {
-    expect((await call('PUT', '/api/integrations/github/token', ai, { token: 'x' })).status).toBe(403);
     await setToken();
-    expect((await call('GET', '/api/integrations/github', human)).body.merge_token_set).toBe(true);
+    expect((await call('GET', '/api/integrations/github', human)).body.merge_ready).toBe(true);
     const card = await call('GET', '/api/tasks/MKT-1/pr', human);
     expect(card.body).toMatchObject({ merge_by: 'kunla', checks: 'green', state: 'open', conflict: false });
     calls = [];
@@ -110,23 +111,19 @@ describe('approve = merge', () => {
     expect(calls.some((c) => c.method === 'PUT')).toBe(false);
     expect((await task('MKT-1')).history.map((e: any) => e.type)).toContain('merge_waiting');
     gh.runs = [{ status: 'completed', conclusion: 'success' }];
-    const payload = JSON.stringify({ action: 'completed', check_suite: { conclusion: 'success', pull_requests: [{ number: 7 }] }, repository: { full_name: 'acme/app' } });
+    const payload = JSON.stringify({ action: 'completed', check_suite: { conclusion: 'success', pull_requests: [{ number: 7 }] }, repository: { full_name: 'acme/app' }, installation: { id: 42 } });
     const res = await app.fetch(new Request('https://kunla.test/hooks/github', { method: 'POST', body: payload,
-      headers: { 'content-type': 'application/json', 'x-github-event': 'check_suite', 'x-github-delivery': 'cs1', 'x-hub-signature-256': await sign(hookSecret, payload) } }), env, exec);
+      headers: { 'content-type': 'application/json', 'x-github-event': 'check_suite', 'x-github-delivery': 'cs1', 'x-hub-signature-256': await sign(APP_SECRET, payload) } }), env, exec);
     await flush();
     expect((await res.json<any>()).merged).toEqual(['MKT-1:merged']);
     const m = calls.find((c) => c.method === 'PUT');
     expect(m!.body.commit_message).toContain('Approved in Kunla by L');
   });
 
-  it('keeps the merge token per workspace', async () => {
+  it('merges only for the workspace the app is installed in', async () => {
     await setToken();
     const ws = (await call('POST', '/api/workspaces', human, { name: 'Community' })).body;
-    expect((await call('GET', '/api/integrations/github', ws.token)).body.merge_token_set).toBe(false);
-    expect((await call('GET', '/api/integrations/github', human)).body.merge_token_set).toBe(true);
-    await call('PUT', '/api/integrations/github/token', ws.token, { token: 'ghp_other' });
-    await call('PUT', '/api/integrations/github/token', human, { token: null });
-    expect((await call('GET', '/api/integrations/github', ws.token)).body.merge_token_set).toBe(true);
-    expect((await call('GET', '/api/integrations/github', human)).body.merge_token_set).toBe(false);
+    expect((await call('GET', '/api/integrations/github', ws.token)).body.merge_ready).toBe(false);
+    expect((await call('GET', '/api/integrations/github', human)).body.merge_ready).toBe(true);
   });
 });
