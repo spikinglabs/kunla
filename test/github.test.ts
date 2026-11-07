@@ -137,6 +137,15 @@ describe('pull requests', () => {
     expect((await task('MKT-2')).status).toBe('done');
   });
 
+  it('does not finish a parent on merge while it has open sub-tasks', async () => {
+    await call('PATCH', '/api/projects/MKT', human, { require_human_review: false });
+    await call('POST', '/api/tasks', human, { parent: 'MKT-1', title: 'Connect the repo' }); // MKT-3
+    await hook('pull_request', pr('closed', {}, { merged: true }));
+    const t = await task('MKT-1');
+    expect(t.status).toBe('ready');
+    expect(t.history[0].note).toContain('MKT-1 finishes when MKT-3 is done');
+  });
+
   it('keeps drafts in progress and ignores PRs closed without merging', async () => {
     await hook('pull_request', pr('opened', {}, { draft: true }));
     expect((await task('MKT-1')).status).toBe('in_progress');

@@ -12,4 +12,4 @@ This repo is Kunla. Work on it is tracked in Kunla itself (dogfooding).
 1. Before starting, get the task (`get_task` or `kunla show KEY`) and follow its brief, playbook and project rules.
 2. Cite the task key in every output: `Task: KEY <link>` commit trailer, `key-slug` branch, `KEY: title` PR.
 3. Record progress with `log_work` in one sentence. Work without a task still gets logged; Kunla creates the key.
-4. Finish with `submit_for_review` and at least one deliverable link. Blocked? `update_task` with `blocked_question`.
+4. Finish with `submit_for_review` and at least one deliverable link. Pass `session` (a link to your chat or agent session) when you claim, log or submit, so people can open the conversation from the task. Blocked? `update_task` with `blocked_question`.
