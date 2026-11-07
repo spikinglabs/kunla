@@ -434,6 +434,45 @@ function subline(brief, pulse) {
   return out.join(' ');
 }
 
+// Horizontal swipe on a card deck. Vertical scrolling stays with the browser (touch-action: pan-y),
+// and a swipe that starts in a text field or while text is selected is ignored.
+function swipeDeck(el, go) {
+  let x0 = 0, y0 = 0, t0 = 0, dx = 0, mode = null;
+  const card = () => el.firstElementChild;
+  el.addEventListener('touchstart', (e) => {
+    mode = null; dx = 0;
+    if (e.touches.length !== 1 || e.target.closest('textarea, input, select, [contenteditable]') || String(getSelection())) { mode = 'off'; return; }
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (mode === 'off' || e.touches.length !== 1) return;
+    const mx = e.touches[0].clientX - x0, my = e.touches[0].clientY - y0;
+    if (!mode) {
+      if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
+      mode = Math.abs(mx) > Math.abs(my) * 1.3 ? 'x' : 'off';
+      if (mode === 'off') return;
+    }
+    dx = mx;
+    const c = card(); if (c) { c.style.transition = 'none'; c.style.transform = `translateX(${dx}px) rotate(${dx / 60}deg)`; }
+  }, { passive: true });
+  const end = () => {
+    if (mode !== 'x') { mode = null; return; }
+    mode = null;
+    const c = card(); if (!c) return;
+    const fast = Math.abs(dx) / Math.max(1, Date.now() - t0) > 0.5;
+    if (Math.abs(dx) > Math.min(90, el.clientWidth * 0.25) || (fast && Math.abs(dx) > 30)) {
+      const dir = dx < 0 ? 1 : -1;
+      c.style.transition = 'transform .16s ease-out, opacity .16s ease-out';
+      c.style.transform = `translateX(${-dir * el.clientWidth}px) rotate(${-dir * 6}deg)`; c.style.opacity = '0';
+      setTimeout(() => go(dir), 150);
+    } else {
+      c.style.transition = 'transform .2s ease'; c.style.transform = '';
+    }
+  };
+  el.addEventListener('touchend', end);
+  el.addEventListener('touchcancel', end);
+}
+
 async function viewBriefing() {
   renderShell('');
   const [inbox, brief, pulse, rules, prog] = await Promise.all([
@@ -498,6 +537,9 @@ async function viewBriefing() {
     else if (k === 'k') { e.preventDefault(); deck.i = (deck.i - 1 + items.length) % items.length; viewBriefing(); }
     else if (k === 'enter' && cur) location.hash = `#/t/${cur.task.key}`;
   };
+  // Swipe left or right on the card for the next or previous decision.
+  const deckEl = $app.querySelector('.deck');
+  if (deckEl && items.length > 1) swipeDeck(deckEl, (dir) => { deck.i = (deck.i + dir + items.length) % items.length; viewBriefing(); });
   // ⌘↵ sends an answer from the textarea.
   $app.querySelectorAll('textarea[name=answer]').forEach((ta) => ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ta.form.requestSubmit(); }));
   // What waits on you in your other workspaces, asked directly from each one.
