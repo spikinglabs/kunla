@@ -257,6 +257,48 @@ describe('later (parked tasks)', () => {
   });
 });
 
+describe('parents and sub-tasks', () => {
+  it('records approval of a parent but finishes it only when its last sub-task does', async () => {
+    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Webhooks' });                 // MKT-1
+    await call('POST', '/api/tasks', human, { parent: 'MKT-1', title: 'Endpoint' });                // MKT-2
+    await call('POST', '/api/tasks', human, { parent: 'MKT-1', title: 'Connect the repo' });        // MKT-3
+    await tool(ai, 'claim_task', { key: 'MKT-1' });
+    await tool(ai, 'submit_for_review', { key: 'MKT-1', summary: 'Built it', deliverables: [{ url: 'https://github.com/a/b/pull/1' }] });
+    const r = await call('POST', '/api/tasks/MKT-1/review', human, { verdict: 'approved' });
+    expect(r.body).toMatchObject({ status: 'in_progress', lease_expires_at: null });
+    const t = await call('GET', '/api/tasks/MKT-1', human);
+    expect(t.body.history[0]).toMatchObject({ type: 'approved' });
+    expect(t.body.history[0].note).toContain('finishes when MKT-2, MKT-3 are done');
+    // The agent is not sent back to a parent that only waits on sub-tasks.
+    const next = await tool(ai, 'next_task');
+    expect(next.data.task?.key).not.toBe('MKT-1');
+    // Moving it to Done by hand says what is still open.
+    const done = await call('PATCH', '/api/tasks/MKT-1', human, { status: 'done' });
+    expect(done.status).toBe(409);
+    expect(done.body.error).toContain('MKT-2, MKT-3');
+    await call('PATCH', '/api/tasks/MKT-2', human, { status: 'done' });
+    await call('PATCH', '/api/tasks/MKT-3', human, { status: 'declined' });
+    expect((await call('GET', '/api/tasks/MKT-1', human)).body.status).toBe('done');
+  });
+});
+
+describe('session links', () => {
+  it('remembers the chats and sessions that worked on a task, once each', async () => {
+    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Pricing page' });
+    const chat = 'https://claude.ai/code/session_01abc';
+    await tool(ai, 'claim_task', { key: 'MKT-1', session: chat });
+    await tool(ai, 'log_work', { task: 'MKT-1', summary: 'Drafted', session: chat });
+    await tool(ai, 'update_task', { key: 'MKT-1', note: 'local run', session: 'claude --resume 1234' });
+    const t = await call('GET', '/api/tasks/MKT-1', human);
+    expect(t.body.sessions).toEqual([
+      expect.objectContaining({ ref: chat, url: chat, member: "L's Claude Code", member_kind: 'ai' }),
+      expect.objectContaining({ ref: 'claude --resume 1234', url: null }),
+    ]);
+    const logged = await tool(ai, 'log_work', { summary: 'Chat-only analysis', session: 'https://claude.ai/chat/xyz' });
+    expect(logged.data.sessions[0].url).toBe('https://claude.ai/chat/xyz');
+  });
+});
+
 describe('managing connections', () => {
   it('reuses an agent connected twice under the same name', async () => {
     const again = await call('POST', '/api/members', human, { name: "l's claude code", kind: 'ai', platform: 'claude-code' });
