@@ -57,7 +57,7 @@ app.post('/api/setup', async (c) => {
   if (c.env.SETUP_TOKEN && body.setup_token !== c.env.SETUP_TOKEN) return c.json({ error: 'Wrong setup token.' }, 403);
   return c.json(await core.setup(c.env.DB, body));
 });
-app.get('/t/:key', (c) => c.redirect(`/#/t/${encodeURIComponent(c.req.param('key').toUpperCase())}`));
+app.get('/t/:key', (c) => c.redirect(`/app/#/t/${encodeURIComponent(c.req.param('key').toUpperCase())}`));
 
 // ---------- MCP ----------
 app.post('/mcp', async (c) => {

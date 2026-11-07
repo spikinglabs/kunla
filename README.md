@@ -32,7 +32,7 @@ node scripts/demo-seed.mjs http://localhost:8787   # optional demo team; prints 
 npm test
 ```
 
-Open http://localhost:8787. On a fresh database you'll see the setup screen: your name and a first project. Kunla shows your personal token once; keep it in a password manager.
+Open http://localhost:8787/app/. On a fresh database you'll see the setup screen: your name and a first project. Kunla shows your personal token once; keep it in a password manager.
 
 ## Deploy to your Cloudflare account
 
@@ -43,7 +43,7 @@ npx wrangler secret put SETUP_TOKEN   # so only you can run first-time setup
 npm run deploy                        # applies migrations, then deploys
 ```
 
-Open your Worker's URL and complete setup with the setup token.
+Open your Worker's URL plus `/app/` and complete setup with the setup token.
 
 **Your own domain:** add `routes = [{ pattern = "kunla.example.com", custom_domain = true }]` under `compatibility_date` in `wrangler.toml` (the domain's zone must be on the same Cloudflare account). Cloudflare creates the DNS record and certificate.
 
@@ -101,7 +101,9 @@ Tool replies can carry a one-line reminder (for example "MKT-51 has no update fo
 ## Architecture
 
 ```
-public/            static web app (no build step), served free by Workers static assets
+public/            static files (no build step), served free by Workers static assets
+  index.html       the landing page at /; old /#/... links and signed-in people go on to /app/
+  app/index.html   the web app at /app/ (app.js and style.css stay at the root)
 src/index.ts       Hono Worker: REST API, MCP endpoint, OAuth routes
 src/core.ts        the record of work: plain SQL, no Cloudflare-only features
 src/mcp.ts         MCP tools (Streamable HTTP, stateless)
