@@ -662,7 +662,7 @@ export async function projectStatus(c: Ctx, project?: string) {
     blocked: active.filter((t) => t.status === 'blocked').map((t) => ({ key: t.key, title: t.title, question: t.blocked_question })),
     who_is_on_what: [...byMember.values()],
     recent,
-    link: `${c.baseUrl}/#/status${p ? '/' + p.key : ''}`,
+    link: `${c.baseUrl}/app/#/status${p ? '/' + p.key : ''}`,
   };
 }
 
