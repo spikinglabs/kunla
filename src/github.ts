@@ -167,9 +167,12 @@ async function onPullRequest(c: core.Ctx, p: any): Promise<Result> {
     // title, or the webhook connected after the PR was opened); then it counts as the PR opening.
     const effective: PrMove = move === 'link' ? (isNew ? (pr.draft ? 'draft' : 'opened') : 'link') : move;
     if (effective === 'link') continue;
-    const to = nextStatus(t.status, effective, !!t.rhr);
+    let to = nextStatus(t.status, effective, !!t.rhr);
+    const open = to === 'done' ? await core.openSubtasks(c.db, t.id) : [];
+    if (open.length) to = null; // a parent finishes only when its last sub-task does
     const verb = { opened: 'opened', draft: 'opened as a draft', merged: 'merged', closed: 'closed without merging', link: '' }[effective];
-    const what = effective === 'merged' && (to ?? t.status) === 'review' ? `${ref} merged; waiting for a person's review` : `${ref} ${verb}`;
+    const what = open.length ? `${ref} merged; ${t.key} finishes when ${open.join(', ')} ${open.length === 1 ? 'is' : 'are'} done`
+      : effective === 'merged' && (to ?? t.status) === 'review' ? `${ref} merged; waiting for a person's review` : `${ref} ${verb}`;
     if (to && to !== t.status) {
       const fields: Partial<Task> = { status: to };
       if (to === 'review' || to === 'done') { fields.lease_expires_at = null; fields.blocked_question = null; fields.blocked_on_id = null; }

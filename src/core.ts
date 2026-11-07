@@ -1,3 +1,5 @@
+import { wakeMember, publicCallback, type Wake } from './wake';
+
 // Kunla core: the record of work. Everything here is plain SQL over a D1-compatible
 // database, so the same code runs on Cloudflare D1, a SQLite file, or (later) Postgres.
 
@@ -11,6 +13,7 @@ const PROPOSAL_DAYS = 14; // proposals nobody triaged are tidied away after this
 export interface Member {
   id: string; name: string; kind: Kind; platform: string | null;
   sponsor_id: string | null; roles: string; scope: string; created_at: string; space_id: string;
+  callback?: string | null; // wake-up URL settings (JSON); never sent to clients
 }
 export interface Project {
   id: string; key: string; name: string; playbook: string;
@@ -36,6 +39,8 @@ export interface Ctx {
   baseUrl: string;      // e.g. https://kunla.example.com
   leaseMinutes: number;
   now?: () => Date;
+  /** Hand off a wake-up call for an agent; the Worker sends it after the response. Absent means no wake-ups. */
+  notify?: (w: Wake) => void;
 }
 
 const id = () => crypto.randomUUID();
@@ -213,6 +218,12 @@ export async function listMembers(c: Ctx) {
   return (await c.db.prepare('SELECT * FROM members WHERE removed_at IS NULL AND space_id = ? ORDER BY kind DESC, created_at').bind(c.space).all<Member>()).results;
 }
 
+/** A member as the API shows it: the wake-up secret and auth header never leave the server. */
+export function safeMember<T extends Member>(m: T) {
+  const { callback, ...rest } = m;
+  return { ...rest, wake: publicCallback(callback) };
+}
+
 export async function getMember(c: Ctx, idOrName: string): Promise<Member> {
   const m = await c.db.prepare('SELECT * FROM members WHERE (id = ? OR lower(name) = lower(?)) AND space_id = ? ORDER BY removed_at IS NOT NULL LIMIT 1').bind(idOrName, idOrName, c.space).first<Member>();
   if (!m) throw new KunlaError(404, `No member ${idOrName}.`);
@@ -231,7 +242,7 @@ export async function addMember(c: Ctx, input: { name: string; kind: Kind; platf
   if (input.kind === 'ai') {
     const same = await c.db.prepare(`SELECT * FROM members WHERE kind = 'ai' AND sponsor_id = ? AND lower(name) = lower(?) AND removed_at IS NULL AND space_id = ?`)
       .bind(c.me.id, name, c.space).first<Member>();
-    if (same) return { member: same, token: await issueToken(c.db, same.id, input.platform || 'ai'), reconnected: true };
+    if (same) return { member: safeMember(same), token: await issueToken(c.db, same.id, input.platform || 'ai'), reconnected: true };
   }
   await assertNameFree(c, name);
   const mid = id();
@@ -239,7 +250,7 @@ export async function addMember(c: Ctx, input: { name: string; kind: Kind; platf
     mid, name, input.kind === 'ai' ? 'ai' : 'human', input.platform ?? null,
     input.kind === 'ai' ? c.me.id : null, JSON.stringify(input.roles ?? []), c.space, nowIso(c)).run();
   const token = await issueToken(c.db, mid, input.platform || input.kind);
-  return { member: await getMember(c, mid), token, reconnected: false };
+  return { member: safeMember(await getMember(c, mid)), token, reconnected: false };
 }
 
 async function assertNameFree(c: Ctx, name: string, except?: string) {
@@ -267,12 +278,35 @@ export async function updateMember(c: Ctx, memberId: string, input: { name?: str
   return { id: after.id, name: after.name, scope: parseList(after.scope) };
 }
 
+/**
+ * Set or clear an agent's wake-up URL. Returns the signing secret once (a new one each time the URL
+ * is saved). format 'github_dispatch' calls GitHub's repository_dispatch API, so a GitHub Action
+ * (such as Claude Code) runs when Kunla calls; auth is then 'Bearer <GitHub token>'.
+ */
+export async function setCallback(c: Ctx, memberId: string, input: { url?: string | null; format?: string; auth?: string | null } | null) {
+  const m = await getMember(c, memberId);
+  assertCanManage(c, m);
+  if (m.kind !== 'ai') throw new KunlaError(400, 'Only agents have a wake-up URL.');
+  if (!input || !input.url) {
+    await c.db.prepare('UPDATE members SET callback = NULL WHERE id = ?').bind(m.id).run();
+    return { id: m.id, callback: null };
+  }
+  const url = String(input.url).trim();
+  if (!/^https:\/\//i.test(url)) throw new KunlaError(400, 'The wake-up URL must start with https://.');
+  const format = input.format === 'github_dispatch' || /api\.github\.com\/repos\/.+\/dispatches$/.test(url) ? 'github_dispatch' : 'kunla';
+  const auth = input.auth?.trim() ? (/^(bearer|token|basic) /i.test(input.auth.trim()) ? input.auth.trim() : `Bearer ${input.auth.trim()}`) : null;
+  const secret = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const cb = JSON.stringify({ url, format, secret, auth });
+  await c.db.prepare('UPDATE members SET callback = ? WHERE id = ?').bind(cb, m.id).run();
+  return { id: m.id, callback: publicCallback(cb), secret };
+}
+
 /** Revoke every token a member has and issue one new one. The old ones stop working at once. */
 export async function rotateToken(c: Ctx, memberId: string) {
   const m = await getMember(c, memberId);
   assertCanManage(c, m);
   await c.db.prepare('UPDATE tokens SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL').bind(nowIso(c), m.id).run();
-  return { member: m, token: await issueToken(c.db, m.id, m.platform || m.kind) };
+  return { member: safeMember(m), token: await issueToken(c.db, m.id, m.platform || m.kind) };
 }
 
 /**
@@ -310,6 +344,23 @@ export async function touch(c: Ctx, taskId: string, fields: Partial<Task>) {
   const cols = Object.keys(fields);
   const sets = cols.map((k) => `${k} = ?`).concat('updated_at = ?').join(', ');
   await c.db.prepare(`UPDATE tasks SET ${sets} WHERE id = ?`).bind(...cols.map((k) => (fields as any)[k]), nowIso(c), taskId).run();
+}
+
+/** Sub-tasks of a task that are not finished yet. A parent finishes only when these do. */
+export async function openSubtasks(db: D1Database, taskId: string): Promise<string[]> {
+  return (await db.prepare(`SELECT key FROM tasks WHERE parent_id = ? AND status NOT IN ('done','declined') ORDER BY created_at`)
+    .bind(taskId).all<{ key: string }>()).results.map((r) => r.key);
+}
+
+/**
+ * Remember the AI chat or agent session that worked on a task (a link, or a plain reference such as
+ * "claude --resume <id>"), so a person can open it later. Each one is stored once per task.
+ */
+export async function recordSession(c: Ctx, taskId: string, session?: string | null) {
+  const ref = typeof session === 'string' ? session.trim().slice(0, 500) : '';
+  if (!ref) return;
+  await c.db.prepare('INSERT OR IGNORE INTO task_sessions (task_id, ref, member_id, created_at) VALUES (?,?,?,?)')
+    .bind(taskId, ref, c.me.id ?? null, nowIso(c)).run();
 }
 
 /**
@@ -363,11 +414,12 @@ export async function createTask(c: Ctx, input: {
     input.priority ?? 2, c.me.id, assignee, reviewer, parent, input.due_at ?? null, c.space, t, t).run();
   const task = await getTask(c, key);
   await event(c, task.id, 'created', status === 'inbox' ? 'Proposed' : null, { status });
+  if (assignee && status === 'ready') await wakeMember(c, assignee, 'assigned', task, input.brief ?? null);
   return task;
 }
 
 /** Atomic claim: one conditional UPDATE, so only one member can hold a task. */
-export async function claimTask(c: Ctx, key: string) {
+export async function claimTask(c: Ctx, key: string, session?: string) {
   await sweepLeases(c);
   const t = await getTask(c, key);
   const now = nowIso(c);
@@ -384,6 +436,7 @@ export async function claimTask(c: Ctx, key: string) {
       : t.status === 'ready' ? `${t.key} is assigned to ${holder}.` : `${t.key} is ${t.status}, not ready to claim.`);
   }
   if (t.assignee_id !== c.me.id || t.status !== 'in_progress') await event(c, t.id, 'claimed');
+  await recordSession(c, t.id, session);
   return getTask(c, t.id);
 }
 
@@ -396,9 +449,10 @@ export async function heartbeat(c: Ctx, key: string) {
 
 export async function updateTask(c: Ctx, key: string, input: {
   note?: string; status?: Status; blocked_question?: string; blocked_on?: string;
-  title?: string; brief?: string; criteria?: string[]; priority?: number; assignee?: string | null; reviewer?: string | null;
+  title?: string; brief?: string; criteria?: string[]; priority?: number; assignee?: string | null; reviewer?: string | null; session?: string;
 }) {
   let t = await getTask(c, key);
+  await recordSession(c, t.id, input.session);
   const fields: Partial<Task> = {};
   if (input.title) fields.title = input.title;
   if (input.brief !== undefined) fields.brief = input.brief;
@@ -414,6 +468,10 @@ export async function updateTask(c: Ctx, key: string, input: {
     if (!STATUSES.includes(input.status)) throw new KunlaError(400, `Unknown status ${input.status}.`);
     if (input.status === 'review') throw new KunlaError(400, 'Use submit_for_review to move a task to Review; it needs a deliverable.');
     if (input.status === 'done' && t.status === 'review') throw new KunlaError(400, 'Use review_task to approve a task in Review.');
+    if (input.status === 'done' && t.status !== 'done') {
+      const open = await openSubtasks(c.db, t.id);
+      if (open.length) throw new KunlaError(409, `${t.key} still has open sub-tasks (${open.join(', ')}). It finishes by itself when the last one does; decline the ones you no longer need.`);
+    }
     fields.status = input.status;
     if (t.status === 'blocked' && input.status !== 'blocked') { fields.blocked_question = null; fields.blocked_on_id = null; }
     if (input.status === 'ready') { fields.assignee_id = fields.assignee_id ?? null; fields.lease_expires_at = null; }
@@ -426,6 +484,8 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (input.note || type !== 'note' || Object.keys(fields).length)
     await event(c, t.id, type, input.note ?? input.blocked_question ?? null, { from: t.status, to: fields.status ?? t.status });
   if (fields.status === 'done' || fields.status === 'declined') await rollUp(c, t.parent_id);
+  if (fields.assignee_id && fields.assignee_id !== t.assignee_id && (fields.status ?? t.status) === 'ready')
+    await wakeMember(c, fields.assignee_id, 'assigned', t, input.note ?? null);
   return getTask(c, t.id);
 }
 
@@ -444,13 +504,14 @@ export async function addDeliverables(c: Ctx, taskId: string, links: { url: stri
  */
 export async function logWork(c: Ctx, input: {
   summary: string; task?: string; project?: string; title?: string;
-  deliverables?: { url: string; title?: string }[]; status?: 'in_progress' | 'review' | 'done';
+  deliverables?: { url: string; title?: string }[]; status?: 'in_progress' | 'review' | 'done'; session?: string;
 }) {
   const summary = required(input.summary, 'summary');
   for (const d of input.deliverables ?? []) if (d?.url && !/^https?:\/\//i.test(d.url)) throw new KunlaError(400, 'Deliverable links must start with http:// or https://.');
   if (input.task) {
     const t = await getTask(c, input.task);
     await addDeliverables(c, t.id, input.deliverables);
+    await recordSession(c, t.id, input.session);
     await event(c, t.id, 'work_logged', summary, { deliverables: input.deliverables ?? [] });
     if (t.assignee_id === c.me.id && t.status === 'in_progress') await touch(c, t.id, { lease_expires_at: leaseFor(c, c.me) });
     if (input.status === 'review') return submitForReview(c, t.key, { summary, deliverables: input.deliverables ?? [] });
@@ -470,16 +531,18 @@ export async function logWork(c: Ctx, input: {
   const task = await getTask(c, key);
   await event(c, task.id, 'work_logged', summary, { deliverables: input.deliverables ?? [] });
   await addDeliverables(c, task.id, input.deliverables);
+  await recordSession(c, task.id, input.session);
   if (status === 'review') return submitForReview(c, key, { summary, deliverables: input.deliverables ?? [] });
   return task;
 }
 
-export async function submitForReview(c: Ctx, key: string, input: { summary: string; deliverables: { url: string; title?: string }[]; reviewer?: string }) {
+export async function submitForReview(c: Ctx, key: string, input: { summary: string; deliverables: { url: string; title?: string }[]; reviewer?: string; session?: string }) {
   const t = await getTask(c, key);
   if (!input.deliverables?.some((d) => d?.url)) throw new KunlaError(400, 'Attach at least one deliverable link (a PR, doc, file or message) so the reviewer can see the work.');
   if (!['in_progress', 'blocked', 'ready'].includes(t.status)) throw new KunlaError(409, `${t.key} is ${t.status}; only work in progress can go to Review.`);
   if (t.assignee_id && t.assignee_id !== c.me.id && c.me.kind === 'ai') throw new KunlaError(403, `${t.key} is held by someone else.`);
   await addDeliverables(c, t.id, input.deliverables);
+  await recordSession(c, t.id, input.session);
   const reviewer = input.reviewer ? (await getMember(c, input.reviewer)).id : t.reviewer_id;
   await touch(c, t.id, { status: 'review', assignee_id: t.assignee_id ?? c.me.id, lease_expires_at: null, reviewer_id: reviewer, blocked_question: null, blocked_on_id: null });
   await event(c, t.id, 'submitted', required(input.summary, 'summary'), { deliverables: input.deliverables });
@@ -506,7 +569,12 @@ export async function reviewTask(c: Ctx, key: string, input: {
       .bind(ruleId, p.id, input.rule.trim(), rid, c.me.id, nowIso(c)).run();
     await event(c, t.id, 'rule_added', input.rule.trim(), { rule_id: ruleId });
   }
-  if (input.verdict === 'approved') {
+  const open = input.verdict === 'approved' ? await openSubtasks(c.db, t.id) : [];
+  if (input.verdict === 'approved' && open.length) {
+    // The work is approved, but the task isn't finished while sub-tasks are open: it waits (no lease,
+    // so it never lapses) and rolls up to Done when the last one finishes.
+    await touch(c, t.id, { status: 'in_progress', reviewer_id: c.me.id, lease_expires_at: null });
+  } else if (input.verdict === 'approved') {
     await touch(c, t.id, { status: 'done', reviewer_id: c.me.id });
     await rollUp(c, t.parent_id);
   } else {
@@ -516,9 +584,11 @@ export async function reviewTask(c: Ctx, key: string, input: {
       lease_expires_at: assignee ? leaseFor(c, assignee) : null,
     });
   }
-  await event(c, t.id, input.verdict, [input.comment, input.what_was_wrong].filter(Boolean).join('\n') || null, { review_id: rid, rule_id: ruleId });
+  const waiting = open.length ? `Approved. ${t.key} finishes when ${open.join(', ')} ${open.length === 1 ? 'is' : 'are'} done.` : null;
+  await event(c, t.id, input.verdict, [input.comment, input.what_was_wrong, waiting].filter(Boolean).join('\n') || null, { review_id: rid, rule_id: ruleId, waiting_on: open });
   if (input.verdict === 'changes_requested' && t.review_rounds + 1 >= MAX_REVIEW_ROUNDS)
     await event(c, t.id, 'flagged', `${t.review_rounds + 1} review rounds; a person should look at the brief.`, {}, null);
+  await wakeMember(c, t.assignee_id, input.verdict, t, [input.comment, input.what_was_wrong, input.rule ? `New rule: ${input.rule}` : null].filter(Boolean).join('\n') || null);
   return getTask(c, t.id);
 }
 
@@ -584,6 +654,7 @@ export async function answer(c: Ctx, key: string, text: string) {
     lease_expires_at: holder ? leaseFor(c, holder) : null,
   });
   await event(c, t.id, 'answered', required(text, 'answer'), { question: t.blocked_question });
+  if (holder) await wakeMember(c, holder.id, 'answered', t, text);
   return getTask(c, t.id);
 }
 
@@ -606,7 +677,7 @@ export async function taskDetail(c: Ctx, key: string) {
   await sweepLeases(c);
   const t = await getTask(c, key);
   const p = await getProject(c, t.project_id);
-  const [deliverables, events, rules, reviews, subtasks] = await Promise.all([
+  const [deliverables, events, rules, reviews, subtasks, sessions] = await Promise.all([
     c.db.prepare('SELECT url, title, created_at FROM deliverables WHERE task_id = ? ORDER BY created_at').bind(t.id).all(),
     c.db.prepare(`SELECT e.id, e.type, e.note, e.data, e.created_at, m.name AS actor, m.kind AS actor_kind
                   FROM events e LEFT JOIN members m ON m.id = e.actor_id WHERE e.task_id = ? ORDER BY e.id DESC LIMIT 50`).bind(t.id).all(),
@@ -616,6 +687,8 @@ export async function taskDetail(c: Ctx, key: string) {
                   JOIN members m ON m.id = r.reviewer_id WHERE r.task_id = ? ORDER BY r.created_at`).bind(t.id).all(),
     c.db.prepare(`SELECT t.key, t.title, t.status, m.name AS assignee FROM tasks t LEFT JOIN members m ON m.id = t.assignee_id
                   WHERE t.parent_id = ? ORDER BY t.created_at`).bind(t.id).all(),
+    c.db.prepare(`SELECT s.ref, s.created_at, m.name AS member, m.kind AS member_kind FROM task_sessions s
+                  LEFT JOIN members m ON m.id = s.member_id WHERE s.task_id = ? ORDER BY s.created_at`).bind(t.id).all(),
   ]);
   const parent = t.parent_id ? await c.db.prepare('SELECT key, title, status FROM tasks WHERE id = ?').bind(t.parent_id).first() : null;
   const ws = p.kind === 'workspace' ? p : await getWorkspace(c);
@@ -630,6 +703,7 @@ export async function taskDetail(c: Ctx, key: string) {
     deliverables: deliverables.results,
     reviews: reviews.results,
     subtasks: subtasks.results,
+    sessions: sessions.results.map((s: any) => ({ ...s, url: /^https?:\/\//i.test(s.ref) ? s.ref : null })),
     history: events.results.map((e: any) => ({ ...e, data: JSON.parse(e.data || '{}') })),
     references: references(c.baseUrl, t, p.name),
   };
@@ -690,7 +764,7 @@ export async function nextTask(c: Ctx, project?: string) {
                   ORDER BY p.focus DESC, CASE p.kind WHEN 'workspace' THEN 1 ELSE 0 END, p.rank, t.priority, coalesce(t.due_at, p.ends_at, '9999'), t.created_at LIMIT 1`)
       .bind(c.space, ...args, ...keys, ...(useLane ? laneArgs : [])).first<Task>();
   const picks: [string, Task | null][] = [
-    ['continue', await q(`t.status = 'in_progress' AND t.assignee_id = ?`, false, c.me.id)],
+    ['continue', await q(`t.status = 'in_progress' AND t.assignee_id = ? AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))`, false, c.me.id)],
     ['assigned', await q(`t.status = 'ready' AND t.assignee_id = ?`, false, c.me.id)],
     ['review', await q(`t.status = 'review' AND t.reviewer_id = ? AND (t.assignee_id IS NULL OR t.assignee_id != ?)`, false, c.me.id, c.me.id)],
     ['open', await q(`t.status = 'ready' AND t.assignee_id IS NULL AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))`, true)],
@@ -804,7 +878,7 @@ export async function whoami(c: Ctx) {
 /** Per-member track record, so autonomy can be earned from evidence. */
 export async function trackRecord(c: Ctx) {
   const rows = (await c.db.prepare(
-    `SELECT m.id, m.name, m.kind, m.platform, m.scope, s.name AS sponsor, m.sponsor_id,
+    `SELECT m.id, m.name, m.kind, m.platform, m.scope, m.callback, s.name AS sponsor, m.sponsor_id,
        (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status = 'done') AS done,
        (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status IN ('in_progress','blocked','review')) AS active,
        (SELECT COUNT(DISTINCT r.task_id) FROM reviews r WHERE r.worker_id = m.id) AS reviewed,
@@ -812,7 +886,7 @@ export async function trackRecord(c: Ctx) {
           AND NOT EXISTS (SELECT 1 FROM reviews r2 WHERE r2.task_id = r.task_id AND r2.verdict = 'changes_requested')) AS first_pass,
        (SELECT MAX(e.created_at) FROM events e WHERE e.actor_id = m.id) AS last_active
      FROM members m LEFT JOIN members s ON s.id = m.sponsor_id WHERE m.removed_at IS NULL AND m.space_id = ? ORDER BY m.kind DESC, m.created_at`).bind(c.space).all<any>()).results;
-  return rows.map((r) => ({ ...r, scope: parseList(r.scope), first_pass_rate: r.reviewed ? Math.round((r.first_pass / r.reviewed) * 100) : null }));
+  return rows.map(({ callback, ...r }) => ({ ...r, wake: publicCallback(callback), scope: parseList(r.scope), first_pass_rate: r.reviewed ? Math.round((r.first_pass / r.reviewed) * 100) : null }));
 }
 
 export async function listRules(c: Ctx, project?: string) {

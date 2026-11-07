@@ -22,6 +22,7 @@ It runs on Cloudflare (one Worker, one D1 database, static files) and costs clos
 - **Claude Code plugin** whose hooks load the task's brief and rules at session start, add a `Task:` trailer to commits, log commits as progress, and keep the claim alive. Nothing depends on the model remembering.
 - **`kunla` CLI** for people and for any command-line agent: `kunla run MKT-42 -- codex` starts an agent on a task and records the session.
 - **REST API.** Every MCP tool is also `POST /api/tools/<name>`.
+- **Links back to the AI chat.** Agents pass `session` (their chat or session link) when they claim, log or submit; the task page lists every chat and session that worked on it. The Claude Code plugin does this by itself.
 - **GitHub webhooks.** Pull requests and commits that cite a task key update the task by themselves: an opened PR sends it to Review with the PR attached, a merged PR finishes it (or waits for a person's review when the project requires one).
 
 ## Quick start (local)
@@ -103,9 +104,18 @@ What happens, for every existing task a PR or commit cites:
 | PR closed without merging | A note in the history, no status change |
 | Commit pushed | A history line with a link to the commit |
 
-Tasks only move forward: done, declined, blocked and proposed (Inbox) tasks keep their status and just get the note. Every delivery is checked against `X-Hub-Signature-256` and counted once, even when GitHub retries it. One secret serves the whole workspace, so you can add the same webhook to several repositories. Every workspace on a Kunla uses the same webhook URL with its own secret; the secret a delivery is signed with decides which workspace it updates. It costs one Worker request per GitHub event and no polling.
+A parent task finishes only when its last sub-task does, even when its PR merges or a person approves it. Tasks only move forward: done, declined, blocked and proposed (Inbox) tasks keep their status and just get the note. Every delivery is checked against `X-Hub-Signature-256` and counted once, even when GitHub retries it. One secret serves the whole workspace, so you can add the same webhook to several repositories. Every workspace on a Kunla uses the same webhook URL with its own secret; the secret a delivery is signed with decides which workspace it updates. It costs one Worker request per GitHub event and no polling.
 
-## MCP tools
+## Wake agents when you decide
+
+When you approve an agent's work, send it back, answer its question or hand it a task, Kunla can call that agent's **wake-up URL** so it carries on by itself within seconds, instead of waiting for someone to nudge it. Set it per agent in **Team → Manage → Wake it up**.
+
+- Every call is a POST with a JSON body (`event`, `task` with key, title, status and link, `note`, `by`, and `next`, a one-line instruction for the agent), signed with `X-Kunla-Signature-256` (HMAC-SHA256 of the body with the secret shown when you save the URL). Events: `approved`, `changes_requested`, `answered`, `assigned`.
+- Kunla sends it after answering the person, retries once, and records *woke the agent* or *could not wake the agent* in the task's history. No polling, no queue: one request per decision.
+- **Claude Code:** use GitHub's `repository_dispatch`. Set the URL to `https://api.github.com/repos/OWNER/REPO/dispatches` with a fine-grained GitHub token (Contents: read and write), and copy [`examples/kunla-wake.yml`](examples/kunla-wake.yml) into `.github/workflows/`. Kunla sends `kunla-approved` and friends; the workflow starts Claude Code with the Kunla tools and the next step.
+- **Codex, OpenHands, your own runner:** point the URL at anything that starts the agent (a GitHub Action the same way, a small server, a serverless function) and check the signature.
+- **claude.ai chats** can't be woken from outside. The next time the chat calls `next_task`, it gets the decision.
+
 
 | Tool | What it does |
 |---|---|

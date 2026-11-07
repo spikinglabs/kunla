@@ -1,0 +1,48 @@
+# Wake Claude Code when a person decides something in Kunla.
+# Copy to .github/workflows/kunla-wake.yml in the repository the agent works on.
+#
+# Setup (once):
+# 1. Repository secrets: ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN), KUNLA_URL (e.g. https://kunla.example.com)
+#    and KUNLA_TOKEN (the agent's Kunla token from Team > Connect an agent).
+# 2. A fine-grained GitHub token with "Contents: Read and write" on this repository (that is what
+#    repository_dispatch needs).
+# 3. In Kunla: Team > the agent > Manage > Wake it up. URL: https://api.github.com/repos/OWNER/REPO/dispatches,
+#    token: the GitHub token from step 2. Click "Send a test".
+#
+# Kunla then sends kunla-approved, kunla-changes-requested, kunla-answered or kunla-assigned, and this job
+# starts Claude Code with the Kunla tools and the next step to take.
+name: Kunla wake-up
+on:
+  repository_dispatch:
+    types: [kunla-approved, kunla-changes-requested, kunla-answered, kunla-assigned]
+concurrency:
+  group: kunla-wake      # one wake-up at a time; a newer one waits for the running one
+  cancel-in-progress: false
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  continue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Write the Kunla MCP config
+        run: |
+          printf '{"mcpServers":{"kunla":{"type":"http","url":"%s/mcp","headers":{"Authorization":"Bearer %s"}}}}' \
+            "$KUNLA_URL" "$KUNLA_TOKEN" > "$RUNNER_TEMP/kunla-mcp.json"
+        env:
+          KUNLA_URL: ${{ secrets.KUNLA_URL }}
+          KUNLA_TOKEN: ${{ secrets.KUNLA_TOKEN }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: --mcp-config ${{ runner.temp }}/kunla-mcp.json --allowedTools "mcp__kunla__*,Bash,Edit,Write,Read,Glob,Grep"
+          prompt: |
+            Kunla woke you: ${{ github.event.client_payload.event }} on ${{ github.event.client_payload.task.key }}
+            (${{ github.event.client_payload.task.title }}) by ${{ github.event.client_payload.by }}.
+            Next step: ${{ github.event.client_payload.next }}
+            Follow AGENTS.md and the Kunla working agreement: cite the task key in commits and PRs, log progress
+            with log_work, and finish with submit_for_review and a link to your PR.

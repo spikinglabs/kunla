@@ -155,7 +155,7 @@ const NAV = [['', 'Briefing'], ['map', 'Map'], ['tasks', 'Tasks'], ['team', 'Tea
 function renderShell(view) {
   const link = ([k, label]) => html`<a href="#/${k}" class="${k === view ? 'on' : ''}">${label}${raw(k === '' && decisionCount ? `<span class="n">${decisionCount}</span>` : '')}</a>`;
   $('nav').innerHTML = NAV.map(link).join('');
-  $('tabbar').innerHTML = NAV.slice(0, 4).map(link).join('');
+  $('tabbar').innerHTML = NAV.map(link).join('');
   $('me').innerHTML = av({ name: me.name, kind: 'human' });
   $('me').title = `${me.name}: workspaces and sign out`;
   $('space').innerHTML = html`<span class="sp-dot"></span><span class="sp-name">${me.workspace?.name ?? 'Workspace'}</span><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
@@ -513,8 +513,18 @@ const EVENT = {
   submitted: () => 'sent it for review', approved: () => 'approved it', changes_requested: () => 'sent it back', rule_added: () => 'taught the team a rule',
   blocked: () => 'asked a question', answered: () => 'answered', accepted: () => 'made it ready', declined: () => 'declined it',
   lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `moved it to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
+  woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
   github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
 };
+// A readable name for the chat or agent session a task links back to.
+function sessionLabel(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'claude.ai') return u.pathname.startsWith('/code/project/') ? 'Claude project thread' : u.pathname.startsWith('/code/') ? 'Claude Code session' : u.pathname.startsWith('/project/') ? 'Claude project' : 'Claude chat';
+    if (u.hostname === 'chatgpt.com' || u.hostname === 'chat.openai.com') return 'ChatGPT chat';
+    return u.hostname;
+  } catch { return url; }
+}
 async function viewTask(key) {
   renderShell('tasks');
   const t = await api('GET', `/api/tasks/${encodeURIComponent(key)}`);
@@ -546,6 +556,9 @@ async function viewTask(key) {
         ${raw(subs.length ? '<p class="muted" style="font-size:13px;margin-top:8px">When every sub-task is finished, this task finishes on its own.</p>' : '')}</div>` : '')}
       ${raw(t.criteria.length && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>Done when</h3><ul class="crit ${t.status === 'done' ? 'met' : ''}">${join(t.criteria.map((c) => html`<li>${c}</li>`))}</ul></div>` : '')}
       ${raw(t.deliverables.length && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>The work</h3><div class="links">${join(t.deliverables.map((d) => html`<a class="pill" href="${d.url}" target="_blank" rel="noopener">${d.title || d.url} ↗</a>`))}</div></div>` : '')}
+      ${raw(t.sessions?.length ? html`<div class="sec"><h3>Worked on in</h3><div class="links">${join(t.sessions.map((x) => x.url
+        ? html`<a class="pill" href="${x.url}" target="_blank" rel="noopener" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}">${sessionLabel(x.url)}${x.member ? ' · ' + x.member : ''} ↗</a>`
+        : html`<span class="pill" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}"><code>${x.ref}</code></span>`))}</div></div>` : '')}
       <div class="sec"><h3>How it got here</h3><div class="trail">${join(hist.map((e) => html`<div class="ev ${mark.has(e.type) ? 'mark' : ''} ${e.type === 'rule_added' ? 'rule' : ''}">
         <span class="when">${when(e.created_at)}</span>${raw(e.actor ? av({ name: e.actor, kind: e.actor_kind }, 'sm') : '<span class="av sm">K</span>')}
         <div><div class="what">${e.actor ?? 'Kunla'} ${(EVENT[e.type] || (() => e.type))(e)}</div>${raw(e.note && e.type !== 'created' ? html`<div class="note">${e.note}</div>` : '')}</div></div>`))}</div></div>
@@ -779,10 +792,29 @@ function showManage(m) {
     <div class="stack" style="gap:6px"><div class="label">Token</div>
       <p class="muted" style="font-size:13.5px">${self ? 'Get a new personal token. Your old one stops working everywhere, and this browser switches to the new one.' : 'Get a new token if the old one leaked or you set it up somewhere else. Every old token for this agent stops working at once.'}</p>
       <div><button class="btn" data-act="click:rotate">New token</button></div></div>
+    ${raw(m.kind === 'ai' ? html`<form class="stack" style="gap:6px" data-act="submit:wake"><div class="label">Wake it up</div>
+      <p class="muted" style="font-size:13.5px">When you approve, send back, answer or hand ${m.name} a task, Kunla calls this URL so it carries on by itself. For Claude Code, use your repository's dispatch URL and a GitHub token, with the workflow from the README.</p>
+      <div class="field"><label for="mw-u">Wake-up URL</label><input id="mw-u" name="url" type="url" placeholder="https://api.github.com/repos/OWNER/REPO/dispatches" value="${m.wake?.url || ''}"></div>
+      <div class="field"><label for="mw-a">Token for that URL (optional)</label><input id="mw-a" name="auth" type="password" autocomplete="off" placeholder="${m.wake?.has_auth ? 'Saved. Leave empty to keep it.' : 'GitHub token, or empty'}"></div>
+      <div class="row"><button class="btn">${m.wake ? 'Save' : 'Turn on'}</button>${raw(m.wake ? '<button class="btn" type="button" data-act="click:wakeTest">Send a test</button><button class="btn quiet" type="button" data-act="click:wakeOff">Turn off</button>' : '')}</div></form>` : '')}
     ${raw(self ? '' : html`<div class="stack" style="gap:6px"><div class="label">Remove</div>
       <p class="muted" style="font-size:13.5px">${m.name} loses access and leaves the team list. Everything it did stays in the record under its name, and work it was holding goes back to Ready.</p>
       <div><button class="btn danger" data-act="click:remove">Remove ${m.kind === 'ai' ? 'agent' : 'person'}</button></div></div>`)}
     <div class="row"><button class="btn quiet" data-act="click:close">Close</button></div></div>`, {
+    wake: async (f) => {
+      const d = formData(f);
+      if (!d.url) return toast('Paste a wake-up URL first.');
+      if (!d.auth && m.wake?.has_auth && m.wake.url === d.url) return toast('Saved already. Paste a new token to change it.');
+      const r = await api('PUT', `/api/members/${m.id}/wake`, { url: d.url, auth: d.auth || null });
+      m.wake = r.callback;
+      openSheet(html`<div class="sheet-body stack"><div><h2>${m.name} wakes up by itself</h2><p class="muted">Kunla signs every call with this secret (header X-Kunla-Signature-256, HMAC-SHA256 of the body). Check it if your receiver is public; GitHub's dispatch API doesn't need it. Kunla shows it only once.</p></div>
+        ${raw(copyBlock('Signing secret', r.secret, { secret: true }))}<div class="row"><button class="btn ink" data-act="click:close">I've saved it</button></div></div>`, {}, { sticky: true });
+    },
+    wakeTest: async () => {
+      const r = await api('POST', `/api/members/${m.id}/wake/test`);
+      toast(r.ok ? `Test call delivered (HTTP ${r.status}).` : `Test call failed: ${r.error}.`);
+    },
+    wakeOff: async () => { await api('DELETE', `/api/members/${m.id}/wake`); m.wake = null; toast(`${m.name} no longer gets wake-up calls.`); closeSheet(true); viewTeam(); },
     rename: async (f) => {
       const r = await api('PATCH', `/api/members/${m.id}`, { name: formData(f).name });
       toast(`Renamed to ${r.name}.`); closeSheet(true); if (self) me.name = r.name; viewTeam();
