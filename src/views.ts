@@ -171,6 +171,6 @@ export async function progress(c: Ctx) {
  */
 export async function changes(c: Ctx) {
   await sweepLeases(c);
-  const r = await c.db.prepare(`SELECT (SELECT MAX(id) FROM events) AS e, (SELECT COUNT(*) FROM members) AS m`).first<{ e: number | null; m: number }>();
+  const r = await c.db.prepare(`SELECT (SELECT MAX(id) FROM events) AS e, (SELECT COUNT(*) FROM members WHERE removed_at IS NULL) AS m`).first<{ e: number | null; m: number }>();
   return { version: `${r?.e ?? 0}.${r?.m ?? 0}` };
 }

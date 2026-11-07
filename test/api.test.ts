@@ -224,6 +224,32 @@ describe('hierarchy and steering', () => {
   });
 });
 
+describe('managing connections', () => {
+  it('reuses an agent connected twice under the same name', async () => {
+    const again = await call('POST', '/api/members', human, { name: "l's claude code", kind: 'ai', platform: 'claude-code' });
+    expect(again.body.reconnected).toBe(true);
+    expect((await call('GET', '/api/members', human)).body.filter((m: any) => m.kind === 'ai')).toHaveLength(1);
+    expect((await call('GET', '/api/me', ai)).status).toBe(200); // the first token keeps working
+    expect((await call('GET', '/api/me', again.body.token)).body.name).toBe("L's Claude Code");
+  });
+  it('renames, rotates the token, and removes an agent while keeping its record', async () => {
+    const id = (await call('GET', '/api/me', ai)).body.id;
+    const r = await call('PATCH', `/api/members/${id}`, human, { name: 'Laptop Claude Code' });
+    expect(r.body.name).toBe('Laptop Claude Code');
+    const t = await tool(ai, 'log_work', { summary: 'Drafted the brief' });
+    const rot = await call('POST', `/api/members/${id}/token`, human);
+    expect((await call('GET', '/api/me', ai)).status).toBe(401);
+    expect((await call('GET', '/api/me', rot.body.token)).status).toBe(200);
+    const other = await call('POST', '/api/members', human, { name: 'Codex', kind: 'ai', platform: 'codex' });
+    expect((await call('DELETE', `/api/members/${id}`, other.body.token)).status).toBe(403);
+    expect((await call('DELETE', `/api/members/${id}`, human)).body.removed).toBe(true);
+    expect((await call('GET', '/api/me', rot.body.token)).status).toBe(401);
+    expect((await call('GET', '/api/members', human)).body.map((m: any) => m.name)).not.toContain('Laptop Claude Code');
+    const task = await call('GET', `/api/tasks/${t.data.key}`, human);
+    expect(task.status).toBe(200);
+  });
+});
+
 describe('OAuth for chat connectors', () => {
   it('registers a client, approves, and exchanges the code with PKCE', async () => {
     const meta = await call('GET', '/.well-known/oauth-authorization-server');

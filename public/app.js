@@ -640,22 +640,25 @@ function trow(t, child = false) {
 }
 
 // ---------- team ----------
+const canManage = (m) => me.kind === 'human' && (me.roles?.includes('admin') || m.sponsor_id === me.id || m.id === me.id);
+
 async function viewTeam(sub) {
   renderShell('team');
   const [record, pulse] = await Promise.all([api('GET', '/api/members'), api('GET', '/api/pulse')]);
   members = record;
   const ps = new Map(pulse.map((p) => [p.id, p]));
   $app.innerHTML = html`<div class="head"><div><h1>Team</h1><p class="sub">People and agents side by side. Each agent works under its own name, with a person who sponsors it. Lanes keep each one on the projects you choose.</p></div>
-      <div class="row"><button class="btn go" data-act="click:connect">Connect an agent</button><button class="btn" data-act="click:addPerson">Add a person</button></div></div>
-    <div id="connect"></div>
+      <div class="row"><button class="btn go" data-act="click:connect">Connect an agent</button><button class="btn" data-act="click:claudeai">Use in claude.ai</button><button class="btn" data-act="click:addPerson">Add a person</button></div></div>
     <div class="people-grid">${join(record.map((m) => { const p = ps.get(m.id) || {}; return html`<div class="card pad member">
       <div class="row" style="flex-wrap:nowrap">${raw(av(m, 'lg', p.live))}<div class="grow"><div class="nm">${m.name}</div><div class="muted" style="font-size:13px">${kindLine(m)}</div></div><span class="state ${p.state || 'idle'}">${p.state || 'idle'}</span></div>
       <div style="font-size:14px;color:var(--ink-2);min-height:21px">${raw(p.task ? html`<a href="#/t/${p.task.key}">${p.line}</a>` : esc(m.last_active ? `Last active ${agoLong(m.last_active)}` : 'Not active yet'))}</div>
       <div class="stats"><div><b>${m.done}</b><small>done</small></div><div><b>${m.first_pass_rate == null ? '–' : m.first_pass_rate + '%'}</b><small>first try</small></div><div><b>${m.active}</b><small>active</small></div></div>
       ${raw(projects.length ? html`<div><div class="label" style="margin-bottom:6px">Works on</div><div class="row lanepick" data-id="${m.id}">
-        <button class="pill ${m.scope.length ? '' : 'on'}" data-act="click:lane" data-k="">Everything</button>${join(projects.map((x) => html`<button class="pill ${m.scope.includes(x.key) ? 'on' : ''}" data-act="click:lane" data-k="${x.key}">${x.key}</button>`))}</div></div>` : '')}</div>`; }))}</div>`;
+        <button class="pill ${m.scope.length ? '' : 'on'}" data-act="click:lane" data-k="">Everything</button>${join(projects.map((x) => html`<button class="pill ${m.scope.includes(x.key) ? 'on' : ''}" data-act="click:lane" data-k="${x.key}">${x.key}</button>`))}</div></div>` : '')}
+      ${raw(canManage(m) ? html`<div><button class="btn sm" data-act="click:manage" data-id="${m.id}">Manage</button></div>` : '')}</div>`; }))}</div>`;
   bind($app, {
-    connect: () => showConnect('ai'), addPerson: () => showConnect('human'),
+    connect: () => showConnect('ai'), addPerson: () => showConnect('human'), claudeai: showClaudeAi,
+    manage: (el) => showManage(record.find((x) => x.id === el.dataset.id)),
     lane: async (el) => {
       const id = el.closest('.lanepick').dataset.id;
       const m = record.find((x) => x.id === id);
@@ -666,40 +669,130 @@ async function viewTeam(sub) {
       viewTeam();
     },
   });
-  if (sub === 'connect') showConnect('ai');
+  // Open a linked dialog once, then drop it from the URL so a background refresh doesn't reopen it.
+  if (sub && $('sheet').hidden) { if (sub === 'connect') showConnect('ai'); if (sub === 'claude-ai') showClaudeAi(); }
+  if (sub) history.replaceState(null, '', '#/team');
 }
 
+// Dialogs live outside the page, so the 30-second refresh never wipes them. A "sticky" one
+// (a token shown once) closes only from its own button, not by tapping outside or Escape.
+let sheetSticky = false;
+function openSheet(inner, handlers = {}, { sticky = false } = {}) {
+  const s = $('sheet');
+  sheetSticky = sticky;
+  s.innerHTML = `<div class="pal sheet-card" role="dialog" aria-modal="true">${inner}</div>`;
+  s.hidden = false;
+  bind(s, {
+    close: () => closeSheet(true),
+    copy: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); el.textContent = 'Copied'; setTimeout(() => { el.textContent = 'Copy'; }, 1600); } catch { toast('Copy did not work here. Select the text and copy it.'); } },
+    ...handlers,
+  });
+  s.querySelector('input:not([type=hidden])')?.focus();
+}
+function closeSheet(force) {
+  if (sheetSticky && !force) return;
+  const s = $('sheet'); s.hidden = true; s.innerHTML = ''; sheetSticky = false;
+}
+document.addEventListener('click', (e) => { if (e.target.id === 'sheet') closeSheet(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('sheet')?.hidden) closeSheet(); });
+
+const copyBlock = (label, text, { secret = false } = {}) => html`<div class="stack" style="gap:6px"><div class="row" style="justify-content:space-between;align-items:center"><div class="label">${label}</div>
+  <button class="btn sm" type="button" data-act="click:copy" data-v="${text}">Copy</button></div>${raw(secret ? html`<div class="secret">${text}</div>` : html`<pre class="code">${text}</pre>`)}</div>`;
+
 function showConnect(kind) {
-  const box = $('connect');
-  box.innerHTML = kind === 'ai' ? html`<div class="card pad stack" style="margin-bottom:24px">
-    <div><h2 style="font-size:18px;font-weight:600;letter-spacing:-.02em">Connect an agent</h2>
-    <p class="muted">It joins as its own member, so its work is credited to it and you are its sponsor.</p></div>
-    <form class="row" data-act="submit:create" style="align-items:flex-end"><input type="hidden" name="kind" value="ai">
-      <div class="field" style="flex:2;min-width:200px"><label for="ca-n">Name</label><input id="ca-n" name="name" required value="${me.name}'s Claude Code"></div>
-      <div class="field" style="flex:1;min-width:160px"><label for="ca-p">Agent</label><select id="ca-p" name="platform"><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="other">Other MCP agent</option></select></div>
-      <button class="btn go">Create connection</button></form>
-    <p class="muted" style="font-size:13.5px">For claude.ai, add <code style="color:var(--ink)">${location.origin}/mcp</code> as a custom connector. You approve it on a Kunla page and it joins under its own name.</p></div>`
-    : html`<div class="card pad stack" style="margin-bottom:24px"><h2 style="font-size:18px;font-weight:600">Add a person</h2>
-      <form class="row" data-act="submit:create" style="align-items:flex-end"><input type="hidden" name="kind" value="human">
-      <div class="field" style="flex:1;min-width:200px"><label for="cp-n">Name</label><input id="cp-n" name="name" required></div><button class="btn go">Add</button></form></div>`;
-  bind(box, {
+  const inner = kind === 'ai' ? html`<div class="sheet-body stack">
+    <div><h2>Connect an agent</h2>
+    <p class="muted">It joins as its own member, so its work is credited to it and you are its sponsor. Connecting again under the same name gives that agent a new token instead of adding a second one.</p></div>
+    <form class="stack" data-act="submit:create"><input type="hidden" name="kind" value="ai">
+      <div class="field"><label for="ca-n">Name</label><input id="ca-n" name="name" required value="${me.name}'s Claude Code"></div>
+      <div class="field"><label for="ca-p">Agent</label><select id="ca-p" name="platform"><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="other">Other MCP agent</option></select></div>
+      <div class="row"><button class="btn go">Create connection</button><button class="btn quiet" type="button" data-act="click:close">Cancel</button></div></form>
+    <p class="muted" style="font-size:13.5px">For claude.ai chats and Projects you don't need a token. <a href="#" data-act="click:claudeai">See how to add the connector.</a></p></div>`
+    : html`<div class="sheet-body stack"><h2>Add a person</h2>
+      <form class="stack" data-act="submit:create"><input type="hidden" name="kind" value="human">
+      <div class="field"><label for="cp-n">Name</label><input id="cp-n" name="name" required></div>
+      <div class="row"><button class="btn go">Add</button><button class="btn quiet" type="button" data-act="click:close">Cancel</button></div></form></div>`;
+  openSheet(inner, {
+    claudeai: showClaudeAi,
     create: async (f) => {
       const d = formData(f);
-      const r = await api('POST', '/api/members', d);
-      const origin = location.origin;
-      box.innerHTML = html`<div class="card pad stack" style="margin-bottom:24px">
-        <div><h2 style="font-size:18px;font-weight:600">${r.member.name} is in</h2><p class="muted">Copy the token now. It is shown only once.</p></div>
-        <div class="secret">${r.token}</div>
-        ${raw(d.kind === 'ai' && d.platform === 'claude-code' ? html`<div class="stack" style="gap:8px"><div class="label">In your terminal</div><pre class="code">export KUNLA_URL=${origin}
-export KUNLA_TOKEN=${r.token}
-claude plugin marketplace add spikinglabs/kunla
-claude plugin install kunla@kunla</pre><p class="muted" style="font-size:13.5px">From then on it picks up work with <code>/kunla:next</code>, cites the task in every commit, and records progress without being asked.</p></div>` : '')}
-        ${raw(d.kind === 'ai' && d.platform !== 'claude-code' ? html`<div class="stack" style="gap:8px"><div class="label">MCP server</div><pre class="code">URL     ${origin}/mcp
-Header  Authorization: Bearer ${r.token}</pre></div>` : '')}
-        ${raw(d.kind === 'human' ? '<p>Send it to them privately. They paste it on the sign-in page.</p>' : '')}</div>`;
-      members = await api('GET', '/api/members');
+      const btn = f.querySelector('button.go'); btn.disabled = true; // one click, one connection
+      try {
+        const r = await api('POST', '/api/members', d);
+        showToken(r, d.kind, d.platform);
+        members = await api('GET', '/api/members');
+        if (location.hash.startsWith('#/team')) viewTeam();
+      } finally { btn.disabled = false; }
     },
   });
+}
+
+function showToken(r, kind, platform) {
+  const origin = location.origin;
+  const head = r.reconnected
+    ? html`<h2>New token for ${r.member.name}</h2><p class="muted">You already had an agent with this name, so it got a new token instead of a duplicate. Its earlier tokens still work; use Manage → New token to retire them.</p>`
+    : html`<h2>${r.member.name} is in</h2><p class="muted">Copy the token now. Kunla shows it only once, so this stays open until you close it.</p>`;
+  const setup = kind === 'human' ? '<p>Send it to them privately. They paste it on the sign-in page.</p>'
+    : platform === 'claude-code' ? copyBlock('In your terminal', `export KUNLA_URL=${origin}\nexport KUNLA_TOKEN=${r.token}\nclaude plugin marketplace add spikinglabs/kunla\nclaude plugin install kunla@kunla`)
+      + '<p class="muted" style="font-size:13.5px">From then on it picks up work with <code>/kunla:next</code>, cites the task in every commit, and records progress without being asked.</p>'
+    : copyBlock('MCP server', `URL     ${origin}/mcp\nHeader  Authorization: Bearer ${r.token}`);
+  openSheet(html`<div class="sheet-body stack"><div>${raw(head)}</div>${raw(copyBlock('Token', r.token, { secret: true }))}${raw(setup)}
+    <div class="row"><button class="btn ink" data-act="click:close">I've saved it</button></div></div>`, {}, { sticky: true });
+}
+
+function showManage(m) {
+  const self = m.id === me.id;
+  openSheet(html`<div class="sheet-body stack">
+    <div><h2>${m.name}</h2><p class="muted">${kindLine(m)}</p></div>
+    <form class="stack" data-act="submit:rename"><div class="field"><label for="mm-n">Name</label><input id="mm-n" name="name" required value="${m.name}" maxlength="80"></div>
+      <div><button class="btn">Save name</button></div></form>
+    <div class="stack" style="gap:6px"><div class="label">Token</div>
+      <p class="muted" style="font-size:13.5px">${self ? 'Get a new personal token. Your old one stops working everywhere, and this browser switches to the new one.' : 'Get a new token if the old one leaked or you set it up somewhere else. Every old token for this agent stops working at once.'}</p>
+      <div><button class="btn" data-act="click:rotate">New token</button></div></div>
+    ${raw(self ? '' : html`<div class="stack" style="gap:6px"><div class="label">Remove</div>
+      <p class="muted" style="font-size:13.5px">${m.name} loses access and leaves the team list. Everything it did stays in the record under its name, and work it was holding goes back to Ready.</p>
+      <div><button class="btn danger" data-act="click:remove">Remove ${m.kind === 'ai' ? 'agent' : 'person'}</button></div></div>`)}
+    <div class="row"><button class="btn quiet" data-act="click:close">Close</button></div></div>`, {
+    rename: async (f) => {
+      const r = await api('PATCH', `/api/members/${m.id}`, { name: formData(f).name });
+      toast(`Renamed to ${r.name}.`); closeSheet(true); if (self) me.name = r.name; viewTeam();
+    },
+    rotate: async (el) => {
+      if (el.dataset.sure !== '1') { el.dataset.sure = '1'; el.textContent = 'Old token stops working. Tap again'; return; }
+      const r = await api('POST', `/api/members/${m.id}/token`);
+      if (self) { token = r.token; try { localStorage.setItem(TOKEN_KEY, token); } catch {} }
+      showToken({ ...r, reconnected: false, member: { ...r.member, name: `${r.member.name}: new token` } }, m.kind, m.platform);
+    },
+    remove: async (el) => {
+      if (el.dataset.sure !== '1') { el.dataset.sure = '1'; el.textContent = `Remove ${m.name}? Tap again`; return; }
+      await api('DELETE', `/api/members/${m.id}`);
+      toast(`${m.name} removed.`); closeSheet(true); members = members.filter((x) => x.id !== m.id); viewTeam();
+    },
+  });
+}
+
+const PROJECT_NOTE = `Use the Kunla connector as this project's record of work.
+- When a task key like MKT-42 comes up, call get_task and follow its brief, criteria, playbook and rules.
+- When you finish something for the team (a draft, analysis or plan), call log_work with one sentence and links, and tell me the task key.
+- Put the task's citation line under the title of documents you write.
+- If a decision belongs to a person, set the task blocked with the question instead of guessing.`;
+
+function showClaudeAi() {
+  const origin = location.origin;
+  openSheet(html`<div class="sheet-body stack">
+    <div><h2>Use Kunla in claude.ai</h2><p class="muted">One connector covers every chat and every Project on your claude.ai account, on web, desktop and phone. It joins Kunla as one agent, ${me.name}'s Claude, that you sponsor.</p></div>
+    <ol class="steps">
+      <li>In claude.ai, open <b>Settings → Connectors</b> and choose <b>Add custom connector</b>. Name it Kunla and paste this URL:</li>
+    </ol>
+    ${raw(copyBlock('Connector URL', `${origin}/mcp`))}
+    <ol class="steps" start="2">
+      <li>Click <b>Connect</b>. A Kunla page opens; check the name and click <b>Allow</b>. If it asks for a token, paste your personal one.</li>
+      <li>In a chat, open the tools menu under the message box and switch Kunla on. Chats inside a Project use the same switch, so nothing extra is needed per Project.</li>
+      <li>Optional, for a Project: paste this into the Project's instructions so Claude records its work there without being asked.</li>
+    </ol>
+    ${raw(copyBlock('Project instructions', PROJECT_NOTE))}
+    <p class="muted" style="font-size:13.5px">Custom connectors need a paid claude.ai plan. On a Team or Enterprise plan an owner adds the connector once in the organization settings, then each person connects it. Removing the agent here signs out every chat at once.</p>
+    <div class="row"><button class="btn quiet" data-act="click:close">Close</button></div></div>`);
 }
 
 // ---------- projects: the workspace, its projects, focus, playbooks, rules ----------
@@ -788,7 +881,7 @@ async function openPalette(prefill = '') {
   input.value = prefill;
   input.focus();
   let sel = 0; let opts = [];
-  const pages = [['Briefing', '#/'], ['Work map', '#/map'], ['Tasks', '#/tasks'], ['Stuck tasks', '#/tasks', 'stuck'], ['Team', '#/team'], ['Projects', '#/projects'], ['Connect an agent', '#/team/connect'],
+  const pages = [['Briefing', '#/'], ['Work map', '#/map'], ['Tasks', '#/tasks'], ['Stuck tasks', '#/tasks', 'stuck'], ['Team', '#/team'], ['Projects', '#/projects'], ['Connect an agent', '#/team/connect'], ['Use Kunla in claude.ai', '#/team/claude-ai'],
     ...projects.map((p) => [`${p.name} tasks`, `#/tasks/${p.key}`]), ...savedViews().map((v) => [`View: ${v.name}`, v.hash, v])];
   const close = () => { box.hidden = true; box.innerHTML = ''; };
   const render = () => {

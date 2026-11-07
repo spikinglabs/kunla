@@ -408,3 +408,13 @@ pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: va
   height: 40px; padding: 0 6px 0 16px; border-radius: 999px; border: 1px solid var(--ink); background: var(--surface); color: var(--ink); cursor: pointer; box-shadow: var(--shadow); font-size: 14px; }
 .paused b { background: var(--lime); color: var(--on-lime); border-radius: 999px; padding: 6px 12px; font-weight: 600; }
 @media (max-width: 380px) { .top .lab-tag { display: none; } }
+
+/* ---------- dialogs (connect, token, manage, claude.ai) ---------- */
+.palette.sheet { align-items: flex-start; padding: 8vh 16px 16px; overflow-y: auto; }
+.sheet-card { overflow: visible; }
+.sheet-body { padding: 22px; gap: 16px; }
+.sheet-body h2 { font-size: 19px; font-weight: 600; letter-spacing: -.02em; margin: 0 0 4px; }
+.sheet-body .muted { margin: 0; }
+.steps { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 14.5px; }
+.btn.danger { color: var(--warn); border-color: currentColor; }
+.sheet-body pre.code { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
