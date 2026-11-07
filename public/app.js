@@ -1358,7 +1358,8 @@ function showPaused() {
   if (b) return;
   b = document.createElement('button');
   b.id = 'paused'; b.className = 'paused';
-  b.innerHTML = '<span>Paused while you were away</span><b>Refresh</b>';
+  b.title = 'Live updates paused while you were away';
+  b.innerHTML = '<span>Updates paused</span><b>Refresh</b>';
   b.onclick = () => { b.remove(); lastActive = Date.now(); route(); toast('Up to date.'); };
   document.body.appendChild(b);
 }
