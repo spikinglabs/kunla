@@ -331,9 +331,18 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .cost-svg .t.end { text-anchor: end; }
 .cost-svg .t.ink { fill: var(--ink); font-weight: 600; }
 .cost-svg .lead { stroke: var(--ink); stroke-width: 1; }
+.usage { background: var(--sunk); border-radius: 14px; padding: 16px; display: grid; gap: 10px; }
+.usage-h { font: 500 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.usage-h b { color: var(--ink); font-weight: 600; }
+.ubar { height: 22px; border-radius: 7px; background: var(--surface); border: 1px solid var(--rule-2); overflow: hidden; }
+.ubar i { display: block; width: 1.2%; min-width: 4px; height: 100%; background: var(--ink); }
+.ulabels { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; font: 12px/1.4 var(--mono); color: var(--muted); }
+.ulabels b { color: var(--ink); font-weight: 600; }
+.breakdown th { text-align: left; font: 500 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 6px 0; }
+.breakdown th:last-child { text-align: right; }
 .breakdown { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
 .breakdown td { padding: 8px 0; border-top: 1px solid var(--rule); color: var(--ink-2); }
-.breakdown td:last-child { text-align: right; font-family: var(--mono); font-size: 13px; color: var(--ink); }
+.breakdown td:last-child { text-align: right; white-space: nowrap; padding-left: 12px; font-family: var(--mono); font-size: 13px; color: var(--ink); }
 .breakdown tr.total td { font-weight: 600; color: var(--ink); border-top: 1.5px solid var(--ink); }
 .line-svg .grid { stroke: var(--rule); stroke-width: 1; }
 .line-svg .ax { font: 400 11px var(--mono); fill: var(--muted); }
@@ -777,20 +786,20 @@ footer a { color: var(--ink-2); }
       <div class="panel chart-panel">
         <h3>Hosting for a small team</h3>
         <div class="stat"><span class="v">$0</span><span class="u">a month on Cloudflare's free plan</span></div>
-        <svg class="cost-svg" viewBox="0 0 480 92" role="img" aria-label="Estimated 1,200 requests a day against the free plan's 100,000, about 1.2 percent.">
-          <text class="t" x="0" y="14">Requests per day</text>
-          <rect class="track" x="0" y="26" width="480" height="30" rx="8"/>
-          <rect class="used" x="0" y="26" width="6" height="30" rx="3"/>
-          <line class="lead" x1="3" y1="58" x2="3" y2="72"/>
-          <text class="t ink" x="10" y="82">Kunla ≈ 1,200 (1.2%)</text>
-          <text class="t end" x="480" y="82">Free plan 100,000</text>
-        </svg>
-        <table class="breakdown" aria-label="Estimated daily requests">
-          <tr><td>Open tabs asking "anything new?" every 30 s</td><td>600</td></tr>
-          <tr><td>Agent tool calls (4 agents)</td><td>400</td></tr>
-          <tr><td>Page loads and actions</td><td>200</td></tr>
-          <tr class="total"><td>Per day, estimated</td><td>1,200</td></tr>
-        </table>
+        <div class="usage">
+          <p class="usage-h">Usage, not money: <b>requests per day</b></p>
+          <div class="ubar" role="img" aria-label="About 1,200 requests a day, 1.2 percent of the free plan's 100,000 requests a day."><i></i></div>
+          <div class="ulabels"><span><b>Kunla: about 1,200 requests/day</b> (1.2%)</span><span>Free plan limit: 100,000 requests/day</span></div>
+          <table class="breakdown">
+            <thead><tr><th>Where requests come from</th><th>Requests/day</th></tr></thead>
+            <tbody>
+              <tr><td>Open tabs asking "anything new?" every 30 s</td><td>600 req</td></tr>
+              <tr><td>Agent tool calls (4 agents)</td><td>400 req</td></tr>
+              <tr><td>Page loads and actions</td><td>200 req</td></tr>
+              <tr class="total"><td>Total, estimated</td><td>≈ 1,200 req</td></tr>
+            </tbody>
+          </table>
+        </div>
         <p class="note">Estimate for 5 people and 4 agents. Hidden tabs ask nothing, idle tabs pause after 3 minutes, each check is a single-row read. No server-side model calls: drafting is done by your own agents.</p>
       </div>
 
