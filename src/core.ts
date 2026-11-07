@@ -51,7 +51,6 @@ export interface Ctx {
   notify?: (w: Wake) => void;
   /** Run work after the response (the Worker uses waitUntil); absent means run it inline. */
   defer?: (job: () => Promise<unknown>) => void;
-  githubToken?: string;
 }
 
 const id = () => crypto.randomUUID();

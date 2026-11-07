@@ -2,12 +2,11 @@
 // so nobody (person or agent) has to call log_work for work GitHub already knows about.
 // One route, signature-verified, no polling: GitHub calls us only when something happens.
 import * as core from './core';
-import { onCheckSuite, getToken, canMerge } from './merge';
+import { onCheckSuite, canMerge } from './merge';
 import type { Status, Task } from './core';
 import * as ghapp from './githubapp';
 
 export const GITHUB_EVENTS = ['pull_request', 'push', 'check_suite'];
-const SECRET_KEY = 'github_webhook_secret';
 const MAX_KEYS = 20;          // a PR citing more tasks than this is almost surely noise
 const MAX_COMMITS = 50;       // a push carries at most 20 commits in the payload anyway
 const DELIVERY_DAYS = 3;      // GitHub retries within hours; keep ids a little longer
@@ -35,40 +34,7 @@ export async function verifySignature(secrets: string[], body: string, header: s
   return ok;
 }
 
-// ---------- secret (one per workspace) ----------
-// Every workspace on a deployment shares the one webhook URL; the secret a delivery is signed with
-// says which workspace it belongs to. The first workspace keeps the plain key it had before there
-// were several, and GITHUB_WEBHOOK_SECRET (an env var) also belongs to the first workspace.
-
-async function firstSpace(db: D1Database): Promise<string> {
-  const r = await db.prepare(`SELECT id FROM projects WHERE kind = 'workspace' ORDER BY created_at LIMIT 1`).first<{ id: string }>();
-  return r?.id ?? 'workspace';
-}
-
-async function secretKey(db: D1Database, space: string) {
-  return space === (await firstSpace(db)) ? SECRET_KEY : `${SECRET_KEY}:${space}`;
-}
-
-export async function getSecret(db: D1Database, space: string): Promise<string | null> {
-  const r = await db.prepare('SELECT value FROM settings WHERE key = ?').bind(await secretKey(db, space)).first<{ value: string }>();
-  return r?.value ?? null;
-}
-
-/** Every workspace's secret, so a delivery can be matched to the workspace that signed it. */
-async function allSecrets(db: D1Database, envSecret?: string): Promise<{ space: string; secret: string }[]> {
-  const first = await firstSpace(db);
-  const rows = (await db.prepare(`SELECT key, value FROM settings WHERE key = ? OR key LIKE ?`).bind(SECRET_KEY, `${SECRET_KEY}:%`).all<{ key: string; value: string }>()).results;
-  const out = rows.map((r) => ({ space: r.key === SECRET_KEY ? first : r.key.slice(SECRET_KEY.length + 1), secret: r.value }));
-  if (envSecret) out.push({ space: first, secret: envSecret });
-  return out;
-}
-
-function newSecret(): string {
-  return hex(crypto.getRandomValues(new Uint8Array(24)).buffer as ArrayBuffer);
-}
-
-export async function connectionInfo(c: core.Ctx, envSecret?: string) {
-  const env = envSecret && c.space === (await firstSpace(c.db));
+export async function connectionInfo(c: core.Ctx) {
   const last = await c.db.prepare('SELECT MAX(created_at) AS at FROM webhook_log WHERE space_id = ? AND status < 300').bind(c.space).first<{ at: string | null }>();
   // Each repository that has sent this workspace something, with its latest delivery.
   const repos = (await c.db.prepare(
@@ -76,30 +42,20 @@ export async function connectionInfo(c: core.Ctx, envSecret?: string) {
      JOIN (SELECT repo, MAX(id) AS id FROM webhook_log WHERE space_id = ? AND repo IS NOT NULL GROUP BY repo) m ON m.id = l.id
      ORDER BY l.created_at DESC LIMIT 20`).bind(c.space).all()).results;
   const recent = (await c.db.prepare('SELECT event, repo, status, result, created_at FROM webhook_log WHERE space_id = ? ORDER BY id DESC LIMIT 8').bind(c.space).all()).results;
-  // A delivery whose signature matched no workspace: almost always a secret pasted wrong or replaced since.
-  const rejected = await c.db.prepare(`SELECT event, repo, created_at FROM webhook_log WHERE space_id IS NULL AND created_at > ? ORDER BY id DESC LIMIT 1`)
+  // A delivery signed with something other than the app's secret: almost always an old hand-made
+  // webhook still set up on a repository.
+  const rejected = await c.db.prepare(`SELECT event, repo, created_at FROM webhook_log WHERE status = 401 AND created_at > ? ORDER BY id DESC LIMIT 1`)
     .bind(new Date(Date.now() - 2 * 86400_000).toISOString()).first();
   return {
     webhook_url: `${c.baseUrl}/hooks/github`,
     content_type: 'application/json',
     events: GITHUB_EVENTS,
-    secret_set: !!(await getSecret(c.db, c.space)) || !!env,
-    merge_token_set: !!(await getToken(c)),
     merge_ready: await canMerge(c),
     app: await ghapp.info(c),
     last_delivery_at: last?.at ?? null,
     repos, recent,
     rejected: rejected && (!last?.at || String(rejected.created_at) > last.at) ? rejected : null,
   };
-}
-
-/** An admin makes (or replaces) the webhook secret. It is shown once; the old one stops working at once. */
-export async function rotateSecret(c: core.Ctx, envSecret?: string) {
-  if (c.me.kind !== 'human' || !JSON.parse(c.me.roles || '[]').includes('admin')) throw new core.KunlaError(403, 'Only admins can connect GitHub.');
-  const secret = newSecret();
-  await c.db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
-    .bind(await secretKey(c.db, c.space), secret, new Date().toISOString()).run();
-  return { ...(await connectionInfo(c, envSecret)), secret };
 }
 
 // ---------- task keys ----------
@@ -223,7 +179,7 @@ async function onPush(c: core.Ctx, p: any): Promise<Result> {
 /** One line for the delivery log, in words a person reads on the Connect GitHub dialog. */
 export function describe(kind: string, r: Result): string {
   const b = r.body as any;
-  if (r.status === 401) return 'Rejected: the secret does not match';
+  if (r.status === 401) return 'Rejected: not signed by the Kunla app (an old webhook?)';
   if (b.error) return String(b.error);
   if (b.pong) return 'Ping received: connected';
   if (b.uninstalled) return `Kunla app uninstalled from ${b.uninstalled === true ? 'an account' : b.uninstalled}`;
@@ -238,10 +194,10 @@ export function describe(kind: string, r: Result): string {
 const LOG_DAYS = 30;
 
 /** POST /hooks/github. Verifies the signature, counts each delivery once, applies the event, and logs the outcome. */
-export async function handleWebhook(base: core.Ctx, req: Request, envSecret?: string): Promise<Result> {
+export async function handleWebhook(base: core.Ctx, req: Request): Promise<Result> {
   const raw = await req.text();
   const kind = req.headers.get('x-github-event') ?? '';
-  const { result, space } = await verifyAndApply(base, req, raw, kind, envSecret);
+  const { result, space } = await verifyAndApply(base, req, raw, kind);
   if (result.status !== 503) {
     let repo: string | null = null;
     try { repo = JSON.parse(raw)?.repository?.full_name ?? null; } catch { /* form-encoded or junk */ }
@@ -255,17 +211,12 @@ export async function handleWebhook(base: core.Ctx, req: Request, envSecret?: st
   return result;
 }
 
-async function verifyAndApply(base: core.Ctx, req: Request, raw: string, kind: string, envSecret?: string): Promise<{ result: Result; space: string | null }> {
-  const secrets = await allSecrets(base.db, envSecret);
+async function verifyAndApply(base: core.Ctx, req: Request, raw: string, kind: string): Promise<{ result: Result; space: string | null }> {
   const app = await ghapp.getApp(base.db);
-  if (!secrets.length && !app) return { space: null, result: { status: 503, body: { error: 'GitHub is not connected yet. An admin connects it in Kunla (Team → Connect GitHub).' } } };
-  const sig = req.headers.get('x-hub-signature-256');
+  if (!app) return { space: null, result: { status: 503, body: { error: 'GitHub is not connected yet. An admin connects it in Kunla (Team → Connect GitHub).' } } };
   // The Kunla GitHub App signs every delivery with its own secret; the installation says the workspace.
-  if (app && await verifySignature([app.webhook_secret], raw, sig)) return fromApp(base, req, raw, kind);
-  let space: string | null = null;
-  for (const s of secrets) if (await verifySignature([s.secret], raw, sig)) { space = s.space; break; }
-  if (!space) return { space: null, result: { status: 401, body: { error: 'Bad signature.' } } };
-  return { space, result: await apply({ ...base, space }, req, raw, kind, space) };
+  if (!(await verifySignature([app.webhook_secret], raw, req.headers.get('x-hub-signature-256')))) return { space: null, result: { status: 401, body: { error: 'Bad signature.' } } };
+  return fromApp(base, req, raw, kind);
 }
 
 async function fromApp(base: core.Ctx, req: Request, raw: string, kind: string): Promise<{ result: Result; space: string | null }> {

@@ -461,11 +461,11 @@ describe('upgrading a Kunla made before there were several workspaces', () => {
     expect(me.body).toMatchObject({ name: "L's claude.ai", sponsor: 'L', workspace: { key: 'SL' }, projects: [{ key: 'KD' }] });
     expect((await tool('kun_old_connector', 'get_task', { key: 'KD-1' })).data.key).toBe('KD-1');
     expect((await call('GET', '/api/tasks', 'kun_old_human')).body.map((x: any) => x.key)).toEqual(['KD-1']);
-    expect((await call('GET', '/api/integrations/github', 'kun_old_human')).body.secret_set).toBe(true);
+    // Hand-made webhook secrets are forgotten: GitHub connects through the Kunla app now.
+    expect(await db.prepare(`SELECT 1 FROM settings WHERE key = 'github_webhook_secret'`).first()).toBeNull();
     // A new workspace made after the upgrade is separate from the old data.
     const ws = await call('POST', '/api/workspaces', 'kun_old_human', { name: 'Community' });
     expect((await call('GET', '/api/tasks', ws.body.token)).body).toEqual([]);
-    expect((await call('GET', '/api/integrations/github', ws.body.token)).body.secret_set).toBe(false);
   });
 });
 

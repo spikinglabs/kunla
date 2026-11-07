@@ -19,8 +19,6 @@ export interface Env {
   LEASE_MINUTES?: string;
   SETUP_TOKEN?: string;
   PUBLIC_URL?: string;
-  GITHUB_WEBHOOK_SECRET?: string; // optional; admins can also create the secret in the app
-  GITHUB_TOKEN?: string;          // optional; lets "approve" merge PRs (admins can also store one in the app)
 }
 type Vars = { ctx: core.Ctx };
 type C = Context<{ Bindings: Env; Variables: Vars }>;
@@ -44,7 +42,7 @@ async function authenticate(c: C): Promise<core.Ctx | null> {
   if (!me) return null;
   // The token decides the workspace: every read and write below is limited to it.
   return { db: c.env.DB, me, space: me.space_id, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)),
-    defer: (job) => sendLater(c, job()), githubToken: c.env.GITHUB_TOKEN };
+    defer: (job) => sendLater(c, job()) };
 }
 
 // Wake-up calls go out after the response, so a person's click never waits on an agent's server.
@@ -75,8 +73,8 @@ app.post('/api/setup', async (c) => {
 // GitHub calls this when a pull request or push happens; tasks cited by key update themselves.
 app.post('/hooks/github', async (c) => {
   const ctx: core.Ctx = { db: c.env.DB, me: null as any, space: '', baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30),
-    notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)), githubToken: c.env.GITHUB_TOKEN };
-  const r = await github.handleWebhook(ctx, c.req.raw, c.env.GITHUB_WEBHOOK_SECRET);
+    notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)) };
+  const r = await github.handleWebhook(ctx, c.req.raw);
   return c.json(r.body, r.status as any);
 });
 // The Kunla GitHub App round trips (browser navigations from github.com, so no bearer token: a
@@ -182,10 +180,8 @@ api.get('/map', async (c) => c.json(await views.workMap(c.get('ctx'), Math.min(1
 api.post('/tasks/:key/comment', async (c) => c.json(await core.updateTask(c.get('ctx'), c.req.param('key'), { note: (await c.req.json<any>()).text })));
 api.patch('/rules/:id', async (c) => { await core.setRuleActive(c.get('ctx'), c.req.param('id'), !!(await c.req.json<any>()).active); return c.json({ ok: true }); });
 
-api.get('/integrations/github', async (c) => c.json(await github.connectionInfo(c.get('ctx'), c.env.GITHUB_WEBHOOK_SECRET)));
-api.post('/integrations/github', async (c) => c.json(await github.rotateSecret(c.get('ctx'), c.env.GITHUB_WEBHOOK_SECRET)));
+api.get('/integrations/github', async (c) => c.json(await github.connectionInfo(c.get('ctx'))));
 api.post('/integrations/github/app', async (c) => c.json(await ghapp.start(c.get('ctx'), await c.req.json().catch(() => ({})))));
-api.put('/integrations/github/token', async (c) => c.json(await merge.setToken(c.get('ctx'), (await c.req.json<any>()).token ?? null)));
 // The PR behind a task in Review, with its checks, so the review card can say "Approve and merge PR #N".
 api.get('/tasks/:key/pr', async (c) => {
   const ctx = c.get('ctx');
