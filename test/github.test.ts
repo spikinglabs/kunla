@@ -194,3 +194,20 @@ describe('pushes', () => {
     expect((await hook('issues', { action: 'opened' })).status).toBe(202);
   });
 });
+
+describe('webhooks with several workspaces', () => {
+  it('routes each delivery to the workspace whose secret signed it', async () => {
+    const ws = (await call('POST', '/api/workspaces', human, { name: 'Community', key: 'COM' })).body;
+    await call('POST', '/api/tasks', ws.token, { title: 'Meetup venue' });                     // COM-1
+    const other = (await call('POST', '/api/integrations/github', ws.token)).body.secret;
+    expect(other).not.toBe(secret);
+    // The Community secret can't touch MKT tasks, and the first workspace's secret can't touch COM tasks.
+    const a = await hook('pull_request', pr('opened', {}, { title: 'MKT-1 and COM-1', head: { ref: 'x' } }), { secret: other });
+    expect(a.body.updated.map((u: any) => u.key)).toEqual(['COM-1']);
+    const b = await hook('pull_request', pr('opened', {}, { number: 8, html_url: 'https://github.com/acme/app/pull/8', title: 'MKT-2 and COM-1', head: { ref: 'y' } }));
+    expect(b.body.updated.map((u: any) => u.key)).toEqual(['MKT-2']);
+    expect((await call('GET', '/api/tasks/COM-1', ws.token)).body.status).toBe('review');
+    // Each workspace only sees its own last delivery and its own secret.
+    expect((await call('GET', '/api/integrations/github', ws.token)).body.secret_set).toBe(true);
+  });
+});

@@ -23,13 +23,20 @@ class Stmt {
   async raw() { return this.s().all(...(this.args as any[])).map((r: any) => Object.values(r)); }
 }
 
-export function makeD1(path = ':memory:'): D1Database {
+/** before: apply only migrations whose file name sorts before this, to test upgrading an older database. */
+export function makeD1(path = ':memory:', opts: { before?: string } = {}): D1Database {
   const db = new DatabaseSync(path);
   const dir = join(new URL('.', import.meta.url).pathname, '..', 'migrations');
-  for (const f of readdirSync(dir).filter((f: string) => f.endsWith('.sql')).sort()) db.exec(readFileSync(join(dir, f), 'utf8'));
+  const files = readdirSync(dir).filter((f: string) => f.endsWith('.sql')).sort();
+  const applied = new Set<string>();
+  const migrate = (upTo?: string) => {
+    for (const f of files) if (!applied.has(f) && (!upTo || f < upTo)) { db.exec(readFileSync(join(dir, f), 'utf8')); applied.add(f); }
+  };
+  migrate(opts.before);
   return {
     prepare: (sql: string) => new Stmt(db, sql),
     batch: async (stmts: any[]) => Promise.all(stmts.map((s) => s.run())),
     exec: async (sql: string) => { db.exec(sql); return { count: 0, duration: 0 }; },
+    migrate: () => migrate(),
   } as unknown as D1Database;
 }

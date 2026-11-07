@@ -117,7 +117,7 @@ export const TOOLS: Tool[] = [
     },
     run: async (c, a) => {
       if (!a.force && !a.parent) {
-        const similar = await core.similarOpenTasks(c.db, a.title ?? '', a.project);
+        const similar = await core.similarOpenTasks(c, a.title ?? '', a.project);
         if (similar.length) return { created: false, possible_duplicates: similar, message: 'A similar open task already exists. Work on it (or add a sub-task under it) instead; pass force: true only if this is really different.' };
       }
       return core.createTask(c, a);

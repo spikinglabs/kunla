@@ -162,17 +162,22 @@ function renderShell(view) {
 }
 
 // ---------- workspaces ----------
-// Each workspace is its own deployment and database. The browser keeps one token per
-// workspace and asks each one directly, so nothing is shared between them on the server.
+// A workspace is a hard boundary: its own people, agents and data, reached with its own token.
+// Several can live in this Kunla, and others can be on other deployments. The browser keeps one
+// token per workspace and asks each one directly; the server never links your memberships.
 const SPACES_KEY = 'kunla.spaces';
 const loadSpaces = () => { try { return JSON.parse(localStorage.getItem(SPACES_KEY) || '[]'); } catch { return []; } };
 const saveSpaces = (l) => { try { localStorage.setItem(SPACES_KEY, JSON.stringify(l)); } catch {} };
+// Entries saved before there were several workspaces per address have no ws; treat them as this one.
+const isHere = (x) => x.url === location.origin && (!x.ws || x.ws === me?.workspace?.id);
+const sameSpace = (a, b) => a.url === b.url && (a.ws ?? null) === (b.ws ?? null);
 function rememberSpace() {
-  const list = loadSpaces().filter((x) => x.url !== location.origin);
-  list.unshift({ url: location.origin, token, name: me.workspace?.name ?? location.host });
+  const list = loadSpaces().filter((x) => !isHere(x));
+  list.unshift({ url: location.origin, ws: me.workspace?.id, token, name: me.workspace?.name ?? location.host });
   saveSpaces(list);
 }
-const otherSpaces = () => loadSpaces().filter((x) => x.url !== location.origin);
+const otherSpaces = () => loadSpaces().filter((x) => !isHere(x));
+const where = (sp) => (sp.url === location.origin ? 'this Kunla' : new URL(sp.url).host);
 async function spaceCounts() {
   return Promise.all(otherSpaces().map(async (sp) => {
     try {
@@ -183,16 +188,23 @@ async function spaceCounts() {
   }));
 }
 // The token travels in the URL fragment, which browsers never send to a server.
-const switchTo = (sp) => { location.href = `${sp.url}/#/use/${encodeURIComponent(sp.token)}`; };
+// Within this Kunla only the fragment changes, so the app switches without reloading.
+const switchTo = (sp) => { location.href = `${sp.url === location.origin ? location.pathname : sp.url + '/'}#/use/${encodeURIComponent(sp.token)}`; };
 async function openSpaces() {
   const box = $('palette');
   box.hidden = false;
   box.innerHTML = html`<div class="pal spaces" role="dialog" aria-label="Workspaces"><div class="pad stack" style="gap:6px"><span class="eyebrow">Workspaces</span>
       <p class="muted" style="font-size:13.5px">Each one keeps its own people, agents and data. Only this browser knows you belong to all of them.</p></div>
-    <div class="opts" id="sp-list"><div class="opt on"><span class="ic">${initials(me.workspace?.name)}</span><div class="grow"><div class="t">${me.workspace?.name}</div><small>${location.host} · this one · ${plural(decisionCount, 'decision')}</small></div></div></div>
-    <form class="pad stack" data-act="submit:add" style="border-top:1px solid var(--rule)"><div class="label">Add a workspace</div>
-      <div class="row" style="flex-wrap:nowrap"><input name="url" required placeholder="https://startup.example.com" aria-label="Workspace address"><input name="token" required type="password" placeholder="kun_…" aria-label="Your token there" style="max-width:180px"></div>
-      <div class="row"><button class="btn go sm">Add</button><span class="spacer grow"></span><button class="btn quiet sm" type="button" data-act="click:out">Sign out of ${me.workspace?.name}</button></div></form></div>`;
+    <div class="opts" id="sp-list"><div class="opt on"><span class="ic">${initials(me.workspace?.name)}</span><div class="grow"><div class="t">${me.workspace?.name}</div><small>${me.workspace?.key} · this one · ${plural(decisionCount, 'decision')}</small></div></div></div>
+    ${raw(me.roles?.includes('admin') ? html`<form class="pad stack" data-act="submit:create" style="border-top:1px solid var(--rule)"><div class="label">New workspace</div>
+      <div class="row" style="flex-wrap:nowrap"><input name="name" required maxlength="80" placeholder="Community, My startup, Work…" aria-label="Workspace name"><input name="key" maxlength="10" placeholder="Key" aria-label="Task key prefix (optional)" style="max-width:84px;font-family:var(--mono);text-transform:uppercase"></div>
+      <span class="muted" style="font-size:12px">Fully separate: nothing here is visible there. You join it as its admin; the key is picked for you if you leave it empty.</span>
+      <div class="row"><button class="btn go sm">Create</button></div></form>` : '')}
+    <details class="pad" style="border-top:1px solid var(--rule)"><summary class="label" style="cursor:pointer">Join a workspace on another Kunla</summary>
+      <form class="stack" data-act="submit:add" style="margin-top:8px">
+      <div class="row" style="flex-wrap:nowrap"><input name="url" required placeholder="https://kunla.other-org.com" aria-label="Kunla address"><input name="token" required type="password" placeholder="kun_…" aria-label="Your token there" style="max-width:180px"></div>
+      <div class="row"><button class="btn sm">Join</button></div></form></details>
+    <div class="pad row" style="border-top:1px solid var(--rule)"><span class="spacer grow"></span><button class="btn quiet sm" type="button" data-act="click:out">Sign out of ${me.workspace?.name}</button></div></div>`;
   box.onclick = (e) => { if (e.target === box) { box.hidden = true; box.innerHTML = ''; } };
   bind(box, {
     add: async (f) => {
@@ -200,16 +212,33 @@ async function openSpaces() {
       const r = await fetch(url + '/api/me', { headers: { authorization: `Bearer ${d.token.trim()}` } }).catch(() => null);
       if (!r?.ok) throw new Error('That address and token did not work together.');
       const who = await r.json();
-      saveSpaces([...loadSpaces().filter((x) => x.url !== url), { url, token: d.token.trim(), name: who.workspace?.name ?? new URL(url).host }]);
+      const entry = { url, ws: who.workspace?.id, token: d.token.trim(), name: who.workspace?.name ?? new URL(url).host };
+      saveSpaces([...loadSpaces().filter((x) => !sameSpace(x, entry)), entry]);
       toast(`Added ${who.workspace?.name}.`); openSpaces();
     },
-    out: () => { saveSpaces(loadSpaces().filter((x) => x.url !== location.origin)); box.hidden = true; signOut(); },
+    create: async (f) => {
+      const d = formData(f);
+      const r = await api('POST', '/api/workspaces', { name: d.name, key: d.key?.trim() || undefined });
+      const entry = { url: location.origin, ws: r.workspace.id, token: r.token, name: r.workspace.name };
+      saveSpaces([...loadSpaces().filter((x) => !sameSpace(x, entry)), entry]);
+      // The token is the only way back in from another device, so show it once, like at setup.
+      box.innerHTML = html`<div class="pal spaces" role="dialog" aria-label="New workspace"><div class="pad stack">
+        <span class="eyebrow">New workspace · ${r.workspace.key}</span><h2 style="margin:0">${r.workspace.name} is ready</h2>
+        <p class="muted" style="font-size:13.5px">This browser remembers it. To sign in to ${r.workspace.name} on another device, you need this token; it is shown once, so put it in your password manager.</p>
+        ${raw(copyBlock('Your token for ' + r.workspace.name, r.token, { secret: true }))}
+        <div class="row"><button class="btn go" data-act="click:open">Open ${r.workspace.name}</button><button class="btn quiet" data-act="click:stay">Stay here</button></div></div></div>`;
+      bind(box, {
+        open: () => { box.hidden = true; switchTo(entry); }, stay: () => { box.hidden = true; box.innerHTML = ''; },
+        copy: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); el.textContent = 'Copied'; } catch { toast('Copy did not work here. Select the text and copy it.'); } },
+      });
+    },
+    out: () => { saveSpaces(loadSpaces().filter((x) => !isHere(x))); box.hidden = true; signOut(); },
   });
   const rows = await spaceCounts();
   const list = $('sp-list');
   if (!list) return;
   list.insertAdjacentHTML('beforeend', rows.map((sp, i) => html`<div class="opt" data-i="${i}"><span class="ic">${initials(sp.name)}</span><div class="grow"><div class="t">${sp.name}</div>
-    <small>${new URL(sp.url).host} · ${sp.ok ? plural(sp.count, 'decision') : 'not reachable'}</small></div><kbd>↵</kbd></div>`).join(''));
+    <small>${where(sp)} · ${sp.ok ? plural(sp.count, 'decision') : 'not reachable'}</small></div><kbd>↵</kbd></div>`).join(''));
   list.querySelectorAll('.opt[data-i]').forEach((el) => { el.onclick = () => switchTo(rows[Number(el.dataset.i)]); });
 }
 $('me').onclick = () => openSpaces();

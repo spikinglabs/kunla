@@ -38,7 +38,8 @@ async function authenticate(c: C): Promise<core.Ctx | null> {
   if (!token) return null;
   const me = await core.memberForToken(c.env.DB, token);
   if (!me) return null;
-  return { db: c.env.DB, me, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)) };
+  // The token decides the workspace: every read and write below is limited to it.
+  return { db: c.env.DB, me, space: me.space_id, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)) };
 }
 
 // Wake-up calls go out after the response, so a person's click never waits on an agent's server.
@@ -55,7 +56,7 @@ const requireAuth = async (c: C, next: () => Promise<void>) => {
 };
 
 // Bearer tokens only, no cookies, so any origin may call the API: this is what lets one
-// person's web app show several workspaces (each its own deployment) side by side.
+// person's web app show several workspaces side by side, here or on other deployments.
 app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], maxAge: 86400 }));
 
 // ---------- public ----------
@@ -68,7 +69,7 @@ app.post('/api/setup', async (c) => {
 });
 // GitHub calls this when a pull request or push happens; tasks cited by key update themselves.
 app.post('/hooks/github', async (c) => {
-  const ctx: core.Ctx = { db: c.env.DB, me: null as any, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30) };
+  const ctx: core.Ctx = { db: c.env.DB, me: null as any, space: '', baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30) };
   const r = await github.handleWebhook(ctx, c.req.raw, c.env.GITHUB_WEBHOOK_SECRET);
   return c.json(r.body, r.status as any);
 });
@@ -115,7 +116,7 @@ api.get('/next', async (c) => c.json(await core.nextTask(c.get('ctx'), c.req.que
 api.get('/status', async (c) => c.json(await core.projectStatus(c.get('ctx'), c.req.query('project'))));
 api.get('/tasks', async (c) => c.json(await core.listTasks(c.get('ctx'), c.req.query() as any)));
 api.post('/tasks', async (c) => c.json(await core.createTask(c.get('ctx'), await c.req.json())));
-api.get('/similar', async (c) => c.json(await core.similarOpenTasks(c.env.DB, c.req.query('title') ?? '', c.req.query('project'))));
+api.get('/similar', async (c) => c.json(await core.similarOpenTasks(c.get('ctx'), c.req.query('title') ?? '', c.req.query('project'))));
 api.get('/tasks/:key', async (c) => c.json(await core.taskDetail(c.get('ctx'), c.req.param('key'))));
 api.patch('/tasks/:key', async (c) => c.json(await core.updateTask(c.get('ctx'), c.req.param('key'), await c.req.json())));
 api.post('/tasks/:key/claim', async (c) => c.json(await core.claimTask(c.get('ctx'), c.req.param('key'), (await c.req.json<any>().catch(() => ({})))?.session)));
@@ -128,13 +129,13 @@ api.post('/tasks/:key/park', async (c) => c.json(await core.parkTask(c.get('ctx'
 api.post('/tasks/:key/unpark', async (c) => c.json(await core.unparkTask(c.get('ctx'), c.req.param('key'))));
 api.post('/log', async (c) => c.json(await core.logWork(c.get('ctx'), await c.req.json())));
 
-api.get('/members', async (c) => c.json(await core.trackRecord(c.env.DB)));
+api.get('/members', async (c) => c.json(await core.trackRecord(c.get('ctx'))));
 api.patch('/members/:id', async (c) => c.json(await core.updateMember(c.get('ctx'), c.req.param('id'), await c.req.json())));
 api.put('/members/:id/wake', async (c) => c.json(await core.setCallback(c.get('ctx'), c.req.param('id'), await c.req.json())));
 api.delete('/members/:id/wake', async (c) => c.json(await core.setCallback(c.get('ctx'), c.req.param('id'), null)));
 api.post('/members/:id/wake/test', async (c) => {
   const ctx = c.get('ctx');
-  const m = await core.getMember(c.env.DB, c.req.param('id'));
+  const m = await core.getMember(ctx, c.req.param('id'));
   if (ctx.me.kind !== 'human' || !(ctx.me.roles.includes('admin') || m.sponsor_id === ctx.me.id)) return c.json({ error: "Only the agent's sponsor or an admin can test its wake-up URL." }, 403);
   const cb = wake.parseCallback(m.callback);
   if (!cb) return c.json({ error: `${m.name} has no wake-up URL yet.` }, 400);
@@ -142,12 +143,13 @@ api.post('/members/:id/wake/test', async (c) => {
 });
 api.post('/members/:id/token', async (c) => c.json(await core.rotateToken(c.get('ctx'), c.req.param('id'))));
 api.delete('/members/:id', async (c) => c.json(await core.removeMember(c.get('ctx'), c.req.param('id'))));
+api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ctx'), await c.req.json())));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
-api.get('/projects', async (c) => c.json(await core.listProjects(c.env.DB)));
-api.get('/projects/:key', async (c) => c.json(await core.getProject(c.env.DB, c.req.param('key'))));
+api.get('/projects', async (c) => c.json(await core.listProjects(c.get('ctx'))));
+api.get('/projects/:key', async (c) => c.json(await core.getProject(c.get('ctx'), c.req.param('key'))));
 api.post('/projects', async (c) => c.json(await core.createProject(c.get('ctx'), await c.req.json())));
 api.patch('/projects/:key', async (c) => c.json(await core.updateProject(c.get('ctx'), c.req.param('key'), await c.req.json())));
-api.get('/rules', async (c) => c.json(await views.rulesWithReach(c.env.DB, c.req.query('project'))));
+api.get('/rules', async (c) => c.json(await views.rulesWithReach(c.get('ctx'), c.req.query('project'))));
 api.get('/briefing', async (c) => c.json(await views.briefing(c.get('ctx'), Number(c.req.query('hours') || 24))));
 api.get('/changes', async (c) => c.json(await views.changes(c.get('ctx'))));
 api.get('/progress', async (c) => c.json(await views.progress(c.get('ctx'))));

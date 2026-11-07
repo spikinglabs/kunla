@@ -81,10 +81,11 @@ export async function deliver(db: D1Database, w: Wake, fetcher: typeof fetch = f
   }
   if (w.task && w.event !== 'ping') {
     const ok = !error;
-    await db.prepare('INSERT INTO events (task_id, actor_id, type, note, data, created_at) VALUES (?,?,?,?,?,?)').bind(
+    // The event lands in the task's own workspace.
+    await db.prepare(`INSERT INTO events (task_id, actor_id, type, note, data, created_at, space_id) VALUES (?,?,?,?,?,?, (SELECT space_id FROM tasks WHERE id = ?))`).bind(
       w.task.id, null, ok ? 'woke' : 'wake_failed',
       ok ? `Woke ${w.member.name} so it carries on.` : `Could not wake ${w.member.name} (${error}). Its sponsor can check the wake-up URL on the Team page.`,
-      JSON.stringify({ member_id: w.member.id, event: w.event, status }), new Date().toISOString()).run();
+      JSON.stringify({ member_id: w.member.id, event: w.event, status }), new Date().toISOString(), w.task.id).run();
   }
   return { ok: !error, status, error };
 }
@@ -95,8 +96,8 @@ export async function deliver(db: D1Database, w: Wake, fetcher: typeof fetch = f
  */
 export async function wakeMember(c: Ctx, memberId: string | null | undefined, event: WakeEvent, task: Task, note?: string | null) {
   if (!c.notify || !memberId || memberId === c.me.id) return;
-  const m = await c.db.prepare('SELECT id, name, kind, callback FROM members WHERE id = ? AND removed_at IS NULL')
-    .bind(memberId).first<Pick<Member, 'id' | 'name' | 'kind'> & { callback: string | null }>();
+  const m = await c.db.prepare('SELECT id, name, kind, callback FROM members WHERE id = ? AND removed_at IS NULL AND space_id = ?')
+    .bind(memberId, c.space).first<Pick<Member, 'id' | 'name' | 'kind'> & { callback: string | null }>();
   const callback = m && m.kind === 'ai' ? parseCallback(m.callback) : null;
   if (!m || !callback) return;
   const fresh = await c.db.prepare('SELECT id, key, title, status FROM tasks WHERE id = ?').bind(task.id).first<{ id: string; key: string; title: string; status: string }>();
