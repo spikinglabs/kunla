@@ -9,6 +9,7 @@ import { oauth } from './oauth';
 import * as views from './views';
 import * as github from './github';
 import * as wake from './wake';
+import * as merge from './merge';
 
 export interface Env {
   DB: D1Database;
@@ -17,6 +18,7 @@ export interface Env {
   SETUP_TOKEN?: string;
   PUBLIC_URL?: string;
   GITHUB_WEBHOOK_SECRET?: string; // optional; admins can also create the secret in the app
+  GITHUB_TOKEN?: string;          // optional; lets "approve" merge PRs (admins can also store one in the app)
 }
 type Vars = { ctx: core.Ctx };
 type C = Context<{ Bindings: Env; Variables: Vars }>;
@@ -39,7 +41,8 @@ async function authenticate(c: C): Promise<core.Ctx | null> {
   const me = await core.memberForToken(c.env.DB, token);
   if (!me) return null;
   // The token decides the workspace: every read and write below is limited to it.
-  return { db: c.env.DB, me, space: me.space_id, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)) };
+  return { db: c.env.DB, me, space: me.space_id, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)),
+    defer: (job) => sendLater(c, job()), githubToken: c.env.GITHUB_TOKEN };
 }
 
 // Wake-up calls go out after the response, so a person's click never waits on an agent's server.
@@ -69,7 +72,8 @@ app.post('/api/setup', async (c) => {
 });
 // GitHub calls this when a pull request or push happens; tasks cited by key update themselves.
 app.post('/hooks/github', async (c) => {
-  const ctx: core.Ctx = { db: c.env.DB, me: null as any, space: '', baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30) };
+  const ctx: core.Ctx = { db: c.env.DB, me: null as any, space: '', baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30),
+    notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)), githubToken: c.env.GITHUB_TOKEN };
   const r = await github.handleWebhook(ctx, c.req.raw, c.env.GITHUB_WEBHOOK_SECRET);
   return c.json(r.body, r.status as any);
 });
@@ -160,6 +164,18 @@ api.patch('/rules/:id', async (c) => { await core.setRuleActive(c.get('ctx'), c.
 
 api.get('/integrations/github', async (c) => c.json(await github.connectionInfo(c.get('ctx'), c.env.GITHUB_WEBHOOK_SECRET)));
 api.post('/integrations/github', async (c) => c.json(await github.rotateSecret(c.get('ctx'), c.env.GITHUB_WEBHOOK_SECRET)));
+api.put('/integrations/github/token', async (c) => c.json(await merge.setToken(c.get('ctx'), (await c.req.json<any>()).token ?? null)));
+// The PR behind a task in Review, with its checks, so the review card can say "Approve and merge PR #N".
+api.get('/tasks/:key/pr', async (c) => {
+  const ctx = c.get('ctx');
+  const t = await core.getTask(ctx, c.req.param('key'));
+  const pr = await merge.taskPr(c.env.DB, t.id);
+  if (!pr) return c.json({ pr: null });
+  const token = await merge.getToken(ctx);
+  if (!token) return c.json({ pr, merge_by: 'agent' });
+  try { return c.json({ pr, merge_by: 'kunla', ...(await merge.prState(token, pr)) }); }
+  catch (e) { return c.json({ pr, merge_by: 'kunla', error: (e as Error).message }); }
+});
 
 app.route('/api', api);
 

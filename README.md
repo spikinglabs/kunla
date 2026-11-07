@@ -90,7 +90,7 @@ Pull requests and commits that mention a task key (`KD-12` in the PR title, bran
    - **Payload URL**: `https://<your-kunla>/hooks/github`
    - **Content type**: `application/json`
    - **Secret**: the secret from step 1
-   - **Events**: *Let me select individual events*, then **Pull requests** and **Pushes**
+   - **Events**: *Let me select individual events*, then **Pull requests**, **Pushes** and **Check suites** (check suites let approved PRs merge as soon as their checks pass)
 3. Click **Add webhook**. GitHub sends a ping; the Connect GitHub dialog shows when it last heard from GitHub.
 
 What happens, for every existing task a PR or commit cites:
@@ -105,6 +105,15 @@ What happens, for every existing task a PR or commit cites:
 | Commit pushed | A history line with a link to the commit |
 
 A parent task finishes only when its last sub-task does, even when its PR merges or a person approves it. Tasks only move forward: done, declined, blocked and proposed (Inbox) tasks keep their status and just get the note. Every delivery is checked against `X-Hub-Signature-256` and counted once, even when GitHub retries it. One secret serves the whole workspace, so you can add the same webhook to several repositories. Every workspace on a Kunla uses the same webhook URL with its own secret; the secret a delivery is signed with decides which workspace it updates. It costs one Worker request per GitHub event and no polling.
+
+## Approve in Kunla merges the PR
+
+When the work on a task is a GitHub pull request, the review card says **Approve and merge PR #N** and shows the PR's checks. Approving merges it (squash):
+
+- **With a GitHub token in Kunla** (Team → Connect GitHub → Merge on approve; a fine-grained token with *Pull requests* and *Contents: Read and write*, or the Worker secret `GITHUB_TOKEN`, which counts for the first workspace only; each workspace keeps its own token), Kunla merges it itself. Green checks: merged at once. Checks still running: it merges when GitHub reports the check suite finished (tick **Check suites** on the webhook). Red checks or a conflict: the task goes back to In progress with the reason, and the agent is woken to fix it.
+- **Without a token**, the agent's wake-up call says to merge the PR once checks are green.
+
+The merge commit carries the `Task:` trailer, and the webhook then records the merge on the task.
 
 ## Wake agents when you decide
 

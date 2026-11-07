@@ -92,6 +92,29 @@ function bind(root, handlers) {
       });
     }
   });
+  fillPrStates(root);
+}
+
+// Approve in Kunla = merge the PR: review cards for work that is a GitHub PR say so, with the PR's checks.
+const prNumber = (deliverables) => { for (const d of deliverables || []) { const m = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/.exec(d.url || ''); if (m) return m[1]; } return null; };
+function fillPrStates(root) {
+  root.querySelectorAll('[data-pr]:not([data-filled])').forEach(async (el) => {
+    el.dataset.filled = '1';
+    try {
+      const r = await api('GET', `/api/tasks/${encodeURIComponent(el.dataset.pr)}/pr`);
+      if (!r.pr) return;
+      const n = `PR #${r.pr.number}`;
+      el.textContent = r.merge_by === 'agent' ? `Approving asks the agent to merge ${n} once its checks pass.`
+        : r.error ? `Kunla couldn't read ${n}: ${r.error}`
+        : r.state === 'merged' ? `${n} is already merged.`
+        : r.state === 'closed' ? `${n} is closed.`
+        : r.conflict ? `${n} has a conflict, so approving sends it back to fix.`
+        : r.checks === 'red' ? `${n}: checks are failing, so approving sends it back to fix.`
+        : r.checks === 'pending' ? `${n}: checks are running; it merges when they pass.`
+        : `${n}: checks pass; approving merges it.`;
+      el.className = `prstate ${r.conflict || r.checks === 'red' ? 'bad' : r.checks === 'green' ? 'ok' : ''}`;
+    } catch { /* the card works without it */ }
+  });
 }
 const formData = (form) => Object.fromEntries(new FormData(form).entries());
 const typing = () => document.activeElement?.matches('input, textarea, select');
@@ -267,8 +290,9 @@ function decisionCard(item, { solo = false } = {}) {
         <label class="check"><input type="checkbox" name="teach" data-act="change:teach"><span><b>Teach the team.</b> <span class="hint">Turn this into a rule sent with every future ${p?.key ?? ''} task, to every agent.</span></span></label>
         <div hidden data-rule><input name="rule" aria-label="Rule" placeholder="e.g. Every pricing tier shows a price."></div>
       </div>
+      ${raw(prNumber(t.deliverables) ? html`<p class="prstate" data-pr="${t.key}"></p>` : '')}
       <div class="acts">
-        <button class="btn go" name="v" value="approved">Approve <kbd>A</kbd></button>
+        <button class="btn go" name="v" value="approved">${prNumber(t.deliverables) ? `Approve and merge PR #${prNumber(t.deliverables)}` : 'Approve'} <kbd>A</kbd></button>
         <button class="btn" type="button" data-act="click:changes">Send back <kbd>C</kbd></button>
         <span class="spacer"></span>
         <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>
@@ -617,6 +641,7 @@ const EVENT = {
   parked: (e) => (e.data?.until ? `put it off until ${new Date(e.data.until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}` : 'put it off for someday'),
   unparked: () => 'brought it back',
   lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `moved it to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
+  merged: () => 'merged the PR', merge_waiting: () => 'will merge the PR when checks pass', merge_blocked: () => 'could not merge the PR yet',
   woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
   github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
 };
@@ -956,8 +981,14 @@ async function showGitHub(secret) {
       ${raw(info.secret_set ? '<p class="muted" style="font-size:13.5px">A new secret replaces the old one at once; paste it into every repository that uses the old one.</p>' : '')}`)}
     ${raw(fresh ? html`<ol class="steps"><li>In the GitHub repository, open <b>Settings → Webhooks → Add webhook</b>.</li><li>Paste these values. Kunla shows the secret only once.</li></ol>
       ${raw(copyBlock('Payload URL', info.webhook_url))}${raw(copyBlock('Secret', secret, { secret: true }))}
-      <ol class="steps" start="3"><li>Content type: <b>application/json</b>. Events: choose <b>Let me select individual events</b>, then tick <b>Pull requests</b> and <b>Pushes</b>.</li><li>Click <b>Add webhook</b>. GitHub sends a ping, and this page shows when it arrived.</li></ol>` : '')}
+      <ol class="steps" start="3"><li>Content type: <b>application/json</b>. Events: choose <b>Let me select individual events</b>, then tick <b>Pull requests</b>, <b>Pushes</b> and <b>Check suites</b>.</li><li>Click <b>Add webhook</b>. GitHub sends a ping, and this page shows when it arrived.</li></ol>` : '')}
+    ${raw(fresh ? '' : html`<form class="stack" style="gap:6px" data-act="submit:token"><div class="label">Merge on approve</div>
+      <p class="muted" style="font-size:13.5px">${info.merge_token_set ? 'Kunla merges a task\'s PR when you approve it (squash, once checks pass).' : 'Without a token, approving asks the agent to merge. With one, Kunla merges the PR itself. Use a fine-grained token with Pull requests and Contents: Read and write.'}</p>
+      <div class="field"><label for="gh-t">GitHub token</label><input id="gh-t" name="token" type="password" autocomplete="off" placeholder="${info.merge_token_set ? 'Saved. Paste a new one to replace it.' : 'github_pat_...'}"></div>
+      <div class="row"><button class="btn">Save token</button>${raw(info.merge_token_set ? '<button class="btn quiet" type="button" data-act="click:untoken">Remove</button>' : '')}</div></form>`)}
     <div class="row"><button class="btn quiet" data-act="click:close">${fresh ? "I've saved it" : 'Close'}</button></div></div>`, {
+    token: async (f) => { const v = formData(f).token; if (!v) return toast('Paste a token first.'); await api('PUT', '/api/integrations/github/token', { token: v }); toast('Saved. Approving now merges PRs.'); showGitHub(); },
+    untoken: async () => { await api('PUT', '/api/integrations/github/token', { token: null }); toast('Removed. Approving now asks the agent to merge.'); showGitHub(); },
     make: async () => { const r = await api('POST', '/api/integrations/github'); showGitHub.last = r; showGitHub(r.secret); },
   }, { sticky: fresh });
 }
