@@ -2,24 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Kunla</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232f5bd3'/><text x='16' y='22' font-size='17' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='white'>K</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2317211f'/><path d='M10 8v16M10 16l9-8M13 13l7 11' stroke='%23f2f3ef' stroke-width='3' fill='none' stroke-linecap='round'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=Fragment+Mono&display=swap">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header id="top" hidden>
-    <span class="brand">Kunla</span>
-    <nav>
-      <a href="#/inbox" data-nav="inbox">Inbox <span id="inbox-count" class="pill"></span></a>
-      <a href="#/board" data-nav="board">Board</a>
-      <a href="#/status" data-nav="status">Progress</a>
-      <a href="#/team" data-nav="team">Team</a>
-      <a href="#/settings" data-nav="settings">Projects</a>
-    </nav>
-    <span class="me" id="me"></span>
-  </header>
-  <main id="app"></main>
+  <div id="shell" class="shell" hidden>
+    <aside class="side" id="side"></aside>
+    <main class="main" id="app"></main>
+  </div>
+  <main id="gate" class="gate" hidden></main>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="/app.js" type="module"></script>
 </body>
 </html>

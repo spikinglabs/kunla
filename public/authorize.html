@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Connect to Kunla</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=Fragment+Mono&display=swap">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main><div class="narrow card" id="box"><p class="sub">Loading…</p></div></main>
+  <main class="gate"><div class="gate-card" id="box"><p class="muted">Loading…</p></div></main>
   <script type="module">
     const box = document.getElementById('box');
     const q = new URLSearchParams(location.search);
@@ -21,9 +22,9 @@
       let me = token ? await fetch('/api/me', { headers: { authorization: `Bearer ${token}` } }).then((r) => r.ok ? r.json() : null) : null;
       if (!me) {
         box.innerHTML = `<h1>Sign in to connect ${esc(client.name)}</h1>
-          <p class="sub">Paste your personal Kunla token.</p>
-          <form id="f"><label>Token</label><input name="token" type="password" required placeholder="kun_...">
-          <p><button class="primary">Continue</button></p></form>`;
+          <p>Paste your personal Kunla token.</p>
+          <form id="f" class="stack"><div class="field"><label for="tok">Token</label><input id="tok" name="token" type="password" required placeholder="kun_…"></div>
+          <button class="primary" style="justify-content:center">Continue</button></form>`;
         document.getElementById('f').onsubmit = (e) => {
           e.preventDefault();
           token = new FormData(e.target).get('token').trim();
@@ -34,9 +35,9 @@
       }
       const defaultName = `${me.name}'s ${client.name}`;
       box.innerHTML = `<h1>Connect ${esc(client.name)} to Kunla</h1>
-        <p>It will join your workspace as an AI member that you sponsor. It can read tasks, log work, and submit work for review. Everything it does is recorded under its own name.</p>
-        <form id="f"><label>Name in Kunla</label><input name="name" value="${esc(defaultName)}" required>
-        <p class="row"><button class="primary">Allow</button><button type="button" id="deny">Cancel</button></p></form>`;
+        <p>It joins your workspace as an agent you sponsor. It can read tasks, record work and submit work for review, all under its own name.</p>
+        <form id="f" class="stack"><div class="field"><label for="nm">Name in Kunla</label><input id="nm" name="name" value="${esc(defaultName)}" required></div>
+        <div class="row"><button class="primary">Allow</button><button type="button" class="ghost" id="deny">Cancel</button></div></form>`;
       document.getElementById('deny').onclick = () => {
         const u = new URL(q.get('redirect_uri')); u.searchParams.set('error', 'access_denied');
         if (q.get('state')) u.searchParams.set('state', q.get('state'));
@@ -54,7 +55,7 @@
           }),
         });
         const d = await r.json();
-        if (!r.ok) { box.insertAdjacentHTML('beforeend', `<p class="pill warn">${esc(d.error)}</p>`); return; }
+        if (!r.ok) { box.insertAdjacentHTML('beforeend', `<p class="warn">${esc(d.error)}</p>`); return; }
         location.href = d.redirect;
       };
     }
