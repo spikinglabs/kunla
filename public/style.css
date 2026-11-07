@@ -58,7 +58,7 @@ a.pill:hover, button.pill:hover { border-color: var(--ink); }
 .pill.warn { border-color: var(--warn); color: var(--warn); }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field label, .label { font-size: 13px; color: var(--ink-2); font-weight: 500; }
-input[type=text], input[type=password], input:not([type]), textarea, select {
+input[type=text], input[type=password], input[type=url], input:not([type]), textarea, select {
   width: 100%; border: 1px solid var(--rule-2); background: var(--surface); border-radius: 12px; padding: 10px 12px; outline: none; }
 input:focus, textarea:focus, select:focus { border-color: var(--ink); }
 textarea { resize: vertical; min-height: 72px; line-height: 1.45; }

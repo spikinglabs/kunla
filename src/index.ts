@@ -8,6 +8,7 @@ import { handleRpc, TOOLS } from './mcp';
 import { oauth } from './oauth';
 import * as views from './views';
 import * as github from './github';
+import * as wake from './wake';
 
 export interface Env {
   DB: D1Database;
@@ -37,7 +38,13 @@ async function authenticate(c: C): Promise<core.Ctx | null> {
   if (!token) return null;
   const me = await core.memberForToken(c.env.DB, token);
   if (!me) return null;
-  return { db: c.env.DB, me, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30) };
+  return { db: c.env.DB, me, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)) };
+}
+
+// Wake-up calls go out after the response, so a person's click never waits on an agent's server.
+function sendLater(c: Context<any>, p: Promise<unknown>) {
+  const safe = p.catch((e) => console.error('wake failed', e));
+  try { c.executionCtx.waitUntil(safe); } catch { /* no execution context (tests, local scripts): the promise still runs */ }
 }
 
 const requireAuth = async (c: C, next: () => Promise<void>) => {
@@ -49,7 +56,7 @@ const requireAuth = async (c: C, next: () => Promise<void>) => {
 
 // Bearer tokens only, no cookies, so any origin may call the API: this is what lets one
 // person's web app show several workspaces (each its own deployment) side by side.
-app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'], maxAge: 86400 }));
+app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], maxAge: 86400 }));
 
 // ---------- public ----------
 app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: '0.1.0' }));
@@ -121,6 +128,16 @@ api.post('/log', async (c) => c.json(await core.logWork(c.get('ctx'), await c.re
 
 api.get('/members', async (c) => c.json(await core.trackRecord(c.env.DB)));
 api.patch('/members/:id', async (c) => c.json(await core.updateMember(c.get('ctx'), c.req.param('id'), await c.req.json())));
+api.put('/members/:id/wake', async (c) => c.json(await core.setCallback(c.get('ctx'), c.req.param('id'), await c.req.json())));
+api.delete('/members/:id/wake', async (c) => c.json(await core.setCallback(c.get('ctx'), c.req.param('id'), null)));
+api.post('/members/:id/wake/test', async (c) => {
+  const ctx = c.get('ctx');
+  const m = await core.getMember(c.env.DB, c.req.param('id'));
+  if (ctx.me.kind !== 'human' || !(ctx.me.roles.includes('admin') || m.sponsor_id === ctx.me.id)) return c.json({ error: "Only the agent's sponsor or an admin can test its wake-up URL." }, 403);
+  const cb = wake.parseCallback(m.callback);
+  if (!cb) return c.json({ error: `${m.name} has no wake-up URL yet.` }, 400);
+  return c.json(await wake.deliver(c.env.DB, { member: { id: m.id, name: m.name }, callback: cb, event: 'ping', task: null, note: null, by: ctx.me.name, baseUrl: ctx.baseUrl }));
+});
 api.post('/members/:id/token', async (c) => c.json(await core.rotateToken(c.get('ctx'), c.req.param('id'))));
 api.delete('/members/:id', async (c) => c.json(await core.removeMember(c.get('ctx'), c.req.param('id'))));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));

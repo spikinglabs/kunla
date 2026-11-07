@@ -1,3 +1,5 @@
+import { wakeMember, publicCallback, type Wake } from './wake';
+
 // Kunla core: the record of work. Everything here is plain SQL over a D1-compatible
 // database, so the same code runs on Cloudflare D1, a SQLite file, or (later) Postgres.
 
@@ -11,6 +13,7 @@ const PROPOSAL_DAYS = 14; // proposals nobody triaged are tidied away after this
 export interface Member {
   id: string; name: string; kind: Kind; platform: string | null;
   sponsor_id: string | null; roles: string; scope: string; created_at: string;
+  callback?: string | null; // wake-up URL settings (JSON); never sent to clients
 }
 export interface Project {
   id: string; key: string; name: string; playbook: string;
@@ -35,6 +38,8 @@ export interface Ctx {
   baseUrl: string;      // e.g. https://kunla.example.com
   leaseMinutes: number;
   now?: () => Date;
+  /** Hand off a wake-up call for an agent; the Worker sends it after the response. Absent means no wake-ups. */
+  notify?: (w: Wake) => void;
 }
 
 const id = () => crypto.randomUUID();
@@ -168,6 +173,12 @@ export async function listMembers(db: D1Database) {
   return (await db.prepare('SELECT * FROM members WHERE removed_at IS NULL ORDER BY kind DESC, created_at').all<Member>()).results;
 }
 
+/** A member as the API shows it: the wake-up secret and auth header never leave the server. */
+export function safeMember<T extends Member>(m: T) {
+  const { callback, ...rest } = m;
+  return { ...rest, wake: publicCallback(callback) };
+}
+
 export async function getMember(db: D1Database, idOrName: string): Promise<Member> {
   const m = await db.prepare('SELECT * FROM members WHERE id = ? OR lower(name) = lower(?) ORDER BY removed_at IS NOT NULL LIMIT 1').bind(idOrName, idOrName).first<Member>();
   if (!m) throw new KunlaError(404, `No member ${idOrName}.`);
@@ -186,7 +197,7 @@ export async function addMember(c: Ctx, input: { name: string; kind: Kind; platf
   if (input.kind === 'ai') {
     const same = await c.db.prepare(`SELECT * FROM members WHERE kind = 'ai' AND sponsor_id = ? AND lower(name) = lower(?) AND removed_at IS NULL`)
       .bind(c.me.id, name).first<Member>();
-    if (same) return { member: same, token: await issueToken(c.db, same.id, input.platform || 'ai'), reconnected: true };
+    if (same) return { member: safeMember(same), token: await issueToken(c.db, same.id, input.platform || 'ai'), reconnected: true };
   }
   await assertNameFree(c.db, name);
   const mid = id();
@@ -194,7 +205,7 @@ export async function addMember(c: Ctx, input: { name: string; kind: Kind; platf
     mid, name, input.kind === 'ai' ? 'ai' : 'human', input.platform ?? null,
     input.kind === 'ai' ? c.me.id : null, JSON.stringify(input.roles ?? []), nowIso(c)).run();
   const token = await issueToken(c.db, mid, input.platform || input.kind);
-  return { member: await getMember(c.db, mid), token, reconnected: false };
+  return { member: safeMember(await getMember(c.db, mid)), token, reconnected: false };
 }
 
 async function assertNameFree(db: D1Database, name: string, except?: string) {
@@ -222,12 +233,35 @@ export async function updateMember(c: Ctx, memberId: string, input: { name?: str
   return { id: after.id, name: after.name, scope: parseList(after.scope) };
 }
 
+/**
+ * Set or clear an agent's wake-up URL. Returns the signing secret once (a new one each time the URL
+ * is saved). format 'github_dispatch' calls GitHub's repository_dispatch API, so a GitHub Action
+ * (such as Claude Code) runs when Kunla calls; auth is then 'Bearer <GitHub token>'.
+ */
+export async function setCallback(c: Ctx, memberId: string, input: { url?: string | null; format?: string; auth?: string | null } | null) {
+  const m = await getMember(c.db, memberId);
+  assertCanManage(c, m);
+  if (m.kind !== 'ai') throw new KunlaError(400, 'Only agents have a wake-up URL.');
+  if (!input || !input.url) {
+    await c.db.prepare('UPDATE members SET callback = NULL WHERE id = ?').bind(m.id).run();
+    return { id: m.id, callback: null };
+  }
+  const url = String(input.url).trim();
+  if (!/^https:\/\//i.test(url)) throw new KunlaError(400, 'The wake-up URL must start with https://.');
+  const format = input.format === 'github_dispatch' || /api\.github\.com\/repos\/.+\/dispatches$/.test(url) ? 'github_dispatch' : 'kunla';
+  const auth = input.auth?.trim() ? (/^(bearer|token|basic) /i.test(input.auth.trim()) ? input.auth.trim() : `Bearer ${input.auth.trim()}`) : null;
+  const secret = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const cb = JSON.stringify({ url, format, secret, auth });
+  await c.db.prepare('UPDATE members SET callback = ? WHERE id = ?').bind(cb, m.id).run();
+  return { id: m.id, callback: publicCallback(cb), secret };
+}
+
 /** Revoke every token a member has and issue one new one. The old ones stop working at once. */
 export async function rotateToken(c: Ctx, memberId: string) {
   const m = await getMember(c.db, memberId);
   assertCanManage(c, m);
   await c.db.prepare('UPDATE tokens SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL').bind(nowIso(c), m.id).run();
-  return { member: m, token: await issueToken(c.db, m.id, m.platform || m.kind) };
+  return { member: safeMember(m), token: await issueToken(c.db, m.id, m.platform || m.kind) };
 }
 
 /**
@@ -334,6 +368,7 @@ export async function createTask(c: Ctx, input: {
     input.priority ?? 2, c.me.id, assignee, reviewer, parent, input.due_at ?? null, t, t).run();
   const task = await getTask(c.db, key);
   await event(c, task.id, 'created', status === 'inbox' ? 'Proposed' : null, { status });
+  if (assignee && status === 'ready') await wakeMember(c, assignee, 'assigned', task, input.brief ?? null);
   return task;
 }
 
@@ -403,6 +438,8 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (input.note || type !== 'note' || Object.keys(fields).length)
     await event(c, t.id, type, input.note ?? input.blocked_question ?? null, { from: t.status, to: fields.status ?? t.status });
   if (fields.status === 'done' || fields.status === 'declined') await rollUp(c, t.parent_id);
+  if (fields.assignee_id && fields.assignee_id !== t.assignee_id && (fields.status ?? t.status) === 'ready')
+    await wakeMember(c, fields.assignee_id, 'assigned', t, input.note ?? null);
   return getTask(c.db, t.id);
 }
 
@@ -505,6 +542,7 @@ export async function reviewTask(c: Ctx, key: string, input: {
   await event(c, t.id, input.verdict, [input.comment, input.what_was_wrong, waiting].filter(Boolean).join('\n') || null, { review_id: rid, rule_id: ruleId, waiting_on: open });
   if (input.verdict === 'changes_requested' && t.review_rounds + 1 >= MAX_REVIEW_ROUNDS)
     await event(c, t.id, 'flagged', `${t.review_rounds + 1} review rounds; a person should look at the brief.`, {}, null);
+  await wakeMember(c, t.assignee_id, input.verdict, t, [input.comment, input.what_was_wrong, input.rule ? `New rule: ${input.rule}` : null].filter(Boolean).join('\n') || null);
   return getTask(c.db, t.id);
 }
 
@@ -570,6 +608,7 @@ export async function answer(c: Ctx, key: string, text: string) {
     lease_expires_at: holder ? leaseFor(c, holder) : null,
   });
   await event(c, t.id, 'answered', required(text, 'answer'), { question: t.blocked_question });
+  if (holder) await wakeMember(c, holder.id, 'answered', t, text);
   return getTask(c.db, t.id);
 }
 
@@ -793,7 +832,7 @@ export async function whoami(c: Ctx) {
 /** Per-member track record, so autonomy can be earned from evidence. */
 export async function trackRecord(db: D1Database) {
   const rows = (await db.prepare(
-    `SELECT m.id, m.name, m.kind, m.platform, m.scope, s.name AS sponsor, m.sponsor_id,
+    `SELECT m.id, m.name, m.kind, m.platform, m.scope, m.callback, s.name AS sponsor, m.sponsor_id,
        (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status = 'done') AS done,
        (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status IN ('in_progress','blocked','review')) AS active,
        (SELECT COUNT(DISTINCT r.task_id) FROM reviews r WHERE r.worker_id = m.id) AS reviewed,
@@ -801,7 +840,7 @@ export async function trackRecord(db: D1Database) {
           AND NOT EXISTS (SELECT 1 FROM reviews r2 WHERE r2.task_id = r.task_id AND r2.verdict = 'changes_requested')) AS first_pass,
        (SELECT MAX(e.created_at) FROM events e WHERE e.actor_id = m.id) AS last_active
      FROM members m LEFT JOIN members s ON s.id = m.sponsor_id WHERE m.removed_at IS NULL ORDER BY m.kind DESC, m.created_at`).all<any>()).results;
-  return rows.map((r) => ({ ...r, scope: parseList(r.scope), first_pass_rate: r.reviewed ? Math.round((r.first_pass / r.reviewed) * 100) : null }));
+  return rows.map(({ callback, ...r }) => ({ ...r, wake: publicCallback(callback), scope: parseList(r.scope), first_pass_rate: r.reviewed ? Math.round((r.first_pass / r.reviewed) * 100) : null }));
 }
 
 export async function listRules(db: D1Database, project?: string) {
