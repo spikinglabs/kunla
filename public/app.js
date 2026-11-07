@@ -49,7 +49,7 @@ const av = (m, cls = '', live = false) => m ? html`<span class="av ${m.kind === 
 const who = (m, fallback = 'Nobody yet', cls = 'sm') => m ? html`<span class="who">${raw(av(m, cls))}<span class="name">${m.name}</span></span>` : html`<span class="muted">${fallback}</span>`;
 const PLATFORM = { 'claude-code': 'Claude Code', 'claude-ai': 'claude.ai', codex: 'Codex', chat: 'Chat app', other: 'MCP agent' };
 const kindLine = (m) => m.kind === 'ai' ? `Agent${m.platform ? ' · ' + (PLATFORM[m.platform] || m.platform) : ''}${m.sponsor ? ' · sponsored by ' + m.sponsor : ''}` : 'Person';
-const STATUS = { inbox: 'Proposed', ready: 'Ready', in_progress: 'In progress', blocked: 'Waiting on an answer', review: 'In review', done: 'Done', declined: 'Declined' };
+const STATUS = { inbox: 'Proposed', ready: 'Ready', in_progress: 'In progress', blocked: 'Waiting on an answer', review: 'In review', done: 'Done', declined: 'Declined', parked: 'Later' };
 const projectOf = (key) => projects.find((p) => key?.startsWith(p.key + '-'));
 const firstName = (n) => n?.split(' ')[0] ?? '';
 const callName = (m) => (m ? (m.kind === 'ai' ? m.name : firstName(m.name)) : '');
@@ -271,7 +271,7 @@ function decisionCard(item, { solo = false } = {}) {
         <button class="btn go" name="v" value="approved">Approve <kbd>A</kbd></button>
         <button class="btn" type="button" data-act="click:changes">Send back <kbd>C</kbd></button>
         <span class="spacer"></span>
-        ${raw(solo ? '' : '<button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>')}
+        <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>
       </div></form>`;
   }
   if (item.kind === 'question') {
@@ -281,7 +281,7 @@ function decisionCard(item, { solo = false } = {}) {
       <p class="ask">“${t.blocked_question}”</p>
       <div class="field"><label for="a-${t.key}">Your answer</label><textarea id="a-${t.key}" name="answer" rows="3" required placeholder="${callName(worker) || 'It'} continues as soon as you send this."></textarea></div>
       <div class="acts"><button class="btn go">Send answer <kbd>⌘↵</kbd></button><span class="spacer"></span>
-        ${raw(solo ? '' : '<button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>')}</div></form>`;
+        <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></form>`;
   }
   if (item.kind === 'proposal') {
     return html`<div class="decision ${solo ? '' : 'card'}" data-key="${t.key}">
@@ -290,7 +290,7 @@ function decisionCard(item, { solo = false } = {}) {
       ${raw(t.brief ? html`<p class="said">${t.brief}</p>` : '')}
       <div class="acts"><button class="btn go" data-act="click:accept">Make it ready <kbd>A</kbd></button>
         <button class="btn" data-act="click:decline">Decline</button><span class="spacer"></span>
-        ${raw(solo ? '' : '<button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>')}</div></div>`;
+        <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></div>`;
   }
   return html`<div class="decision ${solo ? '' : 'card'}" data-key="${t.key}">
     ${raw(head('Going in circles'))}${raw(title)}
@@ -338,8 +338,32 @@ function decisionHandlers(after, later) {
     answer: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/answer`, { answer: formData(el).answer }); toast(`Answer sent. ${k} is moving again.`); await after(); },
     accept: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: true }); toast(`${k} is ready for anyone to pick up.`); await after(); },
     decline: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: false }); toast(`${k} declined.`); await after(); },
-    later: () => later?.(),
+    later: (el) => showLater(keyOf(el), after, later),
   };
+}
+
+// "Later": skip for now (the item stays in the inbox), or park it so it leaves the briefing, the inbox
+// and agents' queues until a date, or until someone brings it back.
+function showLater(key, after, skip) {
+  const at = (days, hour = 9) => { const d = new Date(); d.setDate(d.getDate() + days); d.setHours(hour, 0, 0, 0); return d; };
+  const monday = () => { const d = at(1); while (d.getDay() !== 1) d.setDate(d.getDate() + 1); return d; };
+  const opts = [['Tomorrow morning', at(1)], ['Next week', monday()], ['In a month', at(30)]];
+  openSheet(html`<div class="sheet-body stack"><div><h2>Put ${key} off</h2>
+    <p class="muted">It leaves your briefing and every agent's queue, and agents leave it alone. With a date it comes back by itself; Someday stays in Tasks under Later until you bring it back.</p></div>
+    <div class="later-opts">${join(opts.map(([label, d]) => html`<button class="btn" data-act="click:park" data-until="${d.toISOString()}">${label}<small>${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}</small></button>`))}
+      <button class="btn" data-act="click:park" data-until="">Someday<small>no date</small></button></div>
+    <form class="row" data-act="submit:pick" style="align-items:flex-end"><div class="field" style="flex:1;min-width:160px"><label for="later-d">Or pick a date</label><input id="later-d" name="d" type="date" required min="${at(1).toISOString().slice(0, 10)}"></div><button class="btn">Park</button></form>
+    <div class="row">${raw(skip ? '<button class="btn quiet" data-act="click:skip">Just skip it for now</button>' : '')}<button class="btn quiet" data-act="click:close">Cancel</button></div></div>`, {
+    park: (el) => park(el.dataset.until || null),
+    pick: (f) => { const v = formData(f).d; const d = new Date(`${v}T09:00`); return park(d.toISOString()); },
+    skip: () => { closeSheet(true); skip(); },
+  });
+  async function park(until) {
+    await api('POST', `/api/tasks/${key}/park`, until ? { until } : {});
+    closeSheet(true);
+    toast(until ? `${key} is parked until ${new Date(until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}.` : `${key} is parked for someday. Find it in Tasks under Later.`);
+    await after();
+  }
 }
 
 // ---------- briefing ----------
@@ -424,12 +448,13 @@ async function viewBriefing() {
     palette: () => openPalette(),
   });
   keyHandler = (e) => {
-    if (typing() || e.metaKey || e.ctrlKey || e.altKey || !$('palette').hidden || !cur) return;
+    if (typing() || e.metaKey || e.ctrlKey || e.altKey || !$('palette').hidden || !$('sheet').hidden || !cur) return;
     const k = e.key.toLowerCase();
     const card = $app.querySelector('.decision');
     if (k === 'a') { e.preventDefault(); card.querySelector('.btn.go')?.click(); }
     else if (k === 'c' || k === 'r') { e.preventDefault(); card.querySelector('[data-act="click:changes"]')?.click(); }
-    else if (k === 'l' || k === 'j') { e.preventDefault(); deck.i = (deck.i + 1) % items.length; viewBriefing(); }
+    else if (k === 'l') { e.preventDefault(); card.querySelector('[data-act="click:later"]')?.click(); }
+    else if (k === 'j') { e.preventDefault(); deck.i = (deck.i + 1) % items.length; viewBriefing(); }
     else if (k === 'k') { e.preventDefault(); deck.i = (deck.i - 1 + items.length) % items.length; viewBriefing(); }
     else if (k === 'enter' && cur) location.hash = `#/t/${cur.task.key}`;
   };
@@ -458,53 +483,130 @@ function progress(s) {
 }
 
 // ---------- work map ----------
-let mapDays = 5;
+// Range is how far back the map looks; zoom is how wide the time axis is drawn (pinch, or − / +).
+const MAP_RANGES = [['6h', 0.25], ['12h', 0.5], ['1 day', 1], ['3 days', 3], ['7 days', 7], ['14 days', 14]];
+const MAP_ZOOMS = [1, 1.5, 2, 3, 4, 6, 8];
+let mapDays = null; // null until the first visit picks a range that fits recent activity
+let mapZoom = 1;
+let mapData = null;
+
+// The smallest range that still shows the latest handful of work, so the first view isn't a few slivers next to "now".
+async function fitMapRange() {
+  const m = await api('GET', '/api/map?days=14');
+  const end = new Date(m.end).getTime();
+  const starts = m.lanes.flatMap((l) => l.segments.map((s) => new Date(s.start).getTime())).sort((x, y) => y - x);
+  if (!starts.length) return 1;
+  const need = ((end - starts[Math.min(starts.length, 8) - 1]) / 86400_000) * 1.15;
+  return (MAP_RANGES.find(([, d]) => d >= need) || MAP_RANGES[MAP_RANGES.length - 1])[1];
+}
+
 async function viewMap() {
   renderShell('map');
-  const m = await api('GET', `/api/map?days=${mapDays}`);
+  if (mapDays == null) mapDays = await fitMapRange();
+  mapData = await api('GET', `/api/map?days=${mapDays}`);
+  const m = mapData;
+  const E = new Date(m.end).getTime();
+  const longest = Math.max(1, ...m.waits.map((w) => E - new Date(w.since).getTime()));
+  $app.innerHTML = html`<div class="head"><div><h1>Work map</h1>
+      <p class="sub">Who worked on what, person or agent. Solid is work, dashed is work waiting on someone, lime is a decision. Nobody filled this in; it comes from the record.</p></div></div>
+    <div class="map-tools"><div class="row map-ranges">${join(MAP_RANGES.map(([label, d]) => html`<button class="pill ${d === mapDays ? 'on' : ''}" data-act="click:days" data-n="${d}">${label}</button>`))}</div>
+      <div class="zoom" role="group" aria-label="Zoom"><button class="btn sm" data-act="click:zoomOut" aria-label="Zoom out">−</button><span id="zoomv">${mapZoom}×</span><button class="btn sm" data-act="click:zoomIn" aria-label="Zoom in">+</button></div></div>
+    <div class="card"><div class="map" id="map"></div></div>
+    <div class="row map-key" style="margin:14px 4px 0"><span><i style="background:var(--ink)"></i>Working</span><span><i style="border:1.5px dashed var(--wait)"></i>Waiting on someone</span>
+      <span><i style="background:var(--lime)"></i>A decision</span><span><i style="background:var(--sunk)"></i>Night</span><span class="muted">Pinch or use − / + to zoom. Tap a bar to open the task.</span></div>
+    <div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Where work waits now</h2><span class="muted" style="font-size:13px">Oldest first. Each one is a person, not an agent.</span></div>
+      ${raw(m.waits.length ? html`<div class="waits">${join(m.waits.map((w) => { const ms = E - new Date(w.since).getTime(); return html`<a href="#/t/${w.key}"><span class="key">${w.key}</span>
+        <span class="t">${w.title}<small>${w.who}: ${w.label.replace(w.key + ' ', '')}</small></span><span class="len"><i style="width:${(ms / longest) * 100}%"></i></span><span class="for">${span(ms)}</span></a>`; }))}</div>`
+      : '<p class="muted">Nothing is waiting. Every task is either moving or done.</p>')}</div>`;
+  const setZoom = (z) => { const keep = mapAnchor(); mapZoom = z; drawMap(keep); };
+  bind($app, {
+    days: (el) => { mapDays = Number(el.dataset.n); viewMap(); },
+    zoomIn: () => setZoom(MAP_ZOOMS.find((z) => z > mapZoom) ?? mapZoom),
+    zoomOut: () => setZoom([...MAP_ZOOMS].reverse().find((z) => z < mapZoom) ?? mapZoom),
+  });
+  drawMap();
+  pinchZoom($('map'));
+}
+
+const mapLabelW = () => (innerWidth < 700 ? 112 : 200);
+const mapTrackW = (zoom) => Math.max(($app.clientWidth || innerWidth) - mapLabelW() - 48, 260) * zoom;
+
+// Where the view is, as a fraction of the time axis, so zooming keeps the same moment in front of you.
+function mapAnchor() {
+  const sc = $('map');
+  if (!sc || !sc.scrollWidth) return null;
+  const lw = mapLabelW();
+  const track = sc.scrollWidth - lw;
+  return (sc.scrollLeft + (sc.clientWidth - lw) / 2) / track;
+}
+function restoreAnchor(f) {
+  const sc = $('map');
+  const lw = mapLabelW();
+  if (f == null) { sc.scrollLeft = sc.scrollWidth; return; } // first draw: show "now"
+  sc.scrollLeft = f * (sc.scrollWidth - lw) - (sc.clientWidth - lw) / 2;
+}
+
+function drawMap(anchor = null) {
+  const m = mapData; const box = $('map');
+  if (!m || !box) return;
   const S = new Date(m.start).getTime();
   const E = new Date(m.end).getTime();
   const pad = (E - S) * 0.03;
   const R = E + pad - S;
-  const x = (iso) => ((new Date(iso).getTime() - S) / R) * 100;
+  const x = (t) => ((typeof t === 'number' ? t : new Date(t).getTime()) - S) / R * 100;
+  const lw = mapLabelW(); const tw = mapTrackW(mapZoom);
+  // Ticks: the finest step that leaves room for a label, from 1 hour to 1 day.
+  const pxPerHour = tw / (R / 3600_000);
+  const step = [1, 2, 3, 6, 12, 24].find((h) => h * pxPerHour >= 58) ?? 24;
+  const ticks = [];
+  const t0 = new Date(S); t0.setMinutes(0, 0, 0); t0.setHours(Math.ceil(t0.getHours() / step) * step);
+  for (let t = new Date(t0); t.getTime() < E + pad; t.setHours(t.getHours() + step)) ticks.push(new Date(t));
+  const tickLabel = (d) => (d.getHours() === 0 ? dayShort(d) : hhmm(d));
   const days = [];
   const d0 = new Date(S); d0.setHours(0, 0, 0, 0);
   for (let d = new Date(d0); d.getTime() < E + pad; d.setDate(d.getDate() + 1)) days.push(new Date(d));
   const nights = days.map((d) => {
     const a = new Date(d); a.setHours(20, 0, 0, 0);
     const b = new Date(d); b.setDate(b.getDate() + 1); b.setHours(7, 0, 0, 0);
-    const l = Math.max(0, (a.getTime() - S) / R * 100); const r = Math.min(100, (b.getTime() - S) / R * 100);
+    const l = Math.max(0, x(a.getTime())); const r = Math.min(100, x(b.getTime()));
     return r > l ? `<i class="night" style="left:${l}%;width:${r - l}%"></i>` : '';
-  }).join('') + (() => { const b = new Date(d0); b.setHours(7, 0, 0, 0); const r = (b.getTime() - S) / R * 100; return r > 0 ? `<i class="night" style="left:0;width:${r}%"></i>` : ''; })();
-  const grid = days.map((d) => { const l = (d.getTime() - S) / R * 100; return l >= 0 ? `<i class="grid-line" style="left:${l}%"></i>` : ''; }).join('');
-  const nowX = x(m.end);
+  }).join('') + (() => { const b = new Date(d0); b.setHours(7, 0, 0, 0); const r = x(b.getTime()); return r > 0 ? `<i class="night" style="left:0;width:${Math.min(100, r)}%"></i>` : ''; })();
+  const grid = ticks.map((d) => `<i class="grid-line ${d.getHours() === 0 ? 'day' : ''}" style="left:${x(d.getTime())}%"></i>`).join('');
+  const nowX = x(E);
   const lanes = m.lanes.filter((l) => l.segments.length || members.find((mm) => mm.id === l.id)?.active);
   const seg = (s) => {
     const l = Math.max(0, x(s.start));
     const r = Math.min(nowX, x(s.end ?? m.end));
-    const w = Math.max(s.kind === 'decide' ? 0.6 : 0.35, r - l);
+    const w = Math.max(0, r - l);
     const text = s.kind === 'decide' ? '' : s.kind === 'wait' ? s.label.replace(`${s.key} `, '') : s.title;
-    return html`<a class="seg ${s.kind} ${s.live ? 'live' : ''}" href="#/t/${s.key}" style="left:${l}%;width:${w}%" title="${s.label} · ${when(s.start)}–${s.end ? clock(s.end) : 'now'}"><span>${text}</span></a>`;
+    return html`<a class="seg ${s.kind} ${s.live ? 'live' : ''}" href="#/t/${s.key}" style="left:${l}%;width:${w}%" title="${s.label} · ${when(s.start)}–${s.end ? clock(s.end) : 'now'}" aria-label="${s.label}"><span>${text}</span></a>`;
   };
-  const longest = Math.max(1, ...m.waits.map((w) => E - new Date(w.since).getTime()));
-  $app.innerHTML = html`<div class="head"><div><h1>Work map</h1>
-      <p class="sub">Who worked on what, person or agent. Solid is work, dashed is work waiting on someone, lime is a decision. Nobody filled this in; it comes from the record.</p></div>
-      <div class="row">${join([3, 5, 7, 14].map((n) => html`<button class="pill ${n === mapDays ? 'on' : ''}" data-act="click:days" data-n="${n}">${n} days</button>`))}</div></div>
-    <div class="card"><div class="map"><div class="map-in">
-      <div class="map-days"><div></div><div class="track">${join(days.map((d) => { const l = (d.getTime() - S) / R * 100; return l >= -2 ? html`<span class="d" style="left:${Math.max(0, l)}%">${dayShort(d)}</span>` : ''; }))}<i class="now" style="left:${nowX}%"></i></div></div>
-      ${join(lanes.map((l) => html`<div class="lane"><div class="who">${raw(av(l, '', l.segments.some((s) => s.live)))}<span class="grow"><span class="name" style="font-weight:600;font-size:14px">${l.name}</span>
-        <small>${l.kind === 'ai' ? PLATFORM[l.platform] || 'Agent' : 'Person'}</small></span></div>
-        <div class="track">${raw(nights)}${raw(grid)}${join(l.segments.map(seg))}<i class="now bare" style="left:${nowX}%"></i></div></div>`))}
-    </div></div></div>
-    <div class="row map-key" style="margin:14px 4px 0"><span><i style="background:var(--ink)"></i>Working</span><span><i style="border:1.5px dashed var(--wait)"></i>Waiting on someone</span>
-      <span><i style="background:var(--lime)"></i>A decision</span><span><i style="background:var(--sunk)"></i>Night</span></div>
-    <div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Where work waits now</h2><span class="muted" style="font-size:13px">Oldest first. Each one is a person, not an agent.</span></div>
-      ${raw(m.waits.length ? html`<div class="waits">${join(m.waits.map((w) => { const ms = E - new Date(w.since).getTime(); return html`<a href="#/t/${w.key}"><span class="key">${w.key}</span>
-        <span class="t">${w.title}<small>${w.who}: ${w.label.replace(w.key + ' ', '')}</small></span><span class="len"><i style="width:${(ms / longest) * 100}%"></i></span><span class="for">${span(ms)}</span></a>`; }))}</div>`
-      : '<p class="muted">Nothing is waiting. Every task is either moving or done.</p>')}</div>`;
-  bind($app, { days: (el) => { mapDays = Number(el.dataset.n); viewMap(); } });
-  const sc = $app.querySelector('.map');
-  if (sc) sc.scrollLeft = sc.scrollWidth;
+  box.innerHTML = html`<div class="map-in" style="--label:${lw}px;width:${lw + tw}px">
+    <div class="map-days"><div class="who"></div><div class="track">${join(ticks.map((d) => { const l = x(d.getTime()); return l >= 0 && l < 97 ? html`<span class="d ${d.getHours() === 0 ? 'day' : ''}" style="left:${l}%">${tickLabel(d)}</span>` : ''; }))}<i class="now" style="left:${nowX}%"></i></div></div>
+    ${raw(lanes.length ? '' : '<p class="muted" style="padding:16px 0">No work recorded in this range. Try a longer one.</p>')}
+    ${join(lanes.map((l) => html`<div class="lane"><div class="who">${raw(av(l, '', l.segments.some((s) => s.live)))}<span class="grow"><span class="name">${l.name}</span>
+      <small>${l.kind === 'ai' ? PLATFORM[l.platform] || 'Agent' : 'Person'}</small></span></div>
+      <div class="track">${raw(nights)}${raw(grid)}${join(l.segments.map(seg))}<i class="now bare" style="left:${nowX}%"></i></div></div>`))}
+  </div>`;
+  const zv = $('zoomv'); if (zv) zv.textContent = `${Math.round(mapZoom * 10) / 10}×`;
+  restoreAnchor(anchor);
+}
+
+// Two-finger pinch on the map stretches the time axis live, then redraws the ticks when you let go.
+function pinchZoom(el) {
+  if (!el) return;
+  let d0 = 0, z0 = 1, f = null;
+  const dist = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  el.addEventListener('touchstart', (e) => { if (e.touches.length === 2) { d0 = dist(e); z0 = mapZoom; f = mapAnchor(); } }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (e.touches.length !== 2 || !d0) return;
+    e.preventDefault();
+    mapZoom = Math.min(8, Math.max(1, z0 * dist(e) / d0));
+    const inner = el.querySelector('.map-in');
+    if (inner) inner.style.width = `${mapLabelW() + mapTrackW(mapZoom)}px`;
+    restoreAnchor(f);
+  }, { passive: false });
+  el.addEventListener('touchend', (e) => { if (d0 && e.touches.length < 2) { d0 = 0; drawMap(f); } });
 }
 
 // ---------- task: review and teach ----------
@@ -512,6 +614,8 @@ const EVENT = {
   created: (e) => e.data?.status === 'inbox' ? 'proposed it' : 'wrote the brief', claimed: () => 'picked it up', work_logged: () => 'logged work',
   submitted: () => 'sent it for review', approved: () => 'approved it', changes_requested: () => 'sent it back', rule_added: () => 'taught the team a rule',
   blocked: () => 'asked a question', answered: () => 'answered', accepted: () => 'made it ready', declined: () => 'declined it',
+  parked: (e) => (e.data?.until ? `put it off until ${new Date(e.data.until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}` : 'put it off for someday'),
+  unparked: () => 'brought it back',
   lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `moved it to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
   woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
   github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
@@ -548,6 +652,9 @@ async function viewTask(key) {
         <div class="people"><span>${raw(who(t.assignee, 'Nobody yet'))}</span>${raw(t.reviewer ? html`<span class="muted">reviewed by</span><span>${raw(who(t.reviewer))}</span>` : '')}
         ${raw(t.created_by ? html`<span class="muted">asked by ${t.created_by.name}</span>` : '')}</div></div>
       ${raw(decision ? html`<div class="card" style="margin-top:24px">${raw(decision)}</div>` : '')}
+      ${raw(t.status === 'parked' ? html`<div class="card pad parked-note"><div class="grow"><b>Put off ${t.snoozed_until ? 'until ' + new Date(t.snoozed_until).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' }) : 'for someday'}.</b>
+        <span class="muted">It is out of the briefing and agents leave it alone. When it comes back it returns to ${STATUS[t.returns_to] || 'Ready'}.</span></div><button class="btn go" data-act="click:unpark">Bring it back</button></div>`
+        : !decision && OPEN.has(t.status) ? '<div class="row" style="margin-top:12px"><button class="btn quiet sm" data-act="click:later">Later…</button></div>' : '')}
       ${raw(t.brief ? html`<div class="sec"><h3>Brief</h3><p class="prose">${t.brief}</p></div>` : '')}
       ${raw(!t.parent ? html`<div class="sec"><h3>Sub-tasks${subs.length ? ` · ${subDone} of ${subs.length} done` : ''}</h3>
         ${raw(subs.length ? html`<div class="bar" style="margin:0 0 12px">${raw(subs.length ? `<span class="b-done" style="width:${(subDone / subs.length) * 100}%"></span>` : '')}</div>
@@ -577,6 +684,8 @@ async function viewTask(key) {
   const text = () => $app.querySelector('.composer textarea').value.trim();
   bind($app, {
     ...decisionHandlers(reload),
+    later: () => showLater(t.key, reload),
+    unpark: async () => { const r = await api('POST', `/api/tasks/${t.key}/unpark`); toast(`${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     addsub: async (f) => {
       const title = formData(f).title.trim(); if (!title) return;
       const n = await api('POST', '/api/tasks', { parent: t.key, title });
@@ -599,6 +708,7 @@ const OPEN = new Set(['inbox', 'ready', 'in_progress', 'blocked', 'review']);
 const DAY = 86400000;
 const FILTERS = {
   open: ['Open', (t) => OPEN.has(t.status)],
+  later: ['Later', (t) => t.status === 'parked'],
   mine: ['Mine', (t) => OPEN.has(t.status) && (t.assignee?.id === me.id || t.reviewer?.id === me.id || (t.created_by?.id === me.id && !t.assignee))],
   stuck: ['Stuck', (t) => t.status === 'blocked' || (OPEN.has(t.status) && t.review_rounds >= 2)
     || (t.status === 'in_progress' && Date.now() - new Date(t.updated_at) > 2 * DAY) || (t.status === 'ready' && !t.assignee && Date.now() - new Date(t.updated_at) > 7 * DAY)],
@@ -606,7 +716,7 @@ const FILTERS = {
   all: ['Everything', () => true],
 };
 const GROUPS = { project: 'Project', person: 'Person', status: 'Status' };
-const STATUS_ORDER = ['blocked', 'review', 'in_progress', 'ready', 'inbox', 'done', 'declined'];
+const STATUS_ORDER = ['blocked', 'review', 'in_progress', 'ready', 'inbox', 'parked', 'done', 'declined'];
 
 async function viewTasks(project) {
   renderShell('tasks');
@@ -730,7 +840,7 @@ function openSheet(inner, handlers = {}, { sticky = false } = {}) {
     copy: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); el.textContent = 'Copied'; setTimeout(() => { el.textContent = 'Copy'; }, 1600); } catch { toast('Copy did not work here. Select the text and copy it.'); } },
     ...handlers,
   });
-  s.querySelector('input:not([type=hidden])')?.focus();
+  s.querySelector('input:not([type=hidden]):not([type=date])')?.focus();
 }
 function closeSheet(force) {
   if (sheetSticky && !force) return;

@@ -125,6 +125,8 @@ api.post('/tasks/:key/submit', async (c) => c.json(await core.submitForReview(c.
 api.post('/tasks/:key/review', async (c) => c.json(await core.reviewTask(c.get('ctx'), c.req.param('key'), await c.req.json())));
 api.post('/tasks/:key/triage', async (c) => c.json(await core.triage(c.get('ctx'), c.req.param('key'), await c.req.json())));
 api.post('/tasks/:key/answer', async (c) => c.json(await core.answer(c.get('ctx'), c.req.param('key'), (await c.req.json<any>()).answer)));
+api.post('/tasks/:key/park', async (c) => c.json(await core.parkTask(c.get('ctx'), c.req.param('key'), await c.req.json().catch(() => ({})))));
+api.post('/tasks/:key/unpark', async (c) => c.json(await core.unparkTask(c.get('ctx'), c.req.param('key'))));
 api.post('/log', async (c) => c.json(await core.logWork(c.get('ctx'), await c.req.json())));
 
 api.get('/members', async (c) => c.json(await core.trackRecord(c.get('ctx'))));
@@ -152,7 +154,7 @@ api.get('/briefing', async (c) => c.json(await views.briefing(c.get('ctx'), Numb
 api.get('/changes', async (c) => c.json(await views.changes(c.get('ctx'))));
 api.get('/progress', async (c) => c.json(await views.progress(c.get('ctx'))));
 api.get('/pulse', async (c) => c.json(await views.pulse(c.get('ctx'))));
-api.get('/map', async (c) => c.json(await views.workMap(c.get('ctx'), Math.min(14, Number(c.req.query('days') || 5)))));
+api.get('/map', async (c) => c.json(await views.workMap(c.get('ctx'), Math.min(14, Math.max(0.25, Number(c.req.query('days')) || 5)))));
 api.post('/tasks/:key/comment', async (c) => c.json(await core.updateTask(c.get('ctx'), c.req.param('key'), { note: (await c.req.json<any>()).text })));
 api.patch('/rules/:id', async (c) => { await core.setRuleActive(c.get('ctx'), c.req.param('id'), !!(await c.req.json<any>()).active); return c.json({ ok: true }); });
 

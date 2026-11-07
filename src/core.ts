@@ -4,8 +4,8 @@ import { wakeMember, publicCallback, type Wake } from './wake';
 // database, so the same code runs on Cloudflare D1, a SQLite file, or (later) Postgres.
 
 export type Kind = 'human' | 'ai';
-export type Status = 'inbox' | 'ready' | 'in_progress' | 'blocked' | 'review' | 'done' | 'declined';
-export const STATUSES: Status[] = ['inbox', 'ready', 'in_progress', 'blocked', 'review', 'done', 'declined'];
+export type Status = 'inbox' | 'ready' | 'in_progress' | 'blocked' | 'review' | 'done' | 'declined' | 'parked';
+export const STATUSES: Status[] = ['inbox', 'ready', 'in_progress', 'blocked', 'review', 'done', 'declined', 'parked'];
 export const MAX_REVIEW_ROUNDS = 3;
 const STALE_HOURS = 2;
 const PROPOSAL_DAYS = 14; // proposals nobody triaged are tidied away after this
@@ -26,6 +26,7 @@ export interface Task {
   assignee_id: string | null; reviewer_id: string | null; lease_expires_at: string | null;
   blocked_question: string | null; blocked_on_id: string | null; review_rounds: number;
   parent_id: string | null; due_at: string | null; created_at: string; updated_at: string;
+  parked_from?: string | null; snoozed_until?: string | null;
 }
 
 export class KunlaError extends Error {
@@ -378,6 +379,10 @@ export async function sweepLeases(c: Ctx) {
        WHERE id = ? AND status = 'in_progress' AND lease_expires_at < ?`).bind(now, t.id, now).run();
     if (r.meta.changes) await event(c, t.id, 'lease_expired', `No heartbeat for ${c.leaseMinutes} minutes, so ${t.key} went back to Ready.`, { previous_assignee: t.assignee_id }, null);
   }
+  // Snoozed tasks come back on their own when the date passes.
+  const woke = (await c.db.prepare(`SELECT key FROM tasks WHERE space_id = ? AND status = 'parked' AND snoozed_until IS NOT NULL AND snoozed_until < ?`)
+    .bind(c.space, now).all<{ key: string }>()).results;
+  for (const t of woke) await unparkTask(c, t.key, { system: true });
   await tidy(c);
 }
 
@@ -433,7 +438,8 @@ export async function claimTask(c: Ctx, key: string, session?: string) {
     const holder = t.assignee_id ? (await getMember(c, t.assignee_id)).name : null;
     throw new KunlaError(409, t.status === 'in_progress' || t.status === 'blocked'
       ? `${t.key} is already claimed by ${holder}.`
-      : t.status === 'ready' ? `${t.key} is assigned to ${holder}.` : `${t.key} is ${t.status}, not ready to claim.`);
+      : t.status === 'ready' ? `${t.key} is assigned to ${holder}.`
+      : t.status === 'parked' ? `${t.key} is parked for later. Leave it alone unless a person brings it back.` : `${t.key} is ${t.status}, not ready to claim.`);
   }
   if (t.assignee_id !== c.me.id || t.status !== 'in_progress') await event(c, t.id, 'claimed');
   await recordSession(c, t.id, session);
@@ -445,6 +451,39 @@ export async function heartbeat(c: Ctx, key: string) {
   if (t.assignee_id !== c.me.id || t.status !== 'in_progress') throw new KunlaError(409, `You don't hold ${t.key}; claim it first.`);
   await touch(c, t.id, { lease_expires_at: leaseFor(c, c.me) });
   return { key: t.key, lease_expires_at: leaseFor(c, c.me) };
+}
+
+/**
+ * "Later": take a task out of everyone's way. It leaves the decision inbox, the briefing and next_task,
+ * and agents are told to leave it alone. With `until` it comes back by itself on that date;
+ * without, it stays parked (someday) until someone brings it back.
+ */
+export async function parkTask(c: Ctx, key: string, input: { until?: string | null; note?: string } = {}) {
+  const t = await getTask(c, key);
+  if (t.status === 'parked') throw new KunlaError(400, `${t.key} is already parked.`);
+  if (t.status === 'done' || t.status === 'declined') throw new KunlaError(400, `${t.key} is ${t.status}; there is nothing to put off.`);
+  let until: string | null = null;
+  if (input.until) {
+    const d = new Date(input.until);
+    if (isNaN(d.getTime())) throw new KunlaError(400, 'until must be a date, e.g. 2026-11-14.');
+    if (d.getTime() <= (c.now ? c.now() : new Date()).getTime()) throw new KunlaError(400, 'until must be in the future.');
+    until = d.toISOString();
+  }
+  // Work that was moving goes back to Ready when it returns, so nobody holds a claim on parked work.
+  const back = t.status === 'in_progress' ? 'ready' : t.status;
+  await touch(c, t.id, { status: 'parked', parked_from: back, snoozed_until: until, lease_expires_at: null });
+  await event(c, t.id, 'parked', input.note ?? null, { from: t.status, until });
+  return { key: t.key, status: 'parked' as const, snoozed_until: until, returns_to: back };
+}
+
+/** Bring a parked task back to where it was (Ready if it was in progress). */
+export async function unparkTask(c: Ctx, key: string, opts: { system?: boolean; note?: string } = {}) {
+  const t = await getTask(c, key);
+  if (t.status !== 'parked') throw new KunlaError(400, `${t.key} is not parked.`);
+  const to = (STATUSES.includes(t.parked_from as Status) && t.parked_from !== 'parked' ? t.parked_from : 'ready') as Status;
+  await touch(c, t.id, { status: to, parked_from: null, snoozed_until: null });
+  await event(c, t.id, 'unparked', opts.note ?? (opts.system ? 'The snooze ended, so it is back.' : null), { to }, opts.system ? null : c.me.id);
+  return { key: t.key, status: to };
 }
 
 export async function updateTask(c: Ctx, key: string, input: {
@@ -464,8 +503,11 @@ export async function updateTask(c: Ctx, key: string, input: {
     fields.status = 'blocked';
     fields.blocked_question = input.blocked_question;
     fields.blocked_on_id = input.blocked_on ? (await getMember(c, input.blocked_on)).id : null;
+  } else if (input.status === 'parked') {
+    return parkTask(c, key, { until: (input as any).until, note: input.note });
   } else if (input.status) {
     if (!STATUSES.includes(input.status)) throw new KunlaError(400, `Unknown status ${input.status}.`);
+    if (t.status === 'parked') { fields.parked_from = null; fields.snoozed_until = null; }
     if (input.status === 'review') throw new KunlaError(400, 'Use submit_for_review to move a task to Review; it needs a deliverable.');
     if (input.status === 'done' && t.status === 'review') throw new KunlaError(400, 'Use review_task to approve a task in Review.');
     if (input.status === 'done' && t.status !== 'done') {
@@ -725,6 +767,7 @@ function publicTask(t: Task & { project_key?: string | null; project_kind?: stri
     priority: t.priority, origin: t.origin, assignee: who(t.assignee_id), reviewer: who(t.reviewer_id),
     created_by: who(t.created_by), lease_expires_at: t.lease_expires_at, blocked_question: t.blocked_question,
     blocked_on: who(t.blocked_on_id), review_rounds: t.review_rounds, due_at: t.due_at,
+    ...(t.status === 'parked' ? { snoozed_until: t.snoozed_until ?? null, returns_to: t.parked_from ?? 'ready' } : {}),
     created_at: t.created_at, updated_at: t.updated_at,
   };
 }

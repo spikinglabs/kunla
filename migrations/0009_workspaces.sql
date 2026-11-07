@@ -2,7 +2,7 @@
 -- space_id says which workspace a row belongs to and equals that row's id. Everything existing
 -- belongs to the first workspace, so existing tokens, agents and connectors keep working unchanged.
 -- Members, and so tokens, belong to exactly one workspace: the token decides what a caller can see.
--- Numbered 0008 so it never collides with 0006/0007 from open work; D1 applies whatever is missing.
+-- Runs after 0008_parked, which rebuilt the tasks table. A later rebuild of any of these tables must keep space_id.
 ALTER TABLE members ADD COLUMN space_id TEXT NOT NULL DEFAULT 'workspace';
 ALTER TABLE projects ADD COLUMN space_id TEXT NOT NULL DEFAULT 'workspace';
 ALTER TABLE tasks ADD COLUMN space_id TEXT NOT NULL DEFAULT 'workspace';
