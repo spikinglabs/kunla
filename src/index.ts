@@ -7,6 +7,7 @@ import * as core from './core';
 import { handleRpc, TOOLS } from './mcp';
 import { oauth } from './oauth';
 import * as views from './views';
+import * as github from './github';
 
 export interface Env {
   DB: D1Database;
@@ -14,6 +15,7 @@ export interface Env {
   LEASE_MINUTES?: string;
   SETUP_TOKEN?: string;
   PUBLIC_URL?: string;
+  GITHUB_WEBHOOK_SECRET?: string; // optional; admins can also create the secret in the app
 }
 type Vars = { ctx: core.Ctx };
 type C = Context<{ Bindings: Env; Variables: Vars }>;
@@ -56,6 +58,12 @@ app.post('/api/setup', async (c) => {
   const body = await c.req.json<any>();
   if (c.env.SETUP_TOKEN && body.setup_token !== c.env.SETUP_TOKEN) return c.json({ error: 'Wrong setup token.' }, 403);
   return c.json(await core.setup(c.env.DB, body));
+});
+// GitHub calls this when a pull request or push happens; tasks cited by key update themselves.
+app.post('/hooks/github', async (c) => {
+  const ctx: core.Ctx = { db: c.env.DB, me: null as any, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30) };
+  const r = await github.handleWebhook(ctx, c.req.raw, c.env.GITHUB_WEBHOOK_SECRET);
+  return c.json(r.body, r.status as any);
 });
 app.get('/t/:key', (c) => c.redirect(`/app/#/t/${encodeURIComponent(c.req.param('key').toUpperCase())}`));
 
@@ -128,6 +136,9 @@ api.get('/pulse', async (c) => c.json(await views.pulse(c.get('ctx'))));
 api.get('/map', async (c) => c.json(await views.workMap(c.get('ctx'), Math.min(14, Number(c.req.query('days') || 5)))));
 api.post('/tasks/:key/comment', async (c) => c.json(await core.updateTask(c.get('ctx'), c.req.param('key'), { note: (await c.req.json<any>()).text })));
 api.patch('/rules/:id', async (c) => { await core.setRuleActive(c.get('ctx'), c.req.param('id'), !!(await c.req.json<any>()).active); return c.json({ ok: true }); });
+
+api.get('/integrations/github', async (c) => c.json(await github.connectionInfo(c.get('ctx'), c.env.GITHUB_WEBHOOK_SECRET)));
+api.post('/integrations/github', async (c) => c.json(await github.rotateSecret(c.get('ctx'), c.env.GITHUB_WEBHOOK_SECRET)));
 
 app.route('/api', api);
 
