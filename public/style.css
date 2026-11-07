@@ -82,6 +82,8 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.45; }
 .top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 18px; height: 64px; padding: 0 24px;
   background: color-mix(in srgb, var(--canvas) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--rule); }
 .wordmark { font: 700 22px/1 var(--sans); letter-spacing: -.04em; text-decoration: none; display: inline-flex; align-items: flex-end; gap: 2px; }
+.lab-tag { font: 500 11px/18px var(--sans); color: var(--ink-2); border: 1px solid var(--rule-2); border-radius: 4px; padding: 0 5px; text-decoration: none; flex: none; }
+.lab-tag:hover { color: var(--ink); }
 .wordmark i { width: 8px; height: 8px; border-radius: 50%; background: var(--lime); display: inline-block; margin-bottom: 3px; box-shadow: 0 0 0 1px var(--ink) inset; }
 .nav { display: flex; gap: 4px; }
 .nav a { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 999px; text-decoration: none; color: var(--ink-2); font-weight: 500; font-size: 14px; }
