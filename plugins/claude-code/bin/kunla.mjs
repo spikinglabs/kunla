@@ -95,6 +95,17 @@ function remoteWebUrl() {
 }
 
 /** Log commits made since the last sync that carry a Task: trailer. Progress from what agents do. */
+// Renew the claim only when it is within 10 minutes of lapsing, so a busy session costs a
+// request every 20 minutes or so instead of one per prompt.
+async function keepAlive(key) {
+  const d = gitDir();
+  const f = d ? join(d, 'kunla-lease') : null;
+  const cached = f && existsSync(f) ? readFileSync(f, 'utf8').trim().split(' ') : [];
+  if (cached[0] === key && cached[1] && new Date(cached[1]).getTime() - Date.now() > 10 * 60_000) return;
+  const r = await tool('heartbeat', { key }).catch(() => null);
+  if (f && r?.lease_expires_at) writeFileSync(f, `${key} ${r.lease_expires_at}\n`);
+}
+
 async function syncCommits() {
   const d = gitDir();
   if (!d) return [];
@@ -190,14 +201,14 @@ const hooks = {
   },
   async prompt() {
     const key = await currentTask();
-    if (key) await tool('heartbeat', { key }).catch(() => {});
+    if (key) await keepAlive(key);
   },
   async stop() {
     const input = readStdin();
     if (input.stop_hook_active) return;
     await syncCommits();
     const key = await currentTask();
-    if (key) await tool('heartbeat', { key }).catch(() => {});
+    if (key) await keepAlive(key);
   },
   async 'session-end'() {
     const input = readStdin();

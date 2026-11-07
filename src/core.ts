@@ -57,11 +57,14 @@ export function newToken(): string {
 export async function memberForToken(db: D1Database, token: string): Promise<Member | null> {
   const hash = await sha256(token);
   const row = await db.prepare(
-    `SELECT m.*, t.id AS token_id FROM tokens t JOIN members m ON m.id = t.member_id
-     WHERE t.token_hash = ? AND t.revoked_at IS NULL`).bind(hash).first<Member & { token_id: string }>();
+    `SELECT m.*, t.id AS token_id, t.last_used_at AS token_used FROM tokens t JOIN members m ON m.id = t.member_id
+     WHERE t.token_hash = ? AND t.revoked_at IS NULL`).bind(hash).first<Member & { token_id: string; token_used: string | null }>();
   if (!row) return null;
-  await db.prepare('UPDATE tokens SET last_used_at = ? WHERE id = ?').bind(new Date().toISOString(), row.token_id).run();
-  const { token_id: _t, ...member } = row;
+  // "Last used" only needs hour precision; writing it on every request would cost a row write per call.
+  const now = new Date();
+  if (!row.token_used || now.getTime() - new Date(row.token_used).getTime() > 3600_000)
+    await db.prepare('UPDATE tokens SET last_used_at = ? WHERE id = ?').bind(now.toISOString(), row.token_id).run();
+  const { token_id: _t, token_used: _u, ...member } = row;
   return member as Member;
 }
 

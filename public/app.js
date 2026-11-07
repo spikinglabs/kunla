@@ -13,6 +13,7 @@ let me = null;
 let projects = [];
 let members = [];
 let pollTimer = null;
+let pollCheck = null;
 let keyHandler = null;
 let decisionCount = 0;
 const deck = { i: 0 };
@@ -342,13 +343,12 @@ function subline(brief, pulse) {
 
 async function viewBriefing() {
   renderShell('');
-  const [inbox, brief, pulse, rules, wsStat, ...stats] = await Promise.all([
-    api('GET', '/api/inbox'), api('GET', '/api/briefing?hours=24'), api('GET', '/api/pulse'), api('GET', '/api/rules'),
-    api('GET', `/api/status?project=${me.workspace.key}`),
-    ...projects.map((p) => api('GET', `/api/status?project=${p.key}`)),
+  const [inbox, brief, pulse, rules, prog] = await Promise.all([
+    api('GET', '/api/inbox'), api('GET', '/api/briefing?hours=24'), api('GET', '/api/pulse'), api('GET', '/api/rules'), api('GET', '/api/progress'),
   ]);
-  const wsTotal = Object.values(wsStat.counts).reduce((a, n) => a + n, 0);
-  if (wsTotal) stats.push({ ...wsStat, project: { key: me.workspace.key, name: 'No project' } });
+  // Projects first in focus order, then tasks with no project if there are any.
+  const stats = [...prog.filter((x) => !x.workspace), ...prog.filter((x) => x.workspace && Object.keys(x.counts).length).map((x) => ({ ...x, name: 'No project' }))]
+    .map((x) => ({ project: { key: x.key, name: x.name }, counts: x.counts }));
   decisionCount = inbox.count; renderShell('');
   const items = inbox.items;
   if (deck.i >= items.length) deck.i = 0;
@@ -423,7 +423,7 @@ function progress(s) {
   const words = { done: 'done', review: 'in review', in_progress: 'in progress', blocked: 'waiting', ready: 'ready' };
   const p = projects.find((x) => x.key === s.project.key);
   return html`<a href="#/tasks/${s.project.key}"><div class="row" style="justify-content:space-between"><span>${raw(p?.focus ? '<span class="focus-dot" title="Focus"></span>' : '')}<b style="font-weight:600">${s.project.name}</b> <span class="key">${s.project.key === me.workspace.key ? 'workspace' : s.project.key}</span></span>
-    <span class="muted" style="font-size:12.5px">${p?.ends_at ? endsIn(p.ends_at) : s.agent_recorded_share != null ? s.agent_recorded_share + '% by agents' : ''}</span></div>
+    <span class="muted" style="font-size:12.5px">${p?.ends_at ? endsIn(p.ends_at) : p ? 'ongoing' : ''}</span></div>
     <div class="bar">${join(order.filter((k) => c[k]).map((k) => html`<span class="b-${k}" style="width:${(c[k] / total) * 100}%" title="${c[k]} ${words[k]}"></span>`))}</div>
     <div class="legend">${order.filter((k) => c[k]).map((k) => `${c[k]} ${words[k]}`).join(' · ') || 'No tasks yet'}</div></a>`;
 }
@@ -857,7 +857,7 @@ document.addEventListener('keydown', (e) => {
 
 // ---------- router ----------
 async function route() {
-  clearInterval(pollTimer);
+  clearInterval(pollTimer); pollTimer = null; pollCheck = null;
   keyHandler = null;
   // Arriving from another workspace with a token in the fragment: keep it, then drop it from the address bar.
   const use = (location.hash || '').match(/^#\/use\/(.+)$/);
@@ -884,14 +884,41 @@ async function route() {
   try { await render(); } catch (e) { toast(e.message); }
   window.scrollTo?.({ top: 0 });
   if (view !== '') api('GET', '/api/inbox').then((r) => { decisionCount = r.count; renderShell(view === 't' ? 'tasks' : view); }).catch(() => {});
-  // Refresh quietly while visible, unless someone is typing or the command bar is open.
-  if (['', 'map', 'tasks'].includes(view)) {
-    pollTimer = setInterval(() => {
+  // Stay fresh cheaply: every 30 seconds, while the tab is visible, ask one tiny question
+  // ("has anything changed?") and redraw only when the answer is yes. A hidden tab costs nothing.
+  if (['', 'map', 'tasks', 't', 'team'].includes(view)) {
+    let seen = null; let drawnAt = Date.now();
+    const check = async () => {
       if (document.hidden || typing() || !$('palette').hidden) return;
-      render().catch(() => {});
-    }, 20000);
+      if ($('paused')) return;
+      if (idle()) { showPaused(); return; }
+      try {
+        const { version } = await api('GET', '/api/changes');
+        const stale = Date.now() - drawnAt > 10 * 60_000; // relative times ("5m ago") drift
+        if (seen !== null && (version !== seen || stale)) { await render(); drawnAt = Date.now(); }
+        seen = version;
+      } catch {}
+    };
+    check(); pollCheck = check;
+    pollTimer = setInterval(check, 30000);
   }
 }
+// Idle means no mouse, touch or keyboard for 3 minutes. An idle tab stops asking the server
+// anything and shows a Refresh button; updates resume when that button is pressed.
+const IDLE_MS = 3 * 60_000;
+let lastActive = Date.now();
+const idle = () => Date.now() - lastActive > IDLE_MS;
+function showPaused() {
+  let b = $('paused');
+  if (b) return;
+  b = document.createElement('button');
+  b.id = 'paused'; b.className = 'paused';
+  b.innerHTML = '<span>Paused while you were away</span><b>Refresh</b>';
+  b.onclick = () => { b.remove(); lastActive = Date.now(); route(); toast('Up to date.'); };
+  document.body.appendChild(b);
+}
+for (const ev of ['pointermove', 'pointerdown', 'keydown', 'wheel', 'touchstart']) document.addEventListener(ev, () => { lastActive = Date.now(); }, { passive: true });
+document.addEventListener('visibilitychange', () => { if (document.hidden) return; if (idle()) showPaused(); else pollCheck?.(); });
 
 window.addEventListener('hashchange', route);
 route();

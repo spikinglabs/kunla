@@ -34,8 +34,10 @@ export async function pulse(c: Ctx) {
   const members = await listMembers(c.db);
   const tasks = (await c.db.prepare(
     `SELECT * FROM tasks WHERE status IN ('in_progress','blocked','review') AND assignee_id IS NOT NULL ORDER BY updated_at DESC`).all<Task>()).results;
+  // One indexed lookup per member instead of a scan of the whole event log.
   const last = (await c.db.prepare(
-    `SELECT e.actor_id, MAX(e.created_at) AS at FROM events e WHERE e.actor_id IS NOT NULL GROUP BY e.actor_id`).all<{ actor_id: string; at: string }>()).results;
+    `SELECT m.id AS actor_id, (SELECT MAX(e.created_at) FROM events e WHERE e.actor_id = m.id) AS at FROM members m`).all<{ actor_id: string; at: string | null }>()).results
+    .filter((l) => l.at) as { actor_id: string; at: string }[];
   const lastBy = new Map(last.map((l) => [l.actor_id, l.at]));
   const names = new Map(members.map((m) => [m.id, m.name]));
   const pendingReviews = (await c.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'review'`).first<{ n: number }>())?.n ?? 0;
@@ -80,9 +82,9 @@ export async function workMap(c: Ctx, days = 5) {
   const members = await listMembers(c.db);
   const evs = (await c.db.prepare(
     `SELECT e.task_id, t.key, t.title, e.type, e.note, e.actor_id, e.created_at, e.data FROM events e JOIN tasks t ON t.id = e.task_id
-     WHERE e.task_id IN (SELECT DISTINCT task_id FROM events WHERE created_at > ?) OR t.status IN ('in_progress','blocked','review')
+     WHERE e.task_id IN (SELECT task_id FROM events WHERE created_at > ? UNION SELECT id FROM tasks WHERE status IN ('in_progress','blocked','review'))
      ORDER BY e.id`).bind(start.toISOString()).all<Ev>()).results;
-  const tasks = new Map((await c.db.prepare(`SELECT * FROM tasks WHERE id IN (SELECT DISTINCT task_id FROM events WHERE created_at > ?) OR status IN ('in_progress','blocked','review')`)
+  const tasks = new Map((await c.db.prepare(`SELECT * FROM tasks WHERE id IN (SELECT task_id FROM events WHERE created_at > ? UNION SELECT id FROM tasks WHERE status IN ('in_progress','blocked','review'))`)
     .bind(start.toISOString()).all<Task>()).results.map((t) => [t.id, t]));
   const lanes = new Map<string, Seg[]>(members.map((m) => [m.id, []]));
   const push = (mid: string | null | undefined, s: Seg) => { if (mid && lanes.has(mid)) lanes.get(mid)!.push(s); };
@@ -147,4 +149,28 @@ export async function rulesWithReach(db: D1Database, project?: string) {
     LEFT JOIN reviews rv ON rv.id = r.review_id LEFT JOIN tasks t ON t.id = rv.task_id
     ${project ? 'WHERE p.key = ?' : ''} ORDER BY r.created_at DESC`;
   return (await (project ? db.prepare(sql).bind(project.toUpperCase()) : db.prepare(sql)).all()).results;
+}
+
+/** Counts per project in one query, for the Briefing; replaces one status call per project. */
+export async function progress(c: Ctx) {
+  await sweepLeases(c);
+  const rows = (await c.db.prepare(
+    `SELECT p.key, p.name, p.kind, p.focus, p.ends_at, t.status, COUNT(t.id) AS n FROM projects p LEFT JOIN tasks t ON t.project_id = p.id
+     GROUP BY p.id, t.status ORDER BY p.kind DESC, p.focus DESC, p.rank, p.created_at`).all<any>()).results;
+  const out = new Map<string, any>();
+  for (const r of rows) {
+    if (!out.has(r.key)) out.set(r.key, { key: r.key, name: r.name, workspace: r.kind === 'workspace', focus: !!r.focus, ends_at: r.ends_at, counts: {} });
+    if (r.status) out.get(r.key).counts[r.status] = r.n;
+  }
+  return [...out.values()];
+}
+
+/**
+ * A one-row check the web app polls instead of reloading every view: the newest event id and
+ * member count. The app refetches only when this changes. Expired leases are swept here too.
+ */
+export async function changes(c: Ctx) {
+  await sweepLeases(c);
+  const r = await c.db.prepare(`SELECT (SELECT MAX(id) FROM events) AS e, (SELECT COUNT(*) FROM members) AS m`).first<{ e: number | null; m: number }>();
+  return { version: `${r?.e ?? 0}.${r?.m ?? 0}` };
 }

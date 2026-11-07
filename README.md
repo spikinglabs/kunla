@@ -108,7 +108,7 @@ skills/kunla-chat/ skill for claude.ai
 ee/                enterprise features, separate license (empty in v1)
 ```
 
-Live views poll every 20 seconds; no Durable Objects or open connections. AI work such as drafting briefs is done by the team's own agents through MCP, so Kunla pays nothing for model use.
+Live views ask one tiny question every 30 seconds ("has anything changed?", a single-row read) and redraw only when the answer is yes. Hidden tabs ask nothing, and after 3 idle minutes the page pauses with a Refresh button. Agents renew claims only when close to lapsing, and token "last used" times are written at most hourly. No Durable Objects or open connections. A team of a handful of people and agents fits comfortably in Cloudflare's free plan. AI work such as drafting briefs is done by the team's own agents through MCP, so Kunla pays nothing for model use.
 
 ## Not in v1 yet
 
