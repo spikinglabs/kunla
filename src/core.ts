@@ -12,7 +12,7 @@ export const MAX_REVIEW_ROUNDS = 3;
 const STALE_HOURS = 2;
 const PROPOSAL_DAYS = 14; // proposals nobody triaged are tidied away after this
 
-/** A decision a person made in a chat, recorded in Kunla by their agent (record_decision). */
+/** A decision a person made elsewhere: in a chat, recorded by their agent (record_decision), or by merging the PR on GitHub. */
 export interface Via { agent_id: string; agent: string; source_url: string; quote: string }
 
 export interface Member {
@@ -20,6 +20,7 @@ export interface Member {
   sponsor_id: string | null; roles: string; scope: string; created_at: string; space_id: string;
   callback?: string | null; // wake-up URL settings (JSON); never sent to clients
   continuous?: string | null; // continuous mode settings (JSON), see continuous.ts
+  github_login?: string | null; // a merge from this GitHub account counts as this person's approval
   run_state?: string | null;  // what it last did in continuous mode (JSON)
 }
 export interface Project {
@@ -280,9 +281,20 @@ function assertCanManage(c: Ctx, m: Member) {
 }
 
 /** Rename a member and/or change its lane. */
-export async function updateMember(c: Ctx, memberId: string, input: { name?: string; scope?: string[] }) {
+export async function updateMember(c: Ctx, memberId: string, input: { name?: string; scope?: string[]; github_login?: string | null }) {
   const m = await getMember(c, memberId);
   assertCanManage(c, m);
+  if (input.github_login !== undefined) {
+    const login = String(input.github_login ?? '').trim().replace(/^@/, '');
+    if (m.kind !== 'human') throw new KunlaError(400, 'Only people link a GitHub account; agents merge on their behalf.');
+    if (login && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(login)) throw new KunlaError(400, 'That is not a GitHub username.');
+    if (login) {
+      const taken = await c.db.prepare('SELECT name FROM members WHERE lower(github_login) = lower(?) AND id != ? AND space_id = ? AND removed_at IS NULL').bind(login, m.id, c.space).first<{ name: string }>();
+      if (taken) throw new KunlaError(409, `${taken.name} already uses the GitHub account ${login}.`);
+    }
+    await c.db.prepare('UPDATE members SET github_login = ? WHERE id = ?').bind(login || null, m.id).run();
+    return { id: m.id, name: m.name, github_login: login || null };
+  }
   if (input.name !== undefined && input.name.trim() !== m.name) {
     const name = required(input.name, 'name').trim().slice(0, 80);
     await assertNameFree(c, name, m.id);
@@ -1055,7 +1067,7 @@ export async function whoami(c: Ctx) {
   const projects = await listProjects(c);
   const sponsor = c.me.sponsor_id ? await getMember(c, c.me.sponsor_id) : null;
   return {
-    id: c.me.id, name: c.me.name, kind: c.me.kind, platform: c.me.platform, roles: parseList(c.me.roles),
+    id: c.me.id, name: c.me.name, kind: c.me.kind, platform: c.me.platform, roles: parseList(c.me.roles), github_login: c.me.github_login ?? null,
     sponsor: sponsor ? sponsor.name : null,
     workspace: await getWorkspace(c).then((w) => ({ id: w.id, key: w.key, name: w.name })),
     lane: parseList(c.me.scope),

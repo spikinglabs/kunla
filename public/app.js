@@ -1118,7 +1118,16 @@ async function showGitHub(_unused, back) {
     <div><h2>Connect GitHub</h2><p class="muted">Pull requests and commits that mention a task key (like ${projects[0]?.key || 'MKT'}-12 in the title, branch, description or a commit message) then show up on the task without anyone logging them. An opened PR sends the task to Review with the PR attached; a merged PR finishes it, or waits for a person's review if the project asks for one.</p></div>
     ${raw(hookStatus(info))}
     ${raw(appBlock)}
+    <form class="stack" style="gap:6px" data-act="submit:login"><div class="label">Your GitHub account</div>
+      <p class="muted" style="font-size:13.5px">When a PR is merged from this account, Kunla counts it as your approval of the task, so you don't approve twice.</p>
+      <div class="field"><label for="gh-login">GitHub username</label><input id="gh-login" name="login" autocomplete="off" placeholder="e.g. octocat" value="${me.github_login || ''}"></div><div class="row"><button class="btn">Save</button></div></form>
     <div class="row"><button class="btn quiet" data-act="click:close">Close</button></div></div>`, {
+    login: async (f) => {
+      const v = formData(f).login.trim();
+      const r = await api('PATCH', `/api/members/${me.id}`, { github_login: v });
+      me.github_login = r.github_login;
+      toast(r.github_login ? `Saved. Merges from @${r.github_login} now count as your approval.` : 'Removed. Merges no longer count as your approval.');
+    },
     connectApp: async (f) => {
       const d = f?.tagName === 'FORM' ? formData(f) : {};
       const r = await api('POST', '/api/integrations/github/app', { org: d.org || '', merge: f?.tagName === 'FORM' ? !!d.merge : undefined });
