@@ -23,7 +23,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--canvas); color: var(--ink); font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+body { margin: 0; overflow-x: clip; background: var(--canvas); color: var(--ink); font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
 a { color: inherit; }
 h1, h2, h3, p { margin: 0; }
 button, input, textarea, select { font: inherit; color: inherit; }
@@ -442,3 +442,9 @@ pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: va
 .parked-note { margin-top: 20px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .parked-note .grow { display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
 .st-dot.s-parked { border-style: dashed; }
+
+/* ---------- long text never pushes layout sideways ---------- */
+.decision, .decision > *, .brief > *, .task > *, .deck { min-width: 0; }
+.said, .ask, .note, .prose, .decision h2, .what, .check span { overflow-wrap: anywhere; }
+a.inline-link { display: inline-block; padding: 0 8px; border-radius: 99px; background: var(--canvas); border: 1px solid var(--rule); font-size: .82em; line-height: 1.6; text-decoration: none; white-space: nowrap; vertical-align: .08em; }
+a.inline-link:hover { border-color: var(--ink-2); }
