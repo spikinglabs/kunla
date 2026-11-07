@@ -15,6 +15,7 @@
   })();
 </script>
 <title>Kunla</title>
+<script src="/theme.js"></script>
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="description" content="Kunla is an open source record of work for teams where people and AI agents work side by side. Agents update the work themselves; people see the decisions.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -112,6 +113,9 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .btn.ghost { background: transparent; color: var(--ink); border-color: var(--rule-2); }
 .btn.lime { background: var(--lime); color: var(--on-lime); border-color: var(--lime); }
 .btn.sm { height: 36px; padding: 0 14px; font-size: 14px; }
+.theme-btn { width: 36px; height: 36px; border-radius: 50%; border: 1px solid transparent; background: none; color: var(--ink-2); display: grid; place-items: center; cursor: pointer; padding: 0; flex: none; }
+.theme-btn:hover { background: var(--sunk); color: var(--ink); }
+.theme-btn svg { width: 16px; height: 16px; }
 @media (max-width: 820px) { .nav ul { display: none; } .nav .wrap { gap: 12px; } }
 @media (max-width: 480px) { .nav .btn.ghost { display: none; } }
 @media (max-width: 380px) { .mock-bar .search { display: none; } }
@@ -434,6 +438,7 @@ footer a { color: var(--ink-2); }
       <li><a href="#editions">Open source</a></li>
     </ul>
     <span class="spacer"></span>
+    <button class="theme-btn" id="theme" type="button" aria-label="Theme"></button>
     <a class="btn sm ghost" href="https://github.com/spikinglabs/kunla">GitHub</a>
     <a class="btn sm" href="/app/">Open Kunla</a>
   </div>
@@ -917,5 +922,6 @@ footer a { color: var(--ink-2); }
   </div>
 </footer>
 <!--artifact-end-->
+<script>window.kunlaTheme && kunlaTheme.bindButton(document.getElementById('theme'));</script>
 </body>
 </html>

@@ -135,16 +135,16 @@ const formData = (form) => Object.fromEntries(new FormData(form).entries());
 const typing = () => document.activeElement?.matches('input, textarea, select');
 
 // ---------- theme ----------
-function applyTheme(t) {
-  if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
-}
-try { applyTheme(localStorage.getItem('kunla.theme')); } catch {}
-$('theme').onclick = () => {
-  const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
-  const next = dark ? 'light' : 'dark';
-  applyTheme(next);
-  try { localStorage.setItem('kunla.theme', next); } catch {}
-};
+// public/theme.js (loaded in <head>) applies the saved choice before paint; here we only wire the controls.
+const theme = window.kunlaTheme;
+theme?.bindButton($('theme'));
+const themePicker = () => theme ? html`<div class="pad row theme-row" style="border-top:1px solid var(--rule)"><span class="label grow">Appearance</span>
+    <div class="segctl" role="radiogroup" aria-label="Appearance">${raw(theme.ORDER.map((t) => html`<button type="button" role="radio" aria-checked="${String(theme.get() === t)}" data-theme-pick="${t}">${raw(theme.icon(t))}<span>${theme.LABEL[t]}</span></button>`).join(''))}</div></div>` : '';
+document.addEventListener('click', (e) => {
+  const b = e.target.closest?.('[data-theme-pick]'); if (!b || !theme) return;
+  theme.set(b.dataset.themePick);
+  for (const x of b.parentElement.children) x.setAttribute('aria-checked', String(x === b));
+});
 
 // ---------- sign in and first-run setup ----------
 const WORD = '<span class="wordmark">kunla<i></i></span>';
@@ -195,7 +195,7 @@ function renderShell(view) {
   $('nav').innerHTML = NAV.map(link).join('');
   $('tabbar').innerHTML = NAV.map(link).join('');
   $('me').innerHTML = av({ name: me.name, kind: 'human' });
-  $('me').title = `${me.name}: workspaces and sign out`;
+  $('me').title = `${me.name}: workspaces, appearance and sign out`;
   $('space').innerHTML = html`<span class="sp-dot"></span><span class="sp-name">${me.workspace?.name ?? 'Workspace'}</span><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
 }
 
@@ -243,6 +243,7 @@ async function openSpaces() {
       <form class="stack" data-act="submit:add" style="margin-top:8px">
       <div class="row" style="flex-wrap:nowrap"><input name="url" required placeholder="https://kunla.other-org.com" aria-label="Kunla address"><input name="token" required type="password" placeholder="kun_…" aria-label="Your token there" style="max-width:180px"></div>
       <div class="row"><button class="btn sm">Join</button></div></form></details>
+    ${raw(themePicker())}
     <div class="pad row" style="border-top:1px solid var(--rule)"><span class="spacer grow"></span><button class="btn quiet sm" type="button" data-act="click:out">Sign out of ${me.workspace?.name}</button></div></div>`;
   box.onclick = (e) => { if (e.target === box) { box.hidden = true; box.innerHTML = ''; } };
   bind(box, {
