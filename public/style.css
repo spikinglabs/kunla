@@ -407,3 +407,4 @@ pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: va
 .paused { position: fixed; top: 76px; left: 50%; transform: translateX(-50%); z-index: 40; display: inline-flex; gap: 12px; align-items: center;
   height: 40px; padding: 0 6px 0 16px; border-radius: 999px; border: 1px solid var(--ink); background: var(--surface); color: var(--ink); cursor: pointer; box-shadow: var(--shadow); font-size: 14px; }
 .paused b { background: var(--lime); color: var(--on-lime); border-radius: 999px; padding: 6px 12px; font-weight: 600; }
+@media (max-width: 380px) { .top .lab-tag { display: none; } }

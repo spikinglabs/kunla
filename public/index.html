@@ -112,7 +112,9 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .btn.ghost { background: transparent; color: var(--ink); border-color: var(--rule-2); }
 .btn.lime { background: var(--lime); color: var(--on-lime); border-color: var(--lime); }
 .btn.sm { height: 36px; padding: 0 14px; font-size: 14px; }
-@media (max-width: 820px) { .nav ul { display: none; } }
+@media (max-width: 820px) { .nav ul { display: none; } .nav .wrap { gap: 12px; } }
+@media (max-width: 480px) { .nav .btn.ghost { display: none; } }
+@media (max-width: 380px) { .mock-bar .search { display: none; } }
 
 /* hero */
 .hero { padding-block: clamp(48px, 7vw, 88px) clamp(56px, 8vw, 96px); }
