@@ -57,15 +57,21 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'claim_task',
-    description: 'Take a Ready task atomically so nobody else works on it. For AIs the claim is a lease that lapses after a quiet period; any update renews it. Returns the full task.',
+    description: "Take a Ready task atomically so nobody else works on it. If someone else already holds it you get an error: skip it and call next_task, never work on it in parallel. For AIs the claim is a lease that lapses after a quiet period; any update renews it. Read handoff in the result: it's where the last holder left off. Returns the full task.",
     inputSchema: { type: 'object', properties: { key, session }, required: ['key'] },
     run: async (c, a) => { await core.claimTask(c, a.key, a.session); return core.taskDetail(c, a.key); },
   },
   {
     name: 'heartbeat',
-    description: 'Keep your claim on a task alive while you work without other updates.',
+    description: "Keep your claim on a task alive while you work without other updates. If it fails, the task is no longer yours (your lease lapsed or a person took it over): stop working on it and call next_task.",
     inputSchema: { type: 'object', properties: { key }, required: ['key'] },
     run: (c, a) => core.heartbeat(c, a.key),
+  },
+  {
+    name: 'release_task',
+    description: "Let go of a task you hold, with a handoff note on where the work stands (what's done, what's left, where the branch or draft is). The next holder reads it first. With to, it goes to that person or agent; without, it goes back to Ready for anyone. Use it when you stop partway, run out of budget, or someone else is better placed.",
+    inputSchema: { type: 'object', required: ['key', 'note'], properties: { key, note: { type: 'string', description: 'Handoff: where the work stands and what to do next' }, to: { type: 'string', description: 'Optional: name of the member to hand it to' }, session } },
+    run: async (c, a) => { await core.releaseTask(c, a.key, a); return core.taskDetail(c, a.key); },
   },
   {
     name: 'update_task',
@@ -203,7 +209,8 @@ Working agreement:
 8. Approved means merge: when a person approves a task whose deliverable is your open PR, squash-merge it once checks pass, unless Kunla already did.
 9. Continuous mode: when next_task returns continuous.go true, work through tasks one by one: claim, do, submit (or ask with blocked_question), then call next_task again. Being blocked on one task is not a reason to stop; stop only when next_task says go false. Report cost_usd or tokens with log_work or submit_for_review when you know them.
 10. When the person who sponsors you decides something about a task in your chat (approve, merge, send back, an answer), call record_decision with their words and a link to the chat, so it counts in Kunla. Never record a decision they didn't make.
-11. All work counts, not only code. When a chat reaches an outcome (a decision, a takeaway, a draft, findings, notes on a paper, a campaign sent), log_work it yourself with its kind and the outcome in notes or links, without waiting to be asked. Log once per outcome, not every message; keep adding to the same task key as the conversation goes on. Real next steps become their own tasks. Discussion and learning can be logged as done; send work for review when a person must sign it off.`;
+11. One holder per task. Claim before you work, and never work on a task someone else holds: if claim_task says it is taken, skip it and call next_task. If heartbeat or an update says the task is no longer yours, stop and move on. When you stop partway, release_task with a handoff note so the next person or agent can carry on; read handoff on a task before you start it.
+12. All work counts, not only code. When a chat reaches an outcome (a decision, a takeaway, a draft, findings, notes on a paper, a campaign sent), log_work it yourself with its kind and the outcome in notes or links, without waiting to be asked. Log once per outcome, not every message; keep adding to the same task key as the conversation goes on. Real next steps become their own tasks. Discussion and learning can be logged as done; send work for review when a person must sign it off.`;
 
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');

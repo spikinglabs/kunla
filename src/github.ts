@@ -110,6 +110,13 @@ async function tasksFor(c: core.Ctx, keys: string[]) {
     .bind(c.space, ...keys).all<Task & { rhr: number }>()).results;
 }
 
+/** The person in this workspace who linked this GitHub username, if any. */
+async function personFor(c: core.Ctx, login: string | undefined | null): Promise<core.Member | null> {
+  if (!login) return null;
+  return c.db.prepare(`SELECT * FROM members WHERE lower(github_login) = lower(?) AND kind = 'human' AND space_id = ? AND removed_at IS NULL LIMIT 1`)
+    .bind(String(login), c.space).first<core.Member>();
+}
+
 async function addLink(c: core.Ctx, taskId: string, url: string, title: string): Promise<boolean> {
   const r = await c.db.prepare('INSERT OR IGNORE INTO deliverables (id, task_id, url, title, added_by, created_at) VALUES (?,?,?,?,?,?)')
     .bind(crypto.randomUUID(), taskId, url, title, null, new Date().toISOString()).run();
@@ -129,6 +136,9 @@ async function onPullRequest(c: core.Ctx, p: any): Promise<Result> {
 
   const keys = findKeys(pr.title, pr.head?.ref, pr.body);
   const tasks = await tasksFor(c, keys);
+  // Merged from a person's linked GitHub account: that merge is their approval, so they don't
+  // approve the same work again in Kunla.
+  const approver = move === 'merged' ? await personFor(c, pr.merged_by?.login) : null;
   const who = pr.user?.login ? ` by @${pr.user.login}` : '';
   const ref = `PR #${pr.number}`;
   const updated: { key: string; from: Status; to: Status | null }[] = [];
@@ -144,7 +154,7 @@ async function onPullRequest(c: core.Ctx, p: any): Promise<Result> {
     if (open.length) to = null; // a parent finishes only when its last sub-task does
     const verb = { opened: 'opened', draft: 'opened as a draft', merged: 'merged', closed: 'closed without merging', link: '' }[effective];
     const what = open.length ? `${ref} merged; ${t.key} finishes when ${open.join(', ')} ${open.length === 1 ? 'is' : 'are'} done`
-      : effective === 'merged' && (to ?? t.status) === 'review' ? `${ref} merged; waiting for a person's review` : `${ref} ${verb}`;
+      : effective === 'merged' && (to ?? t.status) === 'review' ? (approver ? `${ref} merged by ${approver.name}, which counts as their approval` : `${ref} merged; waiting for a person's review`) : `${ref} ${verb}`;
     if (to && to !== t.status) {
       const fields: Partial<Task> = { status: to };
       if (to === 'review' || to === 'done') { fields.lease_expires_at = null; fields.blocked_question = null; fields.blocked_on_id = null; }
@@ -152,6 +162,13 @@ async function onPullRequest(c: core.Ctx, p: any): Promise<Result> {
     }
     await core.event(c, t.id, 'github', `${what}${who}: ${pr.title}`, { what, url: pr.html_url, from: t.status, to: to ?? t.status }, null);
     if (to === 'done') await core.rollUp(c, t.parent_id);
+    if (approver && (to ?? t.status) === 'review') {
+      try {
+        const done = await core.reviewTask({ ...c, me: approver }, t.key, { verdict: 'approved',
+          via: { agent_id: '', agent: 'GitHub', source_url: pr.html_url, quote: `Merged PR #${pr.number} as @${pr.merged_by.login}` } });
+        to = done.status as Status;
+      } catch { /* e.g. it was their own work: it waits for someone else's review */ }
+    }
     updated.push({ key: t.key, from: t.status, to });
   }
   return { status: 200, body: { ok: true, keys, updated } };

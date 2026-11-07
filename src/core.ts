@@ -13,7 +13,7 @@ export const MAX_REVIEW_ROUNDS = 3;
 const STALE_HOURS = 2;
 const PROPOSAL_DAYS = 14; // proposals nobody triaged are tidied away after this
 
-/** A decision a person made in a chat, recorded in Kunla by their agent (record_decision). */
+/** A decision a person made elsewhere: in a chat, recorded by their agent (record_decision), or by merging the PR on GitHub. */
 export interface Via { agent_id: string; agent: string; source_url: string; quote: string }
 
 export interface Member {
@@ -21,6 +21,7 @@ export interface Member {
   sponsor_id: string | null; roles: string; scope: string; created_at: string; space_id: string;
   callback?: string | null; // wake-up URL settings (JSON); never sent to clients
   continuous?: string | null; // continuous mode settings (JSON), see continuous.ts
+  github_login?: string | null; // a merge from this GitHub account counts as this person's approval
   run_state?: string | null;  // what it last did in continuous mode (JSON)
 }
 export interface Project {
@@ -282,9 +283,20 @@ function assertCanManage(c: Ctx, m: Member) {
 }
 
 /** Rename a member and/or change its lane. */
-export async function updateMember(c: Ctx, memberId: string, input: { name?: string; scope?: string[] }) {
+export async function updateMember(c: Ctx, memberId: string, input: { name?: string; scope?: string[]; github_login?: string | null }) {
   const m = await getMember(c, memberId);
   assertCanManage(c, m);
+  if (input.github_login !== undefined) {
+    const login = String(input.github_login ?? '').trim().replace(/^@/, '');
+    if (m.kind !== 'human') throw new KunlaError(400, 'Only people link a GitHub account; agents merge on their behalf.');
+    if (login && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(login)) throw new KunlaError(400, 'That is not a GitHub username.');
+    if (login) {
+      const taken = await c.db.prepare('SELECT name FROM members WHERE lower(github_login) = lower(?) AND id != ? AND space_id = ? AND removed_at IS NULL').bind(login, m.id, c.space).first<{ name: string }>();
+      if (taken) throw new KunlaError(409, `${taken.name} already uses the GitHub account ${login}.`);
+    }
+    await c.db.prepare('UPDATE members SET github_login = ? WHERE id = ?').bind(login || null, m.id).run();
+    return { id: m.id, name: m.name, github_login: login || null };
+  }
   if (input.name !== undefined && input.name.trim() !== m.name) {
     const name = required(input.name, 'name').trim().slice(0, 80);
     await assertNameFree(c, name, m.id);
@@ -474,9 +486,10 @@ export async function claimTask(c: Ctx, key: string, session?: string) {
      )`).bind(c.me.id, leaseFor(c, c.me), now, t.id, c.me.id, c.me.id).run();
   if (!r.meta.changes) {
     const holder = t.assignee_id ? (await getMember(c, t.assignee_id)).name : null;
+    const skip = c.me.kind === 'ai' ? ' Skip it and call next_task for other work.' : ' Use Take over if it needs to change hands.';
     throw new KunlaError(409, t.status === 'in_progress' || t.status === 'blocked'
-      ? `${t.key} is already claimed by ${holder}.`
-      : t.status === 'ready' ? `${t.key} is assigned to ${holder}.`
+      ? `${t.key} is already claimed by ${holder}.${skip}`
+      : t.status === 'ready' ? `${t.key} is assigned to ${holder}.${skip}`
       : t.status === 'parked' ? `${t.key} is parked for later. Leave it alone unless a person brings it back.` : `${t.key} is ${t.status}, not ready to claim.`);
   }
   if (t.assignee_id !== c.me.id || t.status !== 'in_progress') await event(c, t.id, 'claimed');
@@ -531,6 +544,14 @@ export async function updateTask(c: Ctx, key: string, input: {
   cost_usd?: number; tokens?: number; kind?: string;
 }, via?: Via) {
   let t = await getTask(c, key);
+  // One holder at a time: an agent can comment on someone else's claimed task, but not move it,
+  // reassign it or rewrite it. People can, and the holder is told (see claimLost below).
+  const heldByOther = holds(t) && t.assignee_id !== c.me.id;
+  const changes = ['status', 'assignee', 'blocked_question', 'title', 'brief', 'criteria', 'priority'].filter((k) => (input as any)[k] !== undefined);
+  if (heldByOther && c.me.kind === 'ai' && changes.length) {
+    const holder = (await getMember(c, t.assignee_id!)).name;
+    throw new KunlaError(409, `${t.key} is held by ${holder}, so you can't change its ${changes.join(', ')}. Add a note instead, or ask a person to take it over.`);
+  }
   await recordSession(c, t.id, input.session);
   const fields: Partial<Task> = {};
   if (input.title) fields.title = input.title;
@@ -575,8 +596,107 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (fields.assignee_id && fields.assignee_id !== t.assignee_id && (fields.status ?? t.status) === 'ready')
     await wakeMember(c, fields.assignee_id, 'assigned', t, input.note ?? null);
   const after = await getTask(c, t.id);
+  if (heldByOther && !holds(after, t.assignee_id!)) await claimLost(c, t, input.note ?? null);
   if (fields.status === 'ready' && t.status !== 'ready') await continuous.wakeIdle(c, after);
   return after;
+}
+
+// ---------- sharing work: claims, handoffs, take-overs (KD-36) ----------
+
+/** A member "holds" a task while it is in progress or blocked under their name. */
+const holds = (t: Pick<Task, 'status' | 'assignee_id'>, memberId?: string) =>
+  !!t.assignee_id && (t.status === 'in_progress' || t.status === 'blocked') && (!memberId || t.assignee_id === memberId);
+
+/** People don't get leases; a claim with no word from its holder for this long is flagged as stale, never released. */
+export const STALE_HUMAN_DAYS = 3;
+
+/** The previous holder lost a task to someone else: note it, and wake an agent so it stops working on it. */
+async function claimLost(c: Ctx, before: Task, note: string | null) {
+  await wakeMember(c, before.assignee_id, 'taken_over', before, note);
+}
+
+/**
+ * Hand a task on with a note on where the work stands. The note is what the next holder reads
+ * first (get_task shows it as handoff). With `to` it goes to that member (and wakes an agent);
+ * without, it goes back to Ready for anyone. The holder can release; so can any person.
+ */
+export async function releaseTask(c: Ctx, key: string, input: { note: string; to?: string | null; session?: string }) {
+  const t = await getTask(c, key);
+  const note = required(input.note, 'note (where the work stands, for whoever picks it up)');
+  if (!holds(t) && !(t.status === 'ready' && t.assignee_id)) throw new KunlaError(409, `${t.key} is ${t.status}${t.assignee_id ? '' : ' and nobody holds it'}, so there is nothing to release.`);
+  const mine = t.assignee_id === c.me.id;
+  if (!mine && c.me.kind !== 'human') throw new KunlaError(403, `${t.key} isn't yours to release.`);
+  const to = input.to ? await getMember(c, input.to) : null;
+  if (to && to.id === t.assignee_id) throw new KunlaError(400, `${t.key} is already with ${to.name}.`);
+  await recordSession(c, t.id, input.session);
+  await touch(c, t.id, { status: 'ready', assignee_id: to?.id ?? null, lease_expires_at: null, blocked_question: null, blocked_on_id: null });
+  await event(c, t.id, 'released', note, { previous: t.assignee_id, to: to?.id ?? null, from: t.status });
+  const after = await getTask(c, t.id);
+  if (!mine) await claimLost(c, t, note);
+  if (to) await wakeMember(c, to.id, 'assigned', after, note);
+  else await continuous.wakeIdle(c, after);
+  return after;
+}
+
+/**
+ * A person takes a task off whoever holds it: to work on it themselves, or to give it to someone else.
+ * Agents can't take work from each other; they skip claimed tasks. The previous holder is woken and
+ * told to stop, and the reason goes in the record.
+ */
+export async function takeOverTask(c: Ctx, key: string, input: { note?: string; to?: string | null } = {}) {
+  if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people take over claimed work. Skip it and call next_task.');
+  const t = await getTask(c, key);
+  if (!holds(t) && !(t.status === 'ready' && t.assignee_id)) throw new KunlaError(409, `${t.key} is ${t.status} and nobody holds it; claim it instead.`);
+  const to = input.to ? await getMember(c, input.to) : c.me;
+  if (to.id === t.assignee_id) throw new KunlaError(400, `${t.key} is already with ${to.name}.`);
+  const self = to.id === c.me.id;
+  // Taking it yourself means you're on it now; giving it to someone hands it over Ready, for them to claim.
+  await touch(c, t.id, self
+    ? { status: 'in_progress', assignee_id: c.me.id, lease_expires_at: null, blocked_question: null, blocked_on_id: null }
+    : { status: 'ready', assignee_id: to.id, lease_expires_at: null, blocked_question: null, blocked_on_id: null });
+  await event(c, t.id, 'taken_over', input.note?.trim() || null, { previous: t.assignee_id, to: to.id, from: t.status });
+  const after = await getTask(c, t.id);
+  await claimLost(c, t, input.note ?? null);
+  if (!self) await wakeMember(c, to.id, 'assigned', after, input.note ?? null);
+  return after;
+}
+
+/**
+ * Who holds a task, since when, when they were last heard from, and whether the claim looks stale;
+ * plus the latest handoff note. Agents read this before working; the task page shows it.
+ */
+async function claimInfo(c: Ctx, t: Task) {
+  const handoff = await c.db.prepare(
+    `SELECT e.type, e.note, e.data, e.created_at, m.name AS actor FROM events e LEFT JOIN members m ON m.id = e.actor_id
+     WHERE e.task_id = ? AND e.type IN ('released','taken_over','lease_expired') ORDER BY e.id DESC LIMIT 1`).bind(t.id)
+    .first<{ type: string; note: string | null; data: string; created_at: string; actor: string | null }>();
+  let claim = null;
+  if (holds(t)) {
+    const holder = await getMember(c, t.assignee_id!);
+    const since = await c.db.prepare(`SELECT created_at FROM events WHERE task_id = ? AND type IN ('claimed','taken_over') ORDER BY id DESC LIMIT 1`).bind(t.id).first<{ created_at: string }>();
+    const last = await c.db.prepare('SELECT max(created_at) AS at FROM events WHERE task_id = ? AND actor_id = ?').bind(t.id, holder.id).first<{ at: string | null }>();
+    const lastAt = last?.at ?? since?.created_at ?? t.updated_at;
+    const now = (c.now ? c.now() : new Date()).getTime();
+    const stale = holder.kind === 'human' && t.status === 'in_progress' && now - new Date(lastAt).getTime() > STALE_HUMAN_DAYS * 86_400_000;
+    claim = {
+      holder: { id: holder.id, name: holder.name, kind: holder.kind }, since: since?.created_at ?? t.created_at, last_heard: lastAt,
+      lease_expires_at: t.lease_expires_at, stale, you_hold: holder.id === c.me.id,
+      rule: holder.kind === 'ai'
+        ? `Claimed by an agent on a ${c.leaseMinutes}-minute lease. If it goes quiet the task returns to Ready by itself.`
+        : stale ? `Claimed by a person who hasn't updated it in over ${STALE_HUMAN_DAYS} days. It stays theirs until they release it or a person takes it over.`
+        : 'Claimed by a person. It stays theirs until they release it or someone takes it over.',
+    };
+  }
+  const names = handoff ? await memberNames(c) : null;
+  const d = handoff ? JSON.parse(handoff.data || '{}') : {};
+  return {
+    claim,
+    handoff: handoff ? {
+      type: handoff.type, note: handoff.note, at: handoff.created_at, by: handoff.actor ?? 'Kunla',
+      from: (d.previous ?? d.previous_assignee) ? names!.get(d.previous ?? d.previous_assignee)?.name ?? null : null,
+      to: d.to ? names!.get(d.to)?.name ?? null : null,
+    } : null,
+  };
 }
 
 export async function addDeliverables(c: Ctx, taskId: string, links: { url: string; title?: string }[] = []) {
@@ -914,11 +1034,13 @@ export async function taskDetail(c: Ctx, key: string) {
   const parent = t.parent_id ? await c.db.prepare('SELECT key, title, status FROM tasks WHERE id = ?').bind(t.parent_id).first() : null;
   const ws = p.kind === 'workspace' ? p : await getWorkspace(c);
   const names = await memberNames(c);
+  const sharing = await claimInfo(c, t);
   return {
     ...publicTask(t, names),
     kind,
     kind_label: KIND_LABEL[kind],
     how_to_finish: GUIDE[kind],
+    ...sharing,
     project: p.kind === 'workspace' ? null : { key: p.key, name: p.name, require_human_review: !!p.require_human_review, focus: !!p.focus, ends_at: p.ends_at },
     workspace: { key: ws.key, name: ws.name },
     parent,
@@ -1123,7 +1245,7 @@ export async function whoami(c: Ctx) {
   const projects = await listProjects(c);
   const sponsor = c.me.sponsor_id ? await getMember(c, c.me.sponsor_id) : null;
   return {
-    id: c.me.id, name: c.me.name, kind: c.me.kind, platform: c.me.platform, roles: parseList(c.me.roles),
+    id: c.me.id, name: c.me.name, kind: c.me.kind, platform: c.me.platform, roles: parseList(c.me.roles), github_login: c.me.github_login ?? null,
     sponsor: sponsor ? sponsor.name : null,
     workspace: await getWorkspace(c).then((w) => ({ id: w.id, key: w.key, name: w.name })),
     lane: parseList(c.me.scope),

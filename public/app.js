@@ -714,6 +714,7 @@ const EVENT = {
   blocked: () => 'asked a question', answered: (e) => (e.data?.via ? 'answered in a chat' : 'answered'), accepted: () => 'made it ready', declined: () => 'declined it',
   parked: (e) => (e.data?.until ? `put it off until ${new Date(e.data.until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}` : 'put it off for someday'),
   unparked: () => 'brought it back',
+  released: (e) => (e.data?.to ? 'handed it on' : 'let it go, back to Ready'), taken_over: () => 'took it over',
   lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `${e.data?.via ? 'said in a chat to move it' : 'moved it'} to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
   merged: () => 'merged the PR', merge_waiting: () => 'will merge the PR when checks pass', merge_blocked: () => 'could not merge the PR yet',
   woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
@@ -761,6 +762,7 @@ async function viewTask(key) {
         <div class="people"><span>${raw(who(t.assignee, 'Nobody yet'))}</span>${raw(t.reviewer ? html`<span class="muted">reviewed by</span><span>${raw(who(t.reviewer))}</span>` : '')}
         ${raw(t.created_by ? html`<span class="muted">asked by ${t.created_by.name}</span>` : '')}</div></div>
       ${raw(decision ? html`<div class="card" style="margin-top:24px">${raw(decision)}</div>` : '')}
+      ${raw(claimCard(t))}
       ${raw(t.status === 'parked' ? html`<div class="card pad parked-note"><div class="grow"><b>Put off ${t.snoozed_until ? 'until ' + new Date(t.snoozed_until).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' }) : 'for someday'}.</b>
         <span class="muted">It is out of the briefing and agents leave it alone. When it comes back it returns to ${STATUS[t.returns_to] || 'Ready'}.</span></div><button class="btn go" data-act="click:unpark">Bring it back</button></div>`
         : !decision && OPEN.has(t.status) ? '<div class="row" style="margin-top:12px"><button class="btn quiet sm" data-act="click:later">Later…</button></div>' : '')}
@@ -799,6 +801,9 @@ async function viewTask(key) {
     later: () => showLater(t.key, reload),
     kind: async (el) => { await api('PATCH', `/api/tasks/${t.key}`, { kind: el.value }); toast(`${t.key} is ${KIND[el.value].toLowerCase()} work now.`); reload(); },
     unpark: async () => { const r = await api('POST', `/api/tasks/${t.key}/unpark`); toast(`${t.key} is back in ${STATUS[r.status]}.`); reload(); },
+    takeit: async () => { await api('POST', `/api/tasks/${t.key}/claim`); toast(`${t.key} is yours. Agents will skip it.`); reload(); },
+    release: () => showHandoff(t, 'release', reload),
+    takeover: () => showHandoff(t, 'takeover', reload),
     undodecision: async () => { const r = await api('POST', `/api/tasks/${t.key}/decision/undo`); toast(`Undone. ${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     addsub: async (f) => {
       const title = formData(f).title.trim(); if (!title) return;
@@ -809,6 +814,52 @@ async function viewTask(key) {
     copy: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); toast('Copied.'); } catch { toast(el.dataset.v); } },
   });
   $app.querySelectorAll('textarea[name=answer]').forEach((ta) => ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ta.form.requestSubmit(); }));
+}
+
+// ---------- sharing work: who holds a task, handoffs, take-overs (KD-36) ----------
+// One holder per task. Agents hold a lease that lapses when they go quiet; people hold until they let go.
+function claimCard(t) {
+  const c = t.claim;
+  const h = t.handoff;
+  // The last handoff note matters to whoever picks the task up, so it shows until there's newer work on top of it.
+  const showHandoff = h?.note && (t.status === 'ready' || (c && new Date(c.since) >= new Date(h.at)));
+  const handoffLine = showHandoff ? html`<div class="handoff"><small>${h.type === 'taken_over' ? `${h.by} took it over${h.from ? ' from ' + h.from : ''}` : h.type === 'released' ? `Handoff from ${h.from ?? h.by}` : 'The claim lapsed'} · ${agoLong(h.at)}</small><p class="prose">${prose(h.note)}</p></div>` : '';
+  if (c) {
+    const lease = c.holder.kind === 'ai' && c.lease_expires_at ? `lease ends in ${span(new Date(c.lease_expires_at) - Date.now())}` : '';
+    const heard = `last heard ${agoLong(c.last_heard)}`;
+    const acts = c.you_hold ? '<button class="btn sm" data-act="click:release">Hand off…</button>'
+      : me.kind === 'human' ? '<button class="btn sm" data-act="click:takeover">Take over…</button>' : '';
+    return html`<div class="card pad claim ${c.stale ? 'stale' : ''}"><div class="grow">
+      <b>${c.you_hold ? 'You hold this' : `${c.holder.name} is on it`}${raw(c.stale ? ' <span class="pill warn">quiet</span>' : '')}</b>
+      <span class="muted">${c.you_hold ? (c.holder.kind === 'ai' ? '' : 'Agents skip it until you hand it off or finish. ') : (c.holder.kind === 'ai' ? 'Other agents skip it. ' : 'Agents skip it. ')}Since ${agoLong(c.since)}, ${heard}${lease ? ', ' + lease : ''}.${c.stale ? ' It stays theirs until they let go or someone takes it over.' : ''}</span>
+      ${raw(handoffLine)}</div>${raw(acts)}</div>`;
+  }
+  if (t.status !== 'ready') return '';
+  const pinned = t.assignee && t.assignee.id !== me.id;
+  const acts = me.kind !== 'human' ? '' : pinned ? '<button class="btn sm" data-act="click:takeover">Take over…</button>' : '<button class="btn sm go" data-act="click:takeit">Take it</button>';
+  return html`<div class="card pad claim"><div class="grow"><b>${pinned ? `Waiting for ${t.assignee.name} to pick it up` : t.assignee ? 'Handed to you' : 'Nobody is on this yet'}</b>
+    <span class="muted">${pinned ? 'Only they can claim it.' : 'Whoever claims it first holds it; everyone else skips it.'}</span>${raw(handoffLine)}</div>${raw(acts)}</div>`;
+}
+
+function showHandoff(t, mode, after) {
+  const others = members.filter((m) => !m.removed_at && m.id !== t.assignee?.id && (mode === 'release' ? m.id !== me.id : true));
+  const release = mode === 'release';
+  openSheet(html`<form class="sheet-body stack" data-act="submit:go"><div><h2>${release ? `Hand off ${t.key}` : `Take over ${t.key}`}</h2>
+    <p class="muted">${release ? 'Say where the work stands. Whoever picks it up reads this first.'
+      : `${t.assignee?.name ?? 'The holder'} ${t.assignee?.kind === 'ai' ? 'is told to stop and move on' : 'sees this in the record'}. The reason goes in the record.`}</p></div>
+    <div class="field"><label for="ho-to">${release ? 'Give it to' : 'Who works on it'}</label><select id="ho-to" name="to">
+      <option value="">${release ? 'Anyone (back to Ready)' : 'Me'}</option>
+      ${join(others.filter((m) => release || m.id !== me.id).map((m) => html`<option value="${m.name}">${m.name}${m.kind === 'ai' ? ' (AI)' : ''}</option>`))}</select></div>
+    <div class="field"><label for="ho-note">${release ? 'Handoff note' : 'Why (optional)'}</label><textarea id="ho-note" name="note" rows="3" ${release ? 'required' : ''} placeholder="${release ? "What's done, what's left, where the draft or branch is" : 'e.g. I need this today'}"></textarea></div>
+    <div class="row"><button class="btn go">${release ? 'Hand off' : 'Take over'}</button><button type="button" class="btn quiet" data-act="click:close">Cancel</button></div></form>`, {
+    go: async (f) => {
+      const d = formData(f);
+      const r = await api('POST', `/api/tasks/${t.key}/${release ? 'release' : 'takeover'}`, { note: d.note.trim(), to: d.to || null });
+      closeSheet(true);
+      toast(r.assignee_id === me.id ? `${t.key} is yours now.` : d.to ? `${t.key} is with ${d.to}.` : `${t.key} is back in Ready.`);
+      await after();
+    },
+  });
 }
 
 // ---------- tasks: one list that stays useful at hundreds of tasks ----------
@@ -1141,7 +1192,16 @@ async function showGitHub(_unused, back) {
     <div><h2>Connect GitHub</h2><p class="muted">Pull requests and commits that mention a task key (like ${projects[0]?.key || 'MKT'}-12 in the title, branch, description or a commit message) then show up on the task without anyone logging them. An opened PR sends the task to Review with the PR attached; a merged PR finishes it, or waits for a person's review if the project asks for one.</p></div>
     ${raw(hookStatus(info))}
     ${raw(appBlock)}
+    <form class="stack" style="gap:6px" data-act="submit:login"><div class="label">Your GitHub account</div>
+      <p class="muted" style="font-size:13.5px">When a PR is merged from this account, Kunla counts it as your approval of the task, so you don't approve twice.</p>
+      <div class="field"><label for="gh-login">GitHub username</label><input id="gh-login" name="login" autocomplete="off" placeholder="e.g. octocat" value="${me.github_login || ''}"></div><div class="row"><button class="btn">Save</button></div></form>
     <div class="row"><button class="btn quiet" data-act="click:close">Close</button></div></div>`, {
+    login: async (f) => {
+      const v = formData(f).login.trim();
+      const r = await api('PATCH', `/api/members/${me.id}`, { github_login: v });
+      me.github_login = r.github_login;
+      toast(r.github_login ? `Saved. Merges from @${r.github_login} now count as your approval.` : 'Removed. Merges no longer count as your approval.');
+    },
     connectApp: async (f) => {
       const d = f?.tagName === 'FORM' ? formData(f) : {};
       const r = await api('POST', '/api/integrations/github/app', { org: d.org || '', merge: f?.tagName === 'FORM' ? !!d.merge : undefined });

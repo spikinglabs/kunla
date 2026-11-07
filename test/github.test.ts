@@ -245,3 +245,38 @@ describe('delivery log', () => {
   });
 });
 
+
+describe('a merge from your GitHub account is your approval', () => {
+  const merged = (login: string) => pr('closed', {}, { merged: true, merged_by: { login } });
+  beforeEach(async () => {
+    await call('PATCH', '/api/projects/MKT', human, { require_human_review: true });
+    const a = await call('POST', '/api/members', human, { name: 'Coder', kind: 'ai' });
+    await call('POST', '/api/tasks/MKT-1/claim', a.body.token);
+    await call('POST', '/api/tasks/MKT-1/submit', a.body.token, { summary: 'Done', deliverables: [{ url: 'https://github.com/acme/app/pull/7' }] });
+  });
+  it('approves the task when its PR is merged from a linked account', async () => {
+    const me = (await call('GET', '/api/me', human)).body;
+    expect((await call('PATCH', `/api/members/${me.id}`, human, { github_login: '@Octo-L' })).body.github_login).toBe('Octo-L');
+    expect((await call('GET', '/api/me', human)).body.github_login).toBe('Octo-L');
+    const r = await hook('pull_request', merged('octo-l'));
+    expect(r.body.updated).toEqual([{ key: 'MKT-1', from: 'review', to: 'done' }]);
+    const t = await task('MKT-1');
+    expect(t.status).toBe('done');
+    expect(t.reviews[0]).toMatchObject({ verdict: 'approved', reviewer: 'L' });
+    expect(t.history.find((e: any) => e.type === 'approved')).toMatchObject({ actor: 'L', data: { via: { agent: 'GitHub', source_url: 'https://github.com/acme/app/pull/7' } } });
+  });
+  it('waits for a review when the merger is not linked', async () => {
+    const r = await hook('pull_request', merged('stranger'));
+    expect(r.body.updated).toEqual([{ key: 'MKT-1', from: 'review', to: null }]);
+    expect((await task('MKT-1')).status).toBe('review');
+  });
+  it('only lets people link an account, one person per account', async () => {
+    const me = (await call('GET', '/api/me', human)).body;
+    await call('PATCH', `/api/members/${me.id}`, human, { github_login: 'octo' });
+    const p = await call('POST', '/api/members', human, { name: 'Sam', kind: 'human' });
+    expect((await call('PATCH', `/api/members/${p.body.member.id}`, human, { github_login: 'OCTO' })).status).toBe(409);
+    const bot = await call('POST', '/api/members', human, { name: 'Bot', kind: 'ai' });
+    expect((await call('PATCH', `/api/members/${bot.body.member.id}`, human, { github_login: 'bot' })).status).toBe(400);
+    expect((await call('PATCH', `/api/members/${me.id}`, human, { github_login: 'not a name' })).status).toBe(400);
+  });
+});

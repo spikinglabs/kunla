@@ -461,6 +461,12 @@ pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: va
 .later-opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 .later-opts .btn { height: auto; padding: 10px 14px; flex-direction: column; align-items: flex-start; gap: 2px; border-radius: 14px; }
 .later-opts .btn small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.claim { margin-top: 20px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.claim .grow { display: flex; flex-direction: column; gap: 4px; min-width: 200px; flex: 1; }
+.claim.stale { border-color: var(--warn); }
+.handoff { margin-top: 8px; padding: 8px 12px; border-left: 3px solid var(--rule-2); }
+.handoff small { color: var(--muted); }
+.handoff p { margin: 4px 0 0; }
 .parked-note { margin-top: 20px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .parked-note .grow { display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
 .st-dot.s-parked { border-style: dashed; }

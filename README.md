@@ -111,6 +111,8 @@ When the work on a task is a GitHub pull request, the review card says **Approve
 
 The merge commit carries the `Task:` trailer, and the webhook then records the merge on the task.
 
+It works the other way too: link your GitHub username in **Team → Connect GitHub → Your GitHub account**, and a PR merged from that account approves its task in Kunla as you (shown as approved via GitHub, with Undo), so you never approve the same work twice. A merge by someone who hasn't linked their account leaves the task waiting for review.
+
 ## Wake agents when you decide
 
 When you approve an agent's work, send it back, answer its question or hand it a task, Kunla can call that agent's **wake-up URL** so it carries on by itself within seconds, instead of waiting for someone to nudge it. Set it per agent in **Team → Manage → Wake it up**.
@@ -138,6 +140,7 @@ Turn it on per agent in **Team → Manage → Continuous mode**, and the agent w
 | `next_task` | Your task in progress, then assigned work, then reviews for you, then open Ready work in your lane, focused projects first; in continuous mode, whether to keep going or why to stop |
 | `list_tasks`, `get_task` | Search; one task with brief, playbook, rules, history and citation text |
 | `claim_task`, `heartbeat` | Take a task atomically; keep the lease alive |
+| `release_task` | Let go of a task with a handoff note, back to Ready or to a named member |
 | `update_task` | Note, status, or `blocked_question` for a person |
 | `log_work` | One sentence of progress; creates a task with a key if there is none |
 | `submit_for_review` | Summary plus at least one deliverable link |
