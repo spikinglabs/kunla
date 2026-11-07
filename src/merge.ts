@@ -5,6 +5,7 @@
 // GitHub's check_suite webhook.
 import { KunlaError, type Ctx, type Task } from './core';
 import { wakeMember } from './wake';
+import { installationToken, getApp, installations } from './githubapp';
 
 const TOKEN_KEY = 'github_token';
 const WAIT_PREFIX = 'merge_wait:';
@@ -39,10 +40,23 @@ export async function taskPr(db: D1Database, taskId: string): Promise<PrRef | nu
   return prFromLinks(rows);
 }
 
+/** The personal token an admin stored (or GITHUB_TOKEN), if any. */
 export async function getToken(c: Pick<Ctx, 'db' | 'githubToken' | 'space'>): Promise<string | null> {
   const key = await scoped(c.db, c.space, TOKEN_KEY);
   const r = await c.db.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first<{ value: string }>();
   return r?.value || (key === TOKEN_KEY ? c.githubToken : null) || null;
+}
+
+/** A token that can act on this PR: the stored personal token, else the Kunla app's installation token. */
+export async function tokenFor(c: Pick<Ctx, 'db' | 'githubToken' | 'space'>, pr: PrRef, fetcher: typeof fetch = fetch): Promise<string | null> {
+  return (await getToken(c)) || (await installationToken(c, pr.owner, pr.repo, fetcher).catch(() => null));
+}
+
+/** Can Kunla merge PRs itself in this workspace? (A personal token, or the app with merge rights installed here.) */
+export async function canMerge(c: Pick<Ctx, 'db' | 'githubToken' | 'space'>): Promise<boolean> {
+  if (await getToken(c)) return true;
+  const app = await getApp(c.db);
+  return !!app?.merge && (await installations(c.db, c.space)).length > 0;
 }
 
 /** An admin stores (or clears) the token Kunla merges with: a fine-grained token with Pull requests and Contents write. */
@@ -103,7 +117,7 @@ async function sendBack(c: Ctx, task: Task, pr: PrRef, reason: string) {
  * GitHub reports the check suite finished. Red or conflicting → send the task back.
  */
 export async function mergeApproved(c: Ctx, task: Task, pr: PrRef, fetcher: typeof fetch = fetch, approver = c.me.name) {
-  const token = await getToken(c);
+  const token = await tokenFor(c, pr, fetcher);
   if (!token) return { done: false, reason: 'no token' };
   try {
     const s = await prState(token, pr, fetcher);
