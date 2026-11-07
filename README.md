@@ -22,6 +22,7 @@ It runs on Cloudflare (one Worker, one D1 database, static files) and costs clos
 - **Claude Code plugin** whose hooks load the task's brief and rules at session start, add a `Task:` trailer to commits, log commits as progress, and keep the claim alive. Nothing depends on the model remembering.
 - **`kunla` CLI** for people and for any command-line agent: `kunla run MKT-42 -- codex` starts an agent on a task and records the session.
 - **REST API.** Every MCP tool is also `POST /api/tools/<name>`.
+- **GitHub webhooks.** Pull requests and commits that cite a task key update the task by themselves: an opened PR sends it to Review with the PR attached, a merged PR finishes it (or waits for a person's review when the project requires one).
 
 ## Quick start (local)
 
@@ -79,6 +80,31 @@ kunla run MKT-42 -- codex                # passes the brief as the prompt, recor
 kunla submit "Drafted the page" --link https://github.com/org/repo/pull/7
 ```
 
+## Connect GitHub
+
+Pull requests and commits that mention a task key (`KD-12` in the PR title, branch name, description or a commit message, such as the `Task:` trailer) then update the task without anyone calling `log_work`.
+
+1. In Kunla, open **Team → Connect GitHub** (admins only) and click **Make the secret**. Kunla shows the secret once. You can instead set it as a Worker secret: `wrangler secret put GITHUB_WEBHOOK_SECRET`.
+2. In the GitHub repository (or organization), open **Settings → Webhooks → Add webhook** and fill in:
+   - **Payload URL**: `https://<your-kunla>/hooks/github`
+   - **Content type**: `application/json`
+   - **Secret**: the secret from step 1
+   - **Events**: *Let me select individual events*, then **Pull requests** and **Pushes**
+3. Click **Add webhook**. GitHub sends a ping; the Connect GitHub dialog shows when it last heard from GitHub.
+
+What happens, for every existing task a PR or commit cites:
+
+| On GitHub | In Kunla |
+|---|---|
+| PR opened, reopened or marked ready | PR attached as a deliverable; Ready or In progress tasks move to **Review** |
+| Draft PR opened | PR attached; a Ready task moves to **In progress** |
+| Key added to an open PR later (edit or new push) | Same as the PR opening, once |
+| PR merged | **Done** (and the parent rolls up), or stays in **Review** for a person when the project requires human review |
+| PR closed without merging | A note in the history, no status change |
+| Commit pushed | A history line with a link to the commit |
+
+Tasks only move forward: done, declined, blocked and proposed (Inbox) tasks keep their status and just get the note. Every delivery is checked against `X-Hub-Signature-256` and counted once, even when GitHub retries it. One secret serves the whole workspace, so you can add the same webhook to several repositories. It costs one Worker request per GitHub event and no polling.
+
 ## MCP tools
 
 | Tool | What it does |
@@ -108,6 +134,7 @@ src/index.ts       Hono Worker: REST API, MCP endpoint, OAuth routes
 src/core.ts        the record of work: plain SQL, no Cloudflare-only features
 src/mcp.ts         MCP tools (Streamable HTTP, stateless)
 src/oauth.ts       OAuth 2.1 + PKCE + dynamic client registration for chat connectors
+src/github.ts      GitHub webhooks: signature check, task keys, status changes
 migrations/        D1 schema (additive only)
 plugins/claude-code/  Claude Code plugin and the kunla CLI
 skills/kunla-chat/ skill for claude.ai
@@ -118,7 +145,7 @@ Live views ask one tiny question every 30 seconds ("has anything changed?", a si
 
 ## Not in v1 yet
 
-In-chat interactive views (MCP Apps), Tiny Foundation and other knowledge providers, GitHub app webhooks, Jira mirroring, Docker and Postgres, Codex-specific hooks, refresh tokens for OAuth, and per-project permissions.
+In-chat interactive views (MCP Apps), Tiny Foundation and other knowledge providers, a GitHub App (one-click install instead of a webhook per repo), Jira mirroring, Docker and Postgres, Codex-specific hooks, refresh tokens for OAuth, and per-project permissions.
 
 ## License
 

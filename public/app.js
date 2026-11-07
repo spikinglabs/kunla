@@ -228,7 +228,7 @@ function decisionCard(item, { solo = false } = {}) {
     const round = t.review_rounds > 0 ? ` · round ${t.review_rounds + 1}` : '';
     return html`<form class="decision ${solo ? '' : 'card'}" data-key="${t.key}" data-act="submit:approve">
       ${raw(head(solo ? 'Waiting on your review' : 'Review'))}${raw(title)}
-      <div class="byline">${raw(who(worker, 'Someone'))}<span>sent this ${agoLong(t.updated_at)}${round}</span></div>
+      <div class="byline">${raw(who(worker, t.deliverables?.some((d) => /^https:\/\/github\.com\//.test(d.url)) ? 'GitHub' : 'Someone'))}<span>sent this ${agoLong(t.updated_at)}${round}</span></div>
       ${raw(t.summary ? html`<p class="said">${t.summary}</p>` : '')}
       ${raw(t.deliverables?.length ? html`<div class="links">${join(t.deliverables.map((d) => html`<a class="pill" href="${d.url}" target="_blank" rel="noopener">${d.title || new URL(d.url).hostname} ↗</a>`))}</div>` : '')}
       ${raw(t.criteria?.length ? html`<div><div class="label" style="margin-bottom:6px">Tick what's met</div><div class="checks">${join(t.criteria.map((c, i) => html`<label class="check"><input type="checkbox" name="c${i}" data-crit="${c}"><span>${c}</span></label>`))}</div></div>` : '')}
@@ -484,6 +484,7 @@ const EVENT = {
   submitted: () => 'sent it for review', approved: () => 'approved it', changes_requested: () => 'sent it back', rule_added: () => 'taught the team a rule',
   blocked: () => 'asked a question', answered: () => 'answered', accepted: () => 'made it ready', declined: () => 'declined it',
   lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `moved it to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
+  github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
 };
 async function viewTask(key) {
   renderShell('tasks');
@@ -648,7 +649,7 @@ async function viewTeam(sub) {
   members = record;
   const ps = new Map(pulse.map((p) => [p.id, p]));
   $app.innerHTML = html`<div class="head"><div><h1>Team</h1><p class="sub">People and agents side by side. Each agent works under its own name, with a person who sponsors it. Lanes keep each one on the projects you choose.</p></div>
-      <div class="row"><button class="btn go" data-act="click:connect">Connect an agent</button><button class="btn" data-act="click:claudeai">Use in claude.ai</button><button class="btn" data-act="click:addPerson">Add a person</button></div></div>
+      <div class="row"><button class="btn go" data-act="click:connect">Connect an agent</button><button class="btn" data-act="click:claudeai">Use in claude.ai</button><button class="btn" data-act="click:addPerson">Add a person</button>${raw(me.roles?.includes('admin') ? '<button class="btn" data-act="click:github">Connect GitHub</button>' : '')}</div></div>
     <div class="people-grid">${join(record.map((m) => { const p = ps.get(m.id) || {}; return html`<div class="card pad member">
       <div class="row" style="flex-wrap:nowrap">${raw(av(m, 'lg', p.live))}<div class="grow"><div class="nm">${m.name}</div><div class="muted" style="font-size:13px">${kindLine(m)}</div></div><span class="state ${p.state || 'idle'}">${p.state || 'idle'}</span></div>
       <div style="font-size:14px;color:var(--ink-2);min-height:21px">${raw(p.task ? html`<a href="#/t/${p.task.key}">${p.line}</a>` : esc(m.last_active ? `Last active ${agoLong(m.last_active)}` : 'Not active yet'))}</div>
@@ -657,7 +658,7 @@ async function viewTeam(sub) {
         <button class="pill ${m.scope.length ? '' : 'on'}" data-act="click:lane" data-k="">Everything</button>${join(projects.map((x) => html`<button class="pill ${m.scope.includes(x.key) ? 'on' : ''}" data-act="click:lane" data-k="${x.key}">${x.key}</button>`))}</div></div>` : '')}
       ${raw(canManage(m) ? html`<div><button class="btn sm" data-act="click:manage" data-id="${m.id}">Manage</button></div>` : '')}</div>`; }))}</div>`;
   bind($app, {
-    connect: () => showConnect('ai'), addPerson: () => showConnect('human'), claudeai: showClaudeAi,
+    connect: () => showConnect('ai'), addPerson: () => showConnect('human'), claudeai: showClaudeAi, github: showGitHub,
     manage: (el) => showManage(record.find((x) => x.id === el.dataset.id)),
     lane: async (el) => {
       const id = el.closest('.lanepick').dataset.id;
@@ -670,7 +671,7 @@ async function viewTeam(sub) {
     },
   });
   // Open a linked dialog once, then drop it from the URL so a background refresh doesn't reopen it.
-  if (sub && $('sheet').hidden) { if (sub === 'connect') showConnect('ai'); if (sub === 'claude-ai') showClaudeAi(); }
+  if (sub && $('sheet').hidden) { if (sub === 'connect') showConnect('ai'); if (sub === 'claude-ai') showClaudeAi(); if (sub === 'github') showGitHub(); }
   if (sub) history.replaceState(null, '', '#/team');
 }
 
@@ -769,6 +770,25 @@ function showManage(m) {
       toast(`${m.name} removed.`); closeSheet(true); members = members.filter((x) => x.id !== m.id); viewTeam();
     },
   });
+}
+
+// GitHub: one webhook per repository. PRs and commits that cite a task key then update the task by themselves.
+async function showGitHub(secret) {
+  const g = typeof secret === 'string' ? null : await api('GET', '/api/integrations/github');
+  const info = g || showGitHub.last;
+  showGitHub.last = info;
+  const fresh = typeof secret === 'string';
+  openSheet(html`<div class="sheet-body stack">
+    <div><h2>Connect GitHub</h2><p class="muted">Pull requests and commits that mention a task key (like ${projects[0]?.key || 'MKT'}-12 in the title, branch, description or a commit message) then show up on the task without anyone logging them. An opened PR sends the task to Review with the PR attached; a merged PR finishes it, or waits for a person's review if the project asks for one.</p></div>
+    <p class="muted" style="font-size:13.5px">${info.last_delivery_at ? `Last heard from GitHub ${agoLong(info.last_delivery_at)}.` : info.secret_set ? 'Set up, but nothing has arrived from GitHub yet.' : 'Not connected yet.'}</p>
+    ${raw(fresh ? '' : html`<div><button class="btn go" data-act="click:make">${info.secret_set ? 'Make a new secret' : 'Make the secret'}</button></div>
+      ${raw(info.secret_set ? '<p class="muted" style="font-size:13.5px">A new secret replaces the old one at once; paste it into every repository that uses the old one.</p>' : '')}`)}
+    ${raw(fresh ? html`<ol class="steps"><li>In the GitHub repository, open <b>Settings → Webhooks → Add webhook</b>.</li><li>Paste these values. Kunla shows the secret only once.</li></ol>
+      ${raw(copyBlock('Payload URL', info.webhook_url))}${raw(copyBlock('Secret', secret, { secret: true }))}
+      <ol class="steps" start="3"><li>Content type: <b>application/json</b>. Events: choose <b>Let me select individual events</b>, then tick <b>Pull requests</b> and <b>Pushes</b>.</li><li>Click <b>Add webhook</b>. GitHub sends a ping, and this page shows when it arrived.</li></ol>` : '')}
+    <div class="row"><button class="btn quiet" data-act="click:close">${fresh ? "I've saved it" : 'Close'}</button></div></div>`, {
+    make: async () => { const r = await api('POST', '/api/integrations/github'); showGitHub.last = r; showGitHub(r.secret); },
+  }, { sticky: fresh });
 }
 
 const PROJECT_NOTE = `Use the Kunla connector as this project's record of work.
@@ -881,7 +901,7 @@ async function openPalette(prefill = '') {
   input.value = prefill;
   input.focus();
   let sel = 0; let opts = [];
-  const pages = [['Briefing', '#/'], ['Work map', '#/map'], ['Tasks', '#/tasks'], ['Stuck tasks', '#/tasks', 'stuck'], ['Team', '#/team'], ['Projects', '#/projects'], ['Connect an agent', '#/team/connect'], ['Use Kunla in claude.ai', '#/team/claude-ai'],
+  const pages = [['Briefing', '#/'], ['Work map', '#/map'], ['Tasks', '#/tasks'], ['Stuck tasks', '#/tasks', 'stuck'], ['Team', '#/team'], ['Projects', '#/projects'], ['Connect an agent', '#/team/connect'], ['Use Kunla in claude.ai', '#/team/claude-ai'], ['Connect GitHub', '#/team/github'],
     ...projects.map((p) => [`${p.name} tasks`, `#/tasks/${p.key}`]), ...savedViews().map((v) => [`View: ${v.name}`, v.hash, v])];
   const close = () => { box.hidden = true; box.innerHTML = ''; };
   const render = () => {

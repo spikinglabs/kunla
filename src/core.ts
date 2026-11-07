@@ -256,12 +256,12 @@ export async function getTask(db: D1Database, key: string): Promise<Task> {
   return t;
 }
 
-async function event(c: Ctx, taskId: string | null, type: string, note?: string | null, data: object = {}, actor: string | null = c.me.id) {
+export async function event(c: Ctx, taskId: string | null, type: string, note?: string | null, data: object = {}, actor: string | null = c.me.id) {
   await c.db.prepare('INSERT INTO events (task_id, actor_id, type, note, data, created_at) VALUES (?,?,?,?,?,?)')
     .bind(taskId, actor, type, note ?? null, JSON.stringify(data), nowIso(c)).run();
 }
 
-async function touch(c: Ctx, taskId: string, fields: Partial<Task>) {
+export async function touch(c: Ctx, taskId: string, fields: Partial<Task>) {
   const cols = Object.keys(fields);
   const sets = cols.map((k) => `${k} = ?`).concat('updated_at = ?').join(', ');
   await c.db.prepare(`UPDATE tasks SET ${sets} WHERE id = ?`).bind(...cols.map((k) => (fields as any)[k]), nowIso(c), taskId).run();
@@ -383,7 +383,7 @@ export async function updateTask(c: Ctx, key: string, input: {
   return getTask(c.db, t.id);
 }
 
-async function addDeliverables(c: Ctx, taskId: string, links: { url: string; title?: string }[] = []) {
+export async function addDeliverables(c: Ctx, taskId: string, links: { url: string; title?: string }[] = []) {
   for (const d of links) {
     if (!d?.url) continue;
     if (!/^https?:\/\//i.test(d.url)) throw new KunlaError(400, `Deliverable links must start with http:// or https:// (got ${String(d.url).slice(0, 60)}).`);
@@ -477,7 +477,7 @@ export async function reviewTask(c: Ctx, key: string, input: {
 }
 
 /** When the last sub-task finishes, the parent finishes too, with a note saying why. */
-async function rollUp(c: Ctx, parentId: string | null) {
+export async function rollUp(c: Ctx, parentId: string | null) {
   if (!parentId) return;
   const parent = await getTask(c.db, parentId);
   if (!['ready', 'in_progress', 'blocked'].includes(parent.status)) return;
