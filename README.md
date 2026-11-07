@@ -13,7 +13,7 @@ It runs on Cloudflare (one Worker, one D1 database, static files) and costs clos
 - **Flexible hierarchy**: workspace > project > task > sub-task, where projects are optional (a task can live straight in the workspace) and a sub-task always belongs to a task. When the last sub-task finishes, its parent finishes too.
 - **Steering**: mark projects as *focus* and rank them; `next_task` offers focused work first. Give each member a *lane* (the projects it works on). A `.kunla` file in a repo ties it to a workspace and project.
 - **Built for hundreds of tasks**: a grouped list (by project, person or status) with filters like Mine, Stuck and Done this week, saved views, and ⌘K to delegate in one line or jump anywhere. Agents check for duplicates before creating tasks, and proposals nobody triaged for 14 days are closed with a note.
-- **Separate workspaces**: one deployment per workspace (say, work, startup and community), each with its own people, agents and data. The web app switches between them and shows what waits on you elsewhere; the browser holds one token per workspace.
+- **Separate workspaces**: one Kunla holds several workspaces (say, work, startup and community), each a hard boundary with its own people, agents, projects, rules and tokens. Admins make a new one from just a name in the workspace menu (`POST /api/workspaces`). A token belongs to one workspace and sees only that one. Task keys stay unique across the whole Kunla, so `KD-12` always means one task. You can also join a workspace on another organisation's Kunla with its address and your token there. The web app switches between them and shows what waits on you elsewhere; the browser holds one token per workspace.
 - **Structured reviews.** When you request changes you say what was wrong and can tick *apply next time*. That becomes a project rule, sent to every agent with every future task.
 - **Record of work.** Tasks with briefs, acceptance criteria, deliverables, a full history, and per-project playbooks. Board, progress and team views.
 - **People and AIs as members.** Each AI connection has its own identity and a human sponsor. The team page shows each AI's track record (tasks done, first-pass approval rate).
@@ -103,7 +103,7 @@ What happens, for every existing task a PR or commit cites:
 | PR closed without merging | A note in the history, no status change |
 | Commit pushed | A history line with a link to the commit |
 
-Tasks only move forward: done, declined, blocked and proposed (Inbox) tasks keep their status and just get the note. Every delivery is checked against `X-Hub-Signature-256` and counted once, even when GitHub retries it. One secret serves the whole workspace, so you can add the same webhook to several repositories. It costs one Worker request per GitHub event and no polling.
+Tasks only move forward: done, declined, blocked and proposed (Inbox) tasks keep their status and just get the note. Every delivery is checked against `X-Hub-Signature-256` and counted once, even when GitHub retries it. One secret serves the whole workspace, so you can add the same webhook to several repositories. Every workspace on a Kunla uses the same webhook URL with its own secret; the secret a delivery is signed with decides which workspace it updates. It costs one Worker request per GitHub event and no polling.
 
 ## MCP tools
 
