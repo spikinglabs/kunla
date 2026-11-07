@@ -17,6 +17,7 @@ export interface Wake {
   note: string | null;
   by: string;
   baseUrl: string;
+  merge?: { pr: string; by_kunla: boolean } | null;
 }
 
 export function parseCallback(raw: string | null | undefined): Callback | null {
@@ -40,13 +41,17 @@ const NEXT: Record<WakeEvent, (key: string) => string> = {
 
 export function payload(w: Wake) {
   const key = w.task?.key ?? '';
+  const next = w.merge && w.event === 'approved' && !w.merge.by_kunla
+    ? `${key} was approved. Merge ${w.merge.pr} (squash) once its checks are green; if they fail, fix them first. Then call next_task.`
+    : NEXT[w.event](key);
   const body = {
     event: w.event,
     agent: w.member.name,
     by: w.by,
     note: w.note,
     task: w.task ? { key, title: w.task.title, status: w.task.status, link: `${w.baseUrl}/t/${key}` } : null,
-    next: NEXT[w.event](key),
+    next,
+    merge: w.merge ?? null,
     kunla_url: w.baseUrl,
     sent_at: new Date().toISOString(),
   };
@@ -81,10 +86,11 @@ export async function deliver(db: D1Database, w: Wake, fetcher: typeof fetch = f
   }
   if (w.task && w.event !== 'ping') {
     const ok = !error;
-    await db.prepare('INSERT INTO events (task_id, actor_id, type, note, data, created_at) VALUES (?,?,?,?,?,?)').bind(
+    // The event lands in the task's own workspace.
+    await db.prepare(`INSERT INTO events (task_id, actor_id, type, note, data, created_at, space_id) VALUES (?,?,?,?,?,?, (SELECT space_id FROM tasks WHERE id = ?))`).bind(
       w.task.id, null, ok ? 'woke' : 'wake_failed',
       ok ? `Woke ${w.member.name} so it carries on.` : `Could not wake ${w.member.name} (${error}). Its sponsor can check the wake-up URL on the Team page.`,
-      JSON.stringify({ member_id: w.member.id, event: w.event, status }), new Date().toISOString()).run();
+      JSON.stringify({ member_id: w.member.id, event: w.event, status }), new Date().toISOString(), w.task.id).run();
   }
   return { ok: !error, status, error };
 }
@@ -93,12 +99,13 @@ export async function deliver(db: D1Database, w: Wake, fetcher: typeof fetch = f
  * Called from the core when a decision concerns an agent. Looks up the agent's wake-up URL and, if it
  * has one, hands the call to c.notify (the Worker sends it after the response with waitUntil).
  */
-export async function wakeMember(c: Ctx, memberId: string | null | undefined, event: WakeEvent, task: Task, note?: string | null) {
+export async function wakeMember(c: Ctx, memberId: string | null | undefined, event: WakeEvent, task: Task, note?: string | null, extra: { merge?: string; by_kunla?: boolean } = {}) {
   if (!c.notify || !memberId || memberId === c.me.id) return;
-  const m = await c.db.prepare('SELECT id, name, kind, callback FROM members WHERE id = ? AND removed_at IS NULL')
-    .bind(memberId).first<Pick<Member, 'id' | 'name' | 'kind'> & { callback: string | null }>();
+  const m = await c.db.prepare('SELECT id, name, kind, callback FROM members WHERE id = ? AND removed_at IS NULL AND space_id = ?')
+    .bind(memberId, c.space).first<Pick<Member, 'id' | 'name' | 'kind'> & { callback: string | null }>();
   const callback = m && m.kind === 'ai' ? parseCallback(m.callback) : null;
   if (!m || !callback) return;
   const fresh = await c.db.prepare('SELECT id, key, title, status FROM tasks WHERE id = ?').bind(task.id).first<{ id: string; key: string; title: string; status: string }>();
-  c.notify({ member: { id: m.id, name: m.name }, callback, event, task: fresh, note: note ?? null, by: c.me.name, baseUrl: c.baseUrl });
+  c.notify({ member: { id: m.id, name: m.name }, callback, event, task: fresh, note: note ?? null, by: c.me.name, baseUrl: c.baseUrl,
+    merge: extra.merge ? { pr: extra.merge, by_kunla: !!extra.by_kunla } : null });
 }

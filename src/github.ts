@@ -2,9 +2,10 @@
 // so nobody (person or agent) has to call log_work for work GitHub already knows about.
 // One route, signature-verified, no polling: GitHub calls us only when something happens.
 import * as core from './core';
+import { onCheckSuite, getToken } from './merge';
 import type { Status, Task } from './core';
 
-export const GITHUB_EVENTS = ['pull_request', 'push'];
+export const GITHUB_EVENTS = ['pull_request', 'push', 'check_suite'];
 const SECRET_KEY = 'github_webhook_secret';
 const MAX_KEYS = 20;          // a PR citing more tasks than this is almost surely noise
 const MAX_COMMITS = 50;       // a push carries at most 20 commits in the payload anyway
@@ -33,11 +34,32 @@ export async function verifySignature(secrets: string[], body: string, header: s
   return ok;
 }
 
-// ---------- secret (one per workspace, since one deployment is one workspace) ----------
+// ---------- secret (one per workspace) ----------
+// Every workspace on a deployment shares the one webhook URL; the secret a delivery is signed with
+// says which workspace it belongs to. The first workspace keeps the plain key it had before there
+// were several, and GITHUB_WEBHOOK_SECRET (an env var) also belongs to the first workspace.
 
-export async function getSecret(db: D1Database): Promise<string | null> {
-  const r = await db.prepare('SELECT value FROM settings WHERE key = ?').bind(SECRET_KEY).first<{ value: string }>();
+async function firstSpace(db: D1Database): Promise<string> {
+  const r = await db.prepare(`SELECT id FROM projects WHERE kind = 'workspace' ORDER BY created_at LIMIT 1`).first<{ id: string }>();
+  return r?.id ?? 'workspace';
+}
+
+async function secretKey(db: D1Database, space: string) {
+  return space === (await firstSpace(db)) ? SECRET_KEY : `${SECRET_KEY}:${space}`;
+}
+
+export async function getSecret(db: D1Database, space: string): Promise<string | null> {
+  const r = await db.prepare('SELECT value FROM settings WHERE key = ?').bind(await secretKey(db, space)).first<{ value: string }>();
   return r?.value ?? null;
+}
+
+/** Every workspace's secret, so a delivery can be matched to the workspace that signed it. */
+async function allSecrets(db: D1Database, envSecret?: string): Promise<{ space: string; secret: string }[]> {
+  const first = await firstSpace(db);
+  const rows = (await db.prepare(`SELECT key, value FROM settings WHERE key = ? OR key LIKE ?`).bind(SECRET_KEY, `${SECRET_KEY}:%`).all<{ key: string; value: string }>()).results;
+  const out = rows.map((r) => ({ space: r.key === SECRET_KEY ? first : r.key.slice(SECRET_KEY.length + 1), secret: r.value }));
+  if (envSecret) out.push({ space: first, secret: envSecret });
+  return out;
 }
 
 function newSecret(): string {
@@ -45,12 +67,14 @@ function newSecret(): string {
 }
 
 export async function connectionInfo(c: core.Ctx, envSecret?: string) {
-  const last = await c.db.prepare('SELECT MAX(created_at) AS at FROM webhook_deliveries').first<{ at: string | null }>();
+  const last = await c.db.prepare('SELECT MAX(created_at) AS at FROM webhook_deliveries WHERE space_id = ?').bind(c.space).first<{ at: string | null }>();
+  const env = envSecret && c.space === (await firstSpace(c.db));
   return {
     webhook_url: `${c.baseUrl}/hooks/github`,
     content_type: 'application/json',
     events: GITHUB_EVENTS,
-    secret_set: !!(await getSecret(c.db)) || !!envSecret,
+    secret_set: !!(await getSecret(c.db, c.space)) || !!env,
+    merge_token_set: !!(await getToken(c)),
     last_delivery_at: last?.at ?? null,
   };
 }
@@ -60,7 +84,7 @@ export async function rotateSecret(c: core.Ctx, envSecret?: string) {
   if (c.me.kind !== 'human' || !JSON.parse(c.me.roles || '[]').includes('admin')) throw new core.KunlaError(403, 'Only admins can connect GitHub.');
   const secret = newSecret();
   await c.db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
-    .bind(SECRET_KEY, secret, new Date().toISOString()).run();
+    .bind(await secretKey(c.db, c.space), secret, new Date().toISOString()).run();
   return { ...(await connectionInfo(c, envSecret)), secret };
 }
 
@@ -106,14 +130,14 @@ type Result = { status: number; body: Record<string, unknown> };
 
 // Kunla itself is the actor (events.actor_id NULL), and the note says who did it on GitHub.
 function systemCtx(base: core.Ctx): core.Ctx {
-  return { ...base, me: { id: null as unknown as string, name: 'GitHub', kind: 'ai', platform: 'github', sponsor_id: null, roles: '[]', scope: '[]', created_at: '' } };
+  return { ...base, me: { id: null as unknown as string, name: 'GitHub', kind: 'ai', platform: 'github', sponsor_id: null, roles: '[]', scope: '[]', created_at: '', space_id: base.space } };
 }
 
-async function tasksFor(db: D1Database, keys: string[]) {
+async function tasksFor(c: core.Ctx, keys: string[]) {
   if (!keys.length) return [];
-  return (await db.prepare(
-    `SELECT t.*, p.require_human_review AS rhr FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.key IN (${keys.map(() => '?').join(',')})`)
-    .bind(...keys).all<Task & { rhr: number }>()).results;
+  return (await c.db.prepare(
+    `SELECT t.*, p.require_human_review AS rhr FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.space_id = ? AND t.key IN (${keys.map(() => '?').join(',')})`)
+    .bind(c.space, ...keys).all<Task & { rhr: number }>()).results;
 }
 
 async function addLink(c: core.Ctx, taskId: string, url: string, title: string): Promise<boolean> {
@@ -134,7 +158,7 @@ async function onPullRequest(c: core.Ctx, p: any): Promise<Result> {
   if (!move) return { status: 202, body: { ignored: `pull_request.${action}` } };
 
   const keys = findKeys(pr.title, pr.head?.ref, pr.body);
-  const tasks = await tasksFor(c.db, keys);
+  const tasks = await tasksFor(c, keys);
   const who = pr.user?.login ? ` by @${pr.user.login}` : '';
   const ref = `PR #${pr.number}`;
   const updated: { key: string; from: Status; to: Status | null }[] = [];
@@ -167,7 +191,7 @@ async function onPush(c: core.Ctx, p: any): Promise<Result> {
   const commits: any[] = (p.commits ?? []).filter((x: any) => x?.distinct !== false).slice(0, MAX_COMMITS);
   const byKey = new Map<string, any[]>();
   for (const cm of commits) for (const k of findKeys(cm.message)) byKey.set(k, [...(byKey.get(k) ?? []), cm]);
-  const tasks = await tasksFor(c.db, [...byKey.keys()].slice(0, MAX_KEYS));
+  const tasks = await tasksFor(c, [...byKey.keys()].slice(0, MAX_KEYS));
   const branch = String(p.ref ?? '').replace(/^refs\/heads\//, '');
   const linked: string[] = [];
   for (const t of tasks) {
@@ -185,9 +209,12 @@ async function onPush(c: core.Ctx, p: any): Promise<Result> {
 /** POST /hooks/github. Verifies the signature, counts each delivery once, then applies the event. */
 export async function handleWebhook(base: core.Ctx, req: Request, envSecret?: string): Promise<Result> {
   const raw = await req.text();
-  const secrets = [await getSecret(base.db), envSecret].filter((s): s is string => !!s);
+  const secrets = await allSecrets(base.db, envSecret);
   if (!secrets.length) return { status: 503, body: { error: 'GitHub is not connected yet. An admin creates the secret in Kunla (Team → Connect GitHub).' } };
-  if (!(await verifySignature(secrets, raw, req.headers.get('x-hub-signature-256')))) return { status: 401, body: { error: 'Bad signature.' } };
+  let space: string | null = null;
+  for (const s of secrets) if (await verifySignature([s.secret], raw, req.headers.get('x-hub-signature-256'))) { space = s.space; break; }
+  if (!space) return { status: 401, body: { error: 'Bad signature.' } };
+  base = { ...base, space };
 
   const kind = req.headers.get('x-github-event') ?? '';
   if (kind === 'ping') return { status: 200, body: { ok: true, pong: true } };
@@ -195,7 +222,7 @@ export async function handleWebhook(base: core.Ctx, req: Request, envSecret?: st
   const delivery = req.headers.get('x-github-delivery');
   if (delivery) {
     const now = new Date();
-    const r = await base.db.prepare('INSERT OR IGNORE INTO webhook_deliveries (id, created_at) VALUES (?,?)').bind(delivery, now.toISOString()).run();
+    const r = await base.db.prepare('INSERT OR IGNORE INTO webhook_deliveries (id, space_id, created_at) VALUES (?,?,?)').bind(delivery, space, now.toISOString()).run();
     if (!r.meta.changes) return { status: 200, body: { ok: true, duplicate: true } };
     await base.db.prepare('DELETE FROM webhook_deliveries WHERE created_at < ?').bind(new Date(now.getTime() - DELIVERY_DAYS * 86400_000).toISOString()).run();
   }
@@ -209,5 +236,7 @@ export async function handleWebhook(base: core.Ctx, req: Request, envSecret?: st
   const c = systemCtx(base);
   if (kind === 'pull_request') return onPullRequest(c, payload);
   if (kind === 'push') return onPush(c, payload);
+  // Approved PRs that were waiting for their checks merge when GitHub reports the suite finished.
+  if (kind === 'check_suite') return { status: 200, body: { ok: true, merged: await onCheckSuite(c, payload) } };
   return { status: 202, body: { ignored: kind } };
 }

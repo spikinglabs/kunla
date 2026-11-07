@@ -68,9 +68,9 @@ oauth.post('/oauth/approve', async (c) => {
   if (!JSON.parse(client.redirect_uris).includes(b.redirect_uri)) return c.json({ error: 'Redirect URI not registered.' }, 400);
   if (!b.code_challenge || (b.code_challenge_method ?? 'S256') !== 'S256') return c.json({ error: 'PKCE S256 is required.' }, 400);
 
-  const ctx: core.Ctx = { db: c.env.DB, me, baseUrl: origin(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30) };
+  const ctx: core.Ctx = { db: c.env.DB, me, space: me.space_id, baseUrl: origin(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30) };
   const name = String(b.name || `${me.name}'s ${client.name}`).slice(0, 80);
-  const existing = await c.env.DB.prepare('SELECT * FROM members WHERE lower(name) = lower(?) AND sponsor_id = ? AND removed_at IS NULL').bind(name, me.id).first<core.Member>();
+  const existing = await c.env.DB.prepare('SELECT * FROM members WHERE lower(name) = lower(?) AND sponsor_id = ? AND removed_at IS NULL AND space_id = ?').bind(name, me.id, me.space_id).first<core.Member>();
   const member = existing ?? (await core.addMember(ctx, { name, kind: 'ai', platform: b.platform || 'claude-ai' })).member;
 
   const code = core.newToken().replace('kun_', 'code_');

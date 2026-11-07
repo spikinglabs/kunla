@@ -355,3 +355,116 @@ describe('OAuth for chat connectors', () => {
     expect(again.status).toBe(400);
   });
 });
+
+describe('several workspaces in one Kunla', () => {
+  const newSpace = async (name: string, key?: string) => {
+    const r = await call('POST', '/api/workspaces', human, { name, ...(key ? { key } : {}) });
+    expect(r.status).toBe(200);
+    return r.body as { workspace: { id: string; key: string; name: string }; token: string };
+  };
+
+  it('creates a workspace from just a name, with its creator as admin', async () => {
+    const ws = await newSpace('Community');
+    expect(ws.workspace).toMatchObject({ key: 'COM', name: 'Community' });
+    expect(ws.token).toMatch(/^kun_/);
+    const me = await call('GET', '/api/me', ws.token);
+    expect(me.body).toMatchObject({ name: 'L', kind: 'human', roles: ['admin'], workspace: { key: 'COM', name: 'Community' }, projects: [] });
+    // Keys never repeat on one Kunla, so a second "Community" gets another one.
+    expect((await newSpace('Community')).workspace.key).toBe('COM2');
+    expect((await newSpace('My startup')).workspace.key).toBe('MS');
+    expect((await call('POST', '/api/workspaces', human, { name: 'X', key: 'MKT' })).status).toBe(409);
+  });
+
+  it('only people who are admins can create workspaces', async () => {
+    expect((await call('POST', '/api/workspaces', ai, { name: 'Sneaky' })).status).toBe(403);
+    const bob = await call('POST', '/api/members', human, { name: 'Bob', kind: 'human' });
+    expect((await call('POST', '/api/workspaces', bob.body.token, { name: 'Bob space' })).status).toBe(403);
+  });
+
+  it('keeps everything in one workspace invisible and untouchable from another', async () => {
+    // The first workspace has a project, a task, an agent, a rule and a proposal.
+    const t1 = (await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Pricing page', assignee: "L's Claude Code" })).body;
+    await tool(ai, 'create_task', { title: 'Idea from the agent' });
+    const ws = await newSpace('Community', 'COM');
+    const other = ws.token;
+
+    // Nothing from the first workspace shows up in the second.
+    expect((await call('GET', '/api/tasks', other)).body).toEqual([]);
+    expect((await call('GET', '/api/projects', other)).body).toEqual([]);
+    expect((await call('GET', '/api/members', other)).body.map((m: any) => m.name)).toEqual(['L']);
+    expect((await call('GET', '/api/inbox', other)).body.count).toBe(0);
+    expect((await call('GET', '/api/pulse', other)).body.map((m: any) => m.name)).toEqual(['L']);
+    expect((await call('GET', '/api/map', other)).body.lanes.map((m: any) => m.name)).toEqual(['L']);
+    expect((await call('GET', '/api/briefing', other)).body.members).toEqual([]);
+    expect((await call('GET', '/api/progress', other)).body.map((p: any) => p.key)).toEqual(['COM']);
+    expect((await call('GET', '/api/rules', other)).body).toEqual([]);
+    expect((await call('GET', '/api/status', other)).body.counts.ready).toBe(0);
+    expect((await call('GET', `/api/similar?title=${encodeURIComponent('Pricing page')}`, other)).body).toEqual([]);
+
+    // Keys, names and ids from the first workspace don't resolve in the second.
+    expect((await call('GET', `/api/tasks/${t1.key}`, other)).status).toBe(404);
+    expect((await call('PATCH', `/api/tasks/${t1.key}`, other, { title: 'hijacked' })).status).toBe(404);
+    expect((await call('POST', `/api/tasks/${t1.key}/claim`, other)).status).toBe(404);
+    expect((await call('GET', '/api/projects/MKT', other)).status).toBe(404);
+    expect((await call('POST', '/api/tasks', other, { project: 'MKT', title: 'x' })).status).toBe(404);
+    expect((await call('POST', '/api/tasks', other, { title: 'x', assignee: "L's Claude Code" })).status).toBe(404);
+    const aiId = (await call('GET', '/api/members', human)).body.find((m: any) => m.kind === 'ai').id;
+    expect((await call('POST', `/api/members/${aiId}/token`, other)).status).toBe(404);
+    expect((await call('DELETE', `/api/members/${aiId}`, other)).status).toBe(404);
+    await tool(ai, 'claim_task', { key: t1.key });
+    await tool(ai, 'submit_for_review', { key: t1.key, summary: 'Done', deliverables: [{ url: 'https://example.com/pr/1' }] });
+    await call('POST', `/api/tasks/${t1.key}/review`, human, { verdict: 'approved', rule: 'Always show prices with VAT' });
+    const rule = (await call('GET', '/api/rules', human)).body[0];
+    expect(rule.text).toBe('Always show prices with VAT');
+    expect((await call('PATCH', `/api/rules/${rule.id}`, other, { active: false })).status).toBe(404);
+
+    // Work in the second workspace gets its own keys and stays there.
+    const t2 = (await call('POST', '/api/tasks', other, { title: 'Meetup venue' })).body;
+    expect(t2.key).toBe('COM-1');
+    expect((await call('GET', `/api/tasks/${t2.key}`, human)).status).toBe(404);
+    expect((await call('GET', '/api/tasks', human)).body.map((t: any) => t.key)).not.toContain('COM-1');
+    const before = (await call('GET', '/api/changes', human)).body.version;
+    await call('POST', `/api/tasks/${t2.key}/comment`, other, { text: 'Booked' });
+    expect((await call('GET', '/api/changes', human)).body.version).toBe(before);
+
+    // The same agent name can exist in both, as two separate members with their own tokens.
+    const a2 = await call('POST', '/api/members', other, { name: "L's Claude Code", kind: 'ai', platform: 'claude-code' });
+    expect(a2.status).toBe(200);
+    const next = await tool(a2.body.token, 'next_task');
+    expect(next.data?.task?.key ?? null).toBe('COM-1');
+    expect((await tool(ai, 'get_task', { key: 'COM-1' })).isError).toBe(true);
+
+    // Existing tokens keep working in the first workspace.
+    expect((await call('GET', '/api/me', ai)).body.workspace.key).not.toBe('COM');
+  });
+});
+
+describe('upgrading a Kunla made before there were several workspaces', () => {
+  it('keeps old tokens, agents and tasks working in the first workspace', async () => {
+    // A database as it was before migration 0009, set up and used by the previous release.
+    const db: any = makeD1(':memory:', { before: '0009' });
+    env = { DB: db, LEASE_MINUTES: '30' };
+    const t = new Date().toISOString();
+    const { sha256 } = await import('../src/core');
+    await db.prepare(`UPDATE projects SET key = 'SL', name = 'SL' WHERE kind = 'workspace'`).run();
+    await db.prepare(`INSERT INTO members (id, name, kind, roles, created_at) VALUES ('h1','L','human','["admin"]',?)`).bind(t).run();
+    await db.prepare(`INSERT INTO members (id, name, kind, platform, sponsor_id, roles, created_at) VALUES ('a1','L''s claude.ai','ai','claude-ai','h1','[]',?)`).bind(t).run();
+    await db.prepare(`INSERT INTO tokens (id, member_id, label, token_hash, created_at) VALUES ('k1','h1','web',?,?)`).bind(await sha256('kun_old_human'), t).run();
+    await db.prepare(`INSERT INTO tokens (id, member_id, label, token_hash, created_at) VALUES ('k2','a1','oauth:x',?,?)`).bind(await sha256('kun_old_connector'), t).run();
+    await db.prepare(`INSERT INTO projects (id, key, name, created_at) VALUES ('p1','KD','Kunla Dev',?)`).bind(t).run();
+    await db.prepare(`INSERT INTO tasks (id, project_id, key, title, status, created_by, created_at, updated_at) VALUES ('t1','p1','KD-1','Webhooks','ready','h1',?,?)`).bind(t, t).run();
+    await db.prepare(`INSERT INTO settings (key, value, updated_at) VALUES ('github_webhook_secret','s3cret',?)`).bind(t).run();
+
+    db.migrate();
+
+    const me = await call('GET', '/api/me', 'kun_old_connector');
+    expect(me.body).toMatchObject({ name: "L's claude.ai", sponsor: 'L', workspace: { key: 'SL' }, projects: [{ key: 'KD' }] });
+    expect((await tool('kun_old_connector', 'get_task', { key: 'KD-1' })).data.key).toBe('KD-1');
+    expect((await call('GET', '/api/tasks', 'kun_old_human')).body.map((x: any) => x.key)).toEqual(['KD-1']);
+    expect((await call('GET', '/api/integrations/github', 'kun_old_human')).body.secret_set).toBe(true);
+    // A new workspace made after the upgrade is separate from the old data.
+    const ws = await call('POST', '/api/workspaces', 'kun_old_human', { name: 'Community' });
+    expect((await call('GET', '/api/tasks', ws.body.token)).body).toEqual([]);
+    expect((await call('GET', '/api/integrations/github', ws.body.token)).body.secret_set).toBe(false);
+  });
+});
