@@ -1002,11 +1002,14 @@ async function showGitHub(secret) {
 function hookStatus(info) {
   const repos = info.repos || [], recent = info.recent || [];
   const ok = (st) => st < 300;
-  const line = info.rejected
-    ? html`<p class="prstate bad">GitHub reached Kunla ${agoLong(info.rejected.created_at)}${info.rejected.repo ? ` from ${info.rejected.repo}` : ''}, but the secret didn't match. Paste the current secret into that webhook, or make a new secret and paste it there.</p>`
-    : info.last_delivery_at ? html`<p class="prstate">Connected. Last heard from GitHub ${agoLong(info.last_delivery_at)}.</p>`
-    : info.secret_set ? html`<p class="prstate bad">Set up, but nothing has arrived from GitHub yet. If you've added the webhook, check its Recent Deliveries on GitHub (see below).</p>`
-    : html`<p class="prstate">Not connected yet.</p>`;
+  // One big status a person can read at a glance: connected, wrong secret, waiting, or not set up.
+  const names = repos.map((r) => r.repo);
+  const [state, title, sub] = info.rejected
+    ? ['bad', "GitHub reached Kunla, but the secret doesn't match", `${info.rejected.repo || 'A repository'} tried ${agoLong(info.rejected.created_at)}. Paste the current secret into that webhook, or make a new secret and paste it there.`]
+    : info.last_delivery_at ? ['ok', 'Connected', `Last heard from GitHub ${agoLong(info.last_delivery_at)}${names.length ? ` · ${names.length === 1 ? names[0] : `${names.length} repositories`}` : ''}`]
+    : info.secret_set ? ['wait', 'Waiting for GitHub', "The secret is made, but nothing has arrived yet. If you've added the webhook, check its Recent Deliveries on GitHub (see below)."]
+    : ['off', 'Not connected', 'Make a secret, then add a webhook in the GitHub repository.'];
+  const line = html`<div class="hookstate ${state}" role="status"><span class="dot" aria-hidden="true"></span><div><div class="t">${title}</div><div class="s">${sub}</div></div></div>`;
   const repoList = repos.length ? html`<div class="stack" style="gap:6px"><div class="label">Repositories sending events</div><ul class="hooklog">${raw(repos.map((r) => html`<li><b>${r.repo}</b><span class="${ok(r.status) ? '' : 'bad'}">${r.result}</span><time>${agoLong(r.created_at)}</time></li>`).join(''))}</ul></div>` : '';
   const recentList = recent.length ? html`<details class="hookmore"><summary>Last ${recent.length} deliveries</summary><ul class="hooklog">${raw(recent.map((r) => html`<li><b>${r.event.replace('_', ' ')}</b>${r.repo ? html` <span class="muted">${r.repo}</span>` : ''}<span class="${ok(r.status) ? '' : 'bad'}">${r.result}</span><time>${agoLong(r.created_at)}</time></li>`).join(''))}</ul></details>` : '';
   const help = info.secret_set ? html`<details class="hookmore"${info.last_delivery_at && !info.rejected ? '' : ' open'}><summary>Check it on GitHub</summary><ol class="steps"><li>In the repository, open <b>Settings → Webhooks</b> and click the Kunla webhook (${info.webhook_url}).</li><li>Open <b>Recent Deliveries</b>. A green tick means Kunla answered. A red mark shows Kunla's reply under <b>Response</b>: 401 means the secret doesn't match, and a timeout or 404 means the Payload URL is wrong.</li><li>Click <b>Redeliver</b> on the ping, then <b>Check again</b> here.</li></ol></details>` : '';

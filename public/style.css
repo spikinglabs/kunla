@@ -134,6 +134,15 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.45; }
 .prstate { font-size: 13.5px; color: var(--ink-2); margin: 0; }
 .prstate:empty { display: none; }
 .prstate.bad { color: var(--warn); }
+.hookstate { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: 14px; background: var(--sunk); border: 1px solid var(--rule-2); }
+.hookstate .dot { flex: none; width: 12px; height: 12px; margin-top: 6px; border-radius: 50%; background: var(--wait); }
+.hookstate .t { font-weight: 600; font-size: 17px; color: var(--ink); }
+.hookstate .s { font-size: 13.5px; color: var(--ink-2); margin-top: 2px; overflow-wrap: anywhere; }
+.hookstate.ok { border-color: var(--lime); }
+.hookstate.ok .dot { background: var(--lime); border: 2px solid #3f7a00; }
+.hookstate.bad { border-color: var(--warn); }
+.hookstate.bad .t { color: var(--warn); }
+.hookstate.bad .dot { background: var(--warn); }
 .hooklog { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13.5px; }
 .hooklog li { display: grid; gap: 2px; overflow-wrap: anywhere; }
 .hooklog li span { color: var(--ink-2); }
