@@ -54,12 +54,13 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'update_task',
-    description: 'Add a progress note, change status, or mark blocked with a question for a person. A blocked question goes to the decision inbox.',
+    description: 'Add a progress note, change status, or mark blocked with a question for a person. A blocked question goes to the decision inbox. Status parked puts a task off ("later"): only do that when a person asks, optionally with until.',
     inputSchema: {
       type: 'object', required: ['key'],
       properties: {
         key, note: { type: 'string', description: 'Progress or handoff note' },
-        status: { type: 'string', enum: ['ready', 'in_progress', 'done', 'declined'] },
+        status: { type: 'string', enum: ['ready', 'in_progress', 'done', 'declined', 'parked'] },
+        until: { type: 'string', description: 'With status parked: date it comes back (ISO). Omit for someday.' },
         blocked_question: { type: 'string', description: 'What you need answered to continue' },
         blocked_on: { type: 'string', description: 'Who should answer (name); empty means anyone' },
         title: { type: 'string' }, brief: { type: 'string' }, criteria: { type: 'array', items: { type: 'string' } },
@@ -166,7 +167,8 @@ Working agreement:
 3. Record progress with log_work (one sentence). If work has no task yet, log_work creates one.
 4. When done, submit_for_review with at least one deliverable link. If you are stuck, update_task with blocked_question.
 5. Split big work into sub-tasks with create_task parent; search before creating so nobody files the same work twice.
-6. Pass session (a link to this chat or agent session) when you claim, log work or submit, so people can open the conversation from the task later.`;
+6. Pass session (a link to this chat or agent session) when you claim, log work or submit, so people can open the conversation from the task later.
+7. A parked task was put off by a person on purpose. Do not resume it, claim it, or ask about it unless the user brings it up.`;
 
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');

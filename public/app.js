@@ -49,7 +49,7 @@ const av = (m, cls = '', live = false) => m ? html`<span class="av ${m.kind === 
 const who = (m, fallback = 'Nobody yet', cls = 'sm') => m ? html`<span class="who">${raw(av(m, cls))}<span class="name">${m.name}</span></span>` : html`<span class="muted">${fallback}</span>`;
 const PLATFORM = { 'claude-code': 'Claude Code', 'claude-ai': 'claude.ai', codex: 'Codex', chat: 'Chat app', other: 'MCP agent' };
 const kindLine = (m) => m.kind === 'ai' ? `Agent${m.platform ? ' · ' + (PLATFORM[m.platform] || m.platform) : ''}${m.sponsor ? ' · sponsored by ' + m.sponsor : ''}` : 'Person';
-const STATUS = { inbox: 'Proposed', ready: 'Ready', in_progress: 'In progress', blocked: 'Waiting on an answer', review: 'In review', done: 'Done', declined: 'Declined' };
+const STATUS = { inbox: 'Proposed', ready: 'Ready', in_progress: 'In progress', blocked: 'Waiting on an answer', review: 'In review', done: 'Done', declined: 'Declined', parked: 'Later' };
 const projectOf = (key) => projects.find((p) => key?.startsWith(p.key + '-'));
 const firstName = (n) => n?.split(' ')[0] ?? '';
 const callName = (m) => (m ? (m.kind === 'ai' ? m.name : firstName(m.name)) : '');
@@ -242,7 +242,7 @@ function decisionCard(item, { solo = false } = {}) {
         <button class="btn go" name="v" value="approved">Approve <kbd>A</kbd></button>
         <button class="btn" type="button" data-act="click:changes">Send back <kbd>C</kbd></button>
         <span class="spacer"></span>
-        ${raw(solo ? '' : '<button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>')}
+        <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>
       </div></form>`;
   }
   if (item.kind === 'question') {
@@ -252,7 +252,7 @@ function decisionCard(item, { solo = false } = {}) {
       <p class="ask">“${t.blocked_question}”</p>
       <div class="field"><label for="a-${t.key}">Your answer</label><textarea id="a-${t.key}" name="answer" rows="3" required placeholder="${callName(worker) || 'It'} continues as soon as you send this."></textarea></div>
       <div class="acts"><button class="btn go">Send answer <kbd>⌘↵</kbd></button><span class="spacer"></span>
-        ${raw(solo ? '' : '<button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>')}</div></form>`;
+        <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></form>`;
   }
   if (item.kind === 'proposal') {
     return html`<div class="decision ${solo ? '' : 'card'}" data-key="${t.key}">
@@ -261,7 +261,7 @@ function decisionCard(item, { solo = false } = {}) {
       ${raw(t.brief ? html`<p class="said">${t.brief}</p>` : '')}
       <div class="acts"><button class="btn go" data-act="click:accept">Make it ready <kbd>A</kbd></button>
         <button class="btn" data-act="click:decline">Decline</button><span class="spacer"></span>
-        ${raw(solo ? '' : '<button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>')}</div></div>`;
+        <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></div>`;
   }
   return html`<div class="decision ${solo ? '' : 'card'}" data-key="${t.key}">
     ${raw(head('Going in circles'))}${raw(title)}
@@ -309,8 +309,32 @@ function decisionHandlers(after, later) {
     answer: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/answer`, { answer: formData(el).answer }); toast(`Answer sent. ${k} is moving again.`); await after(); },
     accept: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: true }); toast(`${k} is ready for anyone to pick up.`); await after(); },
     decline: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: false }); toast(`${k} declined.`); await after(); },
-    later: () => later?.(),
+    later: (el) => showLater(keyOf(el), after, later),
   };
+}
+
+// "Later": skip for now (the item stays in the inbox), or park it so it leaves the briefing, the inbox
+// and agents' queues until a date, or until someone brings it back.
+function showLater(key, after, skip) {
+  const at = (days, hour = 9) => { const d = new Date(); d.setDate(d.getDate() + days); d.setHours(hour, 0, 0, 0); return d; };
+  const monday = () => { const d = at(1); while (d.getDay() !== 1) d.setDate(d.getDate() + 1); return d; };
+  const opts = [['Tomorrow morning', at(1)], ['Next week', monday()], ['In a month', at(30)]];
+  openSheet(html`<div class="sheet-body stack"><div><h2>Put ${key} off</h2>
+    <p class="muted">It leaves your briefing and every agent's queue, and agents leave it alone. With a date it comes back by itself; Someday stays in Tasks under Later until you bring it back.</p></div>
+    <div class="later-opts">${join(opts.map(([label, d]) => html`<button class="btn" data-act="click:park" data-until="${d.toISOString()}">${label}<small>${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}</small></button>`))}
+      <button class="btn" data-act="click:park" data-until="">Someday<small>no date</small></button></div>
+    <form class="row" data-act="submit:pick" style="align-items:flex-end"><div class="field" style="flex:1;min-width:160px"><label for="later-d">Or pick a date</label><input id="later-d" name="d" type="date" required min="${at(1).toISOString().slice(0, 10)}"></div><button class="btn">Park</button></form>
+    <div class="row">${raw(skip ? '<button class="btn quiet" data-act="click:skip">Just skip it for now</button>' : '')}<button class="btn quiet" data-act="click:close">Cancel</button></div></div>`, {
+    park: (el) => park(el.dataset.until || null),
+    pick: (f) => { const v = formData(f).d; const d = new Date(`${v}T09:00`); return park(d.toISOString()); },
+    skip: () => { closeSheet(true); skip(); },
+  });
+  async function park(until) {
+    await api('POST', `/api/tasks/${key}/park`, until ? { until } : {});
+    closeSheet(true);
+    toast(until ? `${key} is parked until ${new Date(until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}.` : `${key} is parked for someday. Find it in Tasks under Later.`);
+    await after();
+  }
 }
 
 // ---------- briefing ----------
@@ -395,12 +419,13 @@ async function viewBriefing() {
     palette: () => openPalette(),
   });
   keyHandler = (e) => {
-    if (typing() || e.metaKey || e.ctrlKey || e.altKey || !$('palette').hidden || !cur) return;
+    if (typing() || e.metaKey || e.ctrlKey || e.altKey || !$('palette').hidden || !$('sheet').hidden || !cur) return;
     const k = e.key.toLowerCase();
     const card = $app.querySelector('.decision');
     if (k === 'a') { e.preventDefault(); card.querySelector('.btn.go')?.click(); }
     else if (k === 'c' || k === 'r') { e.preventDefault(); card.querySelector('[data-act="click:changes"]')?.click(); }
-    else if (k === 'l' || k === 'j') { e.preventDefault(); deck.i = (deck.i + 1) % items.length; viewBriefing(); }
+    else if (k === 'l') { e.preventDefault(); card.querySelector('[data-act="click:later"]')?.click(); }
+    else if (k === 'j') { e.preventDefault(); deck.i = (deck.i + 1) % items.length; viewBriefing(); }
     else if (k === 'k') { e.preventDefault(); deck.i = (deck.i - 1 + items.length) % items.length; viewBriefing(); }
     else if (k === 'enter' && cur) location.hash = `#/t/${cur.task.key}`;
   };
@@ -560,6 +585,8 @@ const EVENT = {
   created: (e) => e.data?.status === 'inbox' ? 'proposed it' : 'wrote the brief', claimed: () => 'picked it up', work_logged: () => 'logged work',
   submitted: () => 'sent it for review', approved: () => 'approved it', changes_requested: () => 'sent it back', rule_added: () => 'taught the team a rule',
   blocked: () => 'asked a question', answered: () => 'answered', accepted: () => 'made it ready', declined: () => 'declined it',
+  parked: (e) => (e.data?.until ? `put it off until ${new Date(e.data.until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}` : 'put it off for someday'),
+  unparked: () => 'brought it back',
   lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `moved it to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
   woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
   github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
@@ -596,6 +623,9 @@ async function viewTask(key) {
         <div class="people"><span>${raw(who(t.assignee, 'Nobody yet'))}</span>${raw(t.reviewer ? html`<span class="muted">reviewed by</span><span>${raw(who(t.reviewer))}</span>` : '')}
         ${raw(t.created_by ? html`<span class="muted">asked by ${t.created_by.name}</span>` : '')}</div></div>
       ${raw(decision ? html`<div class="card" style="margin-top:24px">${raw(decision)}</div>` : '')}
+      ${raw(t.status === 'parked' ? html`<div class="card pad parked-note"><div class="grow"><b>Put off ${t.snoozed_until ? 'until ' + new Date(t.snoozed_until).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' }) : 'for someday'}.</b>
+        <span class="muted">It is out of the briefing and agents leave it alone. When it comes back it returns to ${STATUS[t.returns_to] || 'Ready'}.</span></div><button class="btn go" data-act="click:unpark">Bring it back</button></div>`
+        : !decision && OPEN.has(t.status) ? '<div class="row" style="margin-top:12px"><button class="btn quiet sm" data-act="click:later">Later…</button></div>' : '')}
       ${raw(t.brief ? html`<div class="sec"><h3>Brief</h3><p class="prose">${t.brief}</p></div>` : '')}
       ${raw(!t.parent ? html`<div class="sec"><h3>Sub-tasks${subs.length ? ` · ${subDone} of ${subs.length} done` : ''}</h3>
         ${raw(subs.length ? html`<div class="bar" style="margin:0 0 12px">${raw(subs.length ? `<span class="b-done" style="width:${(subDone / subs.length) * 100}%"></span>` : '')}</div>
@@ -625,6 +655,8 @@ async function viewTask(key) {
   const text = () => $app.querySelector('.composer textarea').value.trim();
   bind($app, {
     ...decisionHandlers(reload),
+    later: () => showLater(t.key, reload),
+    unpark: async () => { const r = await api('POST', `/api/tasks/${t.key}/unpark`); toast(`${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     addsub: async (f) => {
       const title = formData(f).title.trim(); if (!title) return;
       const n = await api('POST', '/api/tasks', { parent: t.key, title });
@@ -647,6 +679,7 @@ const OPEN = new Set(['inbox', 'ready', 'in_progress', 'blocked', 'review']);
 const DAY = 86400000;
 const FILTERS = {
   open: ['Open', (t) => OPEN.has(t.status)],
+  later: ['Later', (t) => t.status === 'parked'],
   mine: ['Mine', (t) => OPEN.has(t.status) && (t.assignee?.id === me.id || t.reviewer?.id === me.id || (t.created_by?.id === me.id && !t.assignee))],
   stuck: ['Stuck', (t) => t.status === 'blocked' || (OPEN.has(t.status) && t.review_rounds >= 2)
     || (t.status === 'in_progress' && Date.now() - new Date(t.updated_at) > 2 * DAY) || (t.status === 'ready' && !t.assignee && Date.now() - new Date(t.updated_at) > 7 * DAY)],
@@ -654,7 +687,7 @@ const FILTERS = {
   all: ['Everything', () => true],
 };
 const GROUPS = { project: 'Project', person: 'Person', status: 'Status' };
-const STATUS_ORDER = ['blocked', 'review', 'in_progress', 'ready', 'inbox', 'done', 'declined'];
+const STATUS_ORDER = ['blocked', 'review', 'in_progress', 'ready', 'inbox', 'parked', 'done', 'declined'];
 
 async function viewTasks(project) {
   renderShell('tasks');
@@ -778,7 +811,7 @@ function openSheet(inner, handlers = {}, { sticky = false } = {}) {
     copy: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); el.textContent = 'Copied'; setTimeout(() => { el.textContent = 'Copy'; }, 1600); } catch { toast('Copy did not work here. Select the text and copy it.'); } },
     ...handlers,
   });
-  s.querySelector('input:not([type=hidden])')?.focus();
+  s.querySelector('input:not([type=hidden]):not([type=date])')?.focus();
 }
 function closeSheet(force) {
   if (sheetSticky && !force) return;
