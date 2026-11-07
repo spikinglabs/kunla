@@ -1,5 +1,6 @@
 import { wakeMember, publicCallback, type Wake } from './wake';
 import { taskPr, getToken, mergeApproved } from './merge';
+import * as continuous from './continuous';
 
 // Kunla core: the record of work. Everything here is plain SQL over a D1-compatible
 // database, so the same code runs on Cloudflare D1, a SQLite file, or (later) Postgres.
@@ -15,6 +16,8 @@ export interface Member {
   id: string; name: string; kind: Kind; platform: string | null;
   sponsor_id: string | null; roles: string; scope: string; created_at: string; space_id: string;
   callback?: string | null; // wake-up URL settings (JSON); never sent to clients
+  continuous?: string | null; // continuous mode settings (JSON), see continuous.ts
+  run_state?: string | null;  // what it last did in continuous mode (JSON)
 }
 export interface Project {
   id: string; key: string; name: string; playbook: string;
@@ -311,6 +314,20 @@ export async function setCallback(c: Ctx, memberId: string, input: { url?: strin
   return { id: m.id, callback: publicCallback(cb), secret };
 }
 
+/**
+ * Turn continuous mode on or off for an agent, with its limits. Only its sponsor or an admin can, never
+ * the agent itself: the limits are the person's budget, not the agent's.
+ */
+export async function setContinuous(c: Ctx, memberId: string, input: Partial<continuous.ContinuousSettings> | null) {
+  const m = await getMember(c, memberId);
+  assertCanManage(c, m);
+  if (m.kind !== 'ai') throw new KunlaError(400, 'Only agents have continuous mode.');
+  const s = continuous.normalize({ ...(continuous.parseSettings(m.continuous) ?? {}), ...(input ?? {}), on: !!input?.on, base_url: c.baseUrl });
+  if (s.on && s.until && new Date(s.until).getTime() <= (c.now ? c.now() : new Date()).getTime()) throw new KunlaError(400, 'The end time must be in the future.');
+  await c.db.prepare('UPDATE members SET continuous = ?, run_state = ? WHERE id = ?').bind(JSON.stringify(s), s.on ? m.run_state ?? null : null, m.id).run();
+  return { id: m.id, name: m.name, continuous: s, status: await continuous.status(c, { ...m, continuous: JSON.stringify(s) }) };
+}
+
 /** Revoke every token a member has and issue one new one. The old ones stop working at once. */
 export async function rotateToken(c: Ctx, memberId: string) {
   const m = await getMember(c, memberId);
@@ -429,6 +446,7 @@ export async function createTask(c: Ctx, input: {
   const task = await getTask(c, key);
   await event(c, task.id, 'created', status === 'inbox' ? 'Proposed' : null, { status });
   if (assignee && status === 'ready') await wakeMember(c, assignee, 'assigned', task, input.brief ?? null);
+  if (status === 'ready' && !assignee) await continuous.wakeIdle(c, task);
   return task;
 }
 
@@ -437,6 +455,12 @@ export async function claimTask(c: Ctx, key: string, session?: string) {
   await sweepLeases(c);
   const t = await getTask(c, key);
   const now = nowIso(c);
+  // Continuous mode limits gate new work only: an agent can always carry on with what it already holds.
+  const mine = t.assignee_id === c.me.id && ['in_progress', 'blocked'].includes(t.status);
+  if (!mine) {
+    const cs = await continuous.status(c, c.me);
+    if (cs?.stop) throw new KunlaError(409, `Not starting ${t.key}: ${cs.message}`);
+  }
   const r = await c.db.prepare(
     `UPDATE tasks SET status = 'in_progress', assignee_id = ?, lease_expires_at = ?, updated_at = ?
      WHERE id = ? AND (
@@ -492,12 +516,14 @@ export async function unparkTask(c: Ctx, key: string, opts: { system?: boolean; 
   const to = (STATUSES.includes(t.parked_from as Status) && t.parked_from !== 'parked' ? t.parked_from : 'ready') as Status;
   await touch(c, t.id, { status: to, parked_from: null, snoozed_until: null });
   await event(c, t.id, 'unparked', opts.note ?? (opts.system ? 'The snooze ended, so it is back.' : null), { to }, opts.system ? null : c.me.id);
+  if (to === 'ready') await continuous.wakeIdle(c, await getTask(c, t.id));
   return { key: t.key, status: to };
 }
 
 export async function updateTask(c: Ctx, key: string, input: {
   note?: string; status?: Status; blocked_question?: string; blocked_on?: string;
   title?: string; brief?: string; criteria?: string[]; priority?: number; assignee?: string | null; reviewer?: string | null; session?: string;
+  cost_usd?: number; tokens?: number;
 }) {
   let t = await getTask(c, key);
   await recordSession(c, t.id, input.session);
@@ -533,11 +559,13 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (Object.keys(fields).length) await touch(c, t.id, fields);
   const type = input.blocked_question ? 'blocked' : fields.status && fields.status !== t.status ? 'status' : 'note';
   if (input.note || type !== 'note' || Object.keys(fields).length)
-    await event(c, t.id, type, input.note ?? input.blocked_question ?? null, { from: t.status, to: fields.status ?? t.status });
+    await event(c, t.id, type, input.note ?? input.blocked_question ?? null, { from: t.status, to: fields.status ?? t.status, ...spend(input) });
   if (fields.status === 'done' || fields.status === 'declined') await rollUp(c, t.parent_id);
   if (fields.assignee_id && fields.assignee_id !== t.assignee_id && (fields.status ?? t.status) === 'ready')
     await wakeMember(c, fields.assignee_id, 'assigned', t, input.note ?? null);
-  return getTask(c, t.id);
+  const after = await getTask(c, t.id);
+  if (fields.status === 'ready' && t.status !== 'ready') await continuous.wakeIdle(c, after);
+  return after;
 }
 
 export async function addDeliverables(c: Ctx, taskId: string, links: { url: string; title?: string }[] = []) {
@@ -555,7 +583,7 @@ export async function addDeliverables(c: Ctx, taskId: string, links: { url: stri
  */
 export async function logWork(c: Ctx, input: {
   summary: string; task?: string; project?: string; title?: string;
-  deliverables?: { url: string; title?: string }[]; status?: 'in_progress' | 'review' | 'done'; session?: string;
+  deliverables?: { url: string; title?: string }[]; status?: 'in_progress' | 'review' | 'done'; session?: string; cost_usd?: number; tokens?: number;
 }) {
   const summary = required(input.summary, 'summary');
   for (const d of input.deliverables ?? []) if (d?.url && !/^https?:\/\//i.test(d.url)) throw new KunlaError(400, 'Deliverable links must start with http:// or https://.');
@@ -563,7 +591,7 @@ export async function logWork(c: Ctx, input: {
     const t = await getTask(c, input.task);
     await addDeliverables(c, t.id, input.deliverables);
     await recordSession(c, t.id, input.session);
-    await event(c, t.id, 'work_logged', summary, { deliverables: input.deliverables ?? [] });
+    await event(c, t.id, 'work_logged', summary, { deliverables: input.deliverables ?? [], ...spend(input) });
     if (t.assignee_id === c.me.id && t.status === 'in_progress') await touch(c, t.id, { lease_expires_at: leaseFor(c, c.me) });
     if (input.status === 'review') return submitForReview(c, t.key, { summary, deliverables: input.deliverables ?? [] });
     return getTask(c, t.id);
@@ -580,14 +608,23 @@ export async function logWork(c: Ctx, input: {
     status === 'review' ? 'in_progress' : status, 'logged', c.me.id, c.me.id,
     status === 'in_progress' ? leaseFor(c, c.me) : null, c.space, t, t).run();
   const task = await getTask(c, key);
-  await event(c, task.id, 'work_logged', summary, { deliverables: input.deliverables ?? [] });
+  await event(c, task.id, 'work_logged', summary, { deliverables: input.deliverables ?? [], ...spend(input) });
   await addDeliverables(c, task.id, input.deliverables);
   await recordSession(c, task.id, input.session);
   if (status === 'review') return submitForReview(c, key, { summary, deliverables: input.deliverables ?? [] });
   return task;
 }
 
-export async function submitForReview(c: Ctx, key: string, input: { summary: string; deliverables: { url: string; title?: string }[]; reviewer?: string; session?: string }) {
+/** Cost and tokens an agent reports with an update, kept on the event so continuous mode can add them up. */
+function spend(input: { cost_usd?: unknown; tokens?: unknown }) {
+  const out: { cost_usd?: number; tokens?: number } = {};
+  const cost = Number(input.cost_usd); const tokens = Number(input.tokens);
+  if (input.cost_usd !== undefined && input.cost_usd !== null && Number.isFinite(cost) && cost >= 0) out.cost_usd = cost;
+  if (input.tokens !== undefined && input.tokens !== null && Number.isFinite(tokens) && tokens >= 0) out.tokens = Math.round(tokens);
+  return out;
+}
+
+export async function submitForReview(c: Ctx, key: string, input: { summary: string; deliverables: { url: string; title?: string }[]; reviewer?: string; session?: string; cost_usd?: number; tokens?: number }) {
   const t = await getTask(c, key);
   if (!input.deliverables?.some((d) => d?.url)) throw new KunlaError(400, 'Attach at least one deliverable link (a PR, doc, file or message) so the reviewer can see the work.');
   if (!['in_progress', 'blocked', 'ready'].includes(t.status)) throw new KunlaError(409, `${t.key} is ${t.status}; only work in progress can go to Review.`);
@@ -596,8 +633,10 @@ export async function submitForReview(c: Ctx, key: string, input: { summary: str
   await recordSession(c, t.id, input.session);
   const reviewer = input.reviewer ? (await getMember(c, input.reviewer)).id : t.reviewer_id;
   await touch(c, t.id, { status: 'review', assignee_id: t.assignee_id ?? c.me.id, lease_expires_at: null, reviewer_id: reviewer, blocked_question: null, blocked_on_id: null });
-  await event(c, t.id, 'submitted', required(input.summary, 'summary'), { deliverables: input.deliverables });
-  return getTask(c, t.id);
+  await event(c, t.id, 'submitted', required(input.summary, 'summary'), { deliverables: input.deliverables, ...spend(input) });
+  const cs = c.me.kind === 'ai' ? await continuous.status(c, c.me) : null;
+  const after = await getTask(c, t.id);
+  return cs ? { ...after, continuous: { next: 'Continuous mode is on: call next_task now and take the next task.' } } : after;
 }
 
 export async function reviewTask(c: Ctx, key: string, input: {
@@ -700,7 +739,9 @@ export async function triage(c: Ctx, key: string, input: { accept: boolean; note
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people triage proposals.');
   await touch(c, t.id, { status: input.accept ? 'ready' : 'declined' });
   await event(c, t.id, input.accept ? 'accepted' : 'declined', input.note ?? null);
-  return getTask(c, t.id);
+  const after = await getTask(c, t.id);
+  if (input.accept) await continuous.wakeIdle(c, after);
+  return after;
 }
 
 /** Answer a blocked task's question; the task goes back to its worker. */
@@ -823,16 +864,36 @@ export async function nextTask(c: Ctx, project?: string) {
     c.db.prepare(`SELECT t.* FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.space_id = ? AND ${sql} ${proj} ${useLane ? laneSql : ''}
                   ORDER BY p.focus DESC, CASE p.kind WHEN 'workspace' THEN 1 ELSE 0 END, p.rank, t.priority, coalesce(t.due_at, p.ends_at, '9999'), t.created_at LIMIT 1`)
       .bind(c.space, ...args, ...keys, ...(useLane ? laneArgs : [])).first<Task>();
+  // Continuous mode: a limit stops new work (assigned or open), never finishing work or reviewing.
+  const cs = await continuous.status(c, c.me);
   const picks: [string, Task | null][] = [
     ['continue', await q(`t.status = 'in_progress' AND t.assignee_id = ? AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))`, false, c.me.id)],
-    ['assigned', await q(`t.status = 'ready' AND t.assignee_id = ?`, false, c.me.id)],
+    ['assigned', cs?.stop ? null : await q(`t.status = 'ready' AND t.assignee_id = ?`, false, c.me.id)],
     ['review', await q(`t.status = 'review' AND t.reviewer_id = ? AND (t.assignee_id IS NULL OR t.assignee_id != ?)`, false, c.me.id, c.me.id)],
-    ['open', await q(`t.status = 'ready' AND t.assignee_id IS NULL AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))`, true)],
+    ['open', cs?.stop ? null : await q(`t.status = 'ready' AND t.assignee_id IS NULL AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))`, true)],
   ];
   const hit = picks.find(([, t]) => t);
   const focus = (await listProjects(c)).filter((p) => p.focus).map((p) => `${p.key} ${p.name}`);
-  if (!hit) return null;
-  return { reason: hit[0], focus, lane: lane.length ? lane : 'all projects', task: await taskDetail(c, hit[1]!.key) };
+  if (!cs) return hit ? { reason: hit[0], focus, lane: lane.length ? lane : 'all projects', task: await taskDetail(c, hit[1]!.key) } : null;
+  if (hit) {
+    await continuous.setRunState(c, c.me.id, 'running', null, null);
+    return { reason: hit[0], focus, lane: lane.length ? lane : 'all projects', task: await taskDetail(c, hit[1]!.key),
+      continuous: { go: true, next: cs.stop ? `Finish this one, then stop: ${cs.message}` : continuous.KEEP_GOING, usage: cs.usage, limits: cs.settings } };
+  }
+  // Nothing to do. Truly stuck means everything left waits on a person; say which.
+  let reason = cs.stop;
+  if (!reason) {
+    const waiting = (await c.db.prepare(
+      `SELECT key FROM tasks t WHERE t.space_id = ? AND t.assignee_id = ? AND (t.status = 'blocked' OR (t.status = 'in_progress' AND EXISTS
+         (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')))) LIMIT 5`).bind(c.space, c.me.id).all<{ key: string }>()).results;
+    reason = waiting.length ? 'waiting_on_people' : 'nothing_ready';
+  }
+  const message = continuous.stopMessage(reason, cs.settings, cs.usage);
+  const before = continuous.parseRunState(c.me.run_state);
+  await continuous.setRunState(c, c.me.id, 'stopped', reason, message);
+  if (before?.state !== 'stopped' || before.reason !== reason) await event(c, null, 'continuous_stopped', message, { reason, usage: cs.usage });
+  return { reason: 'stop', focus, lane: lane.length ? lane : 'all projects', task: null,
+    continuous: { go: false, stop_reason: reason, message, usage: cs.usage, limits: cs.settings } };
 }
 
 /** The decision inbox: everything waiting on a person. The home screen. */
@@ -938,7 +999,7 @@ export async function whoami(c: Ctx) {
 /** Per-member track record, so autonomy can be earned from evidence. */
 export async function trackRecord(c: Ctx) {
   const rows = (await c.db.prepare(
-    `SELECT m.id, m.name, m.kind, m.platform, m.scope, m.callback, s.name AS sponsor, m.sponsor_id,
+    `SELECT m.id, m.name, m.kind, m.platform, m.scope, m.callback, m.continuous, m.run_state, s.name AS sponsor, m.sponsor_id,
        (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status = 'done') AS done,
        (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status IN ('in_progress','blocked','review')) AS active,
        (SELECT COUNT(DISTINCT r.task_id) FROM reviews r WHERE r.worker_id = m.id) AS reviewed,
@@ -946,7 +1007,13 @@ export async function trackRecord(c: Ctx) {
           AND NOT EXISTS (SELECT 1 FROM reviews r2 WHERE r2.task_id = r.task_id AND r2.verdict = 'changes_requested')) AS first_pass,
        (SELECT MAX(e.created_at) FROM events e WHERE e.actor_id = m.id) AS last_active
      FROM members m LEFT JOIN members s ON s.id = m.sponsor_id WHERE m.removed_at IS NULL AND m.space_id = ? ORDER BY m.kind DESC, m.created_at`).bind(c.space).all<any>()).results;
-  return rows.map(({ callback, ...r }) => ({ ...r, wake: publicCallback(callback), scope: parseList(r.scope), first_pass_rate: r.reviewed ? Math.round((r.first_pass / r.reviewed) * 100) : null }));
+  return Promise.all(rows.map(async ({ callback, continuous: cont, run_state, ...r }) => {
+    const st = r.kind === 'ai' ? await continuous.status(c, { id: r.id, kind: r.kind, continuous: cont }) : null;
+    return {
+      ...r, wake: publicCallback(callback), scope: parseList(r.scope), first_pass_rate: r.reviewed ? Math.round((r.first_pass / r.reviewed) * 100) : null,
+      continuous: r.kind === 'ai' ? { settings: continuous.parseSettings(cont), run: st ? continuous.parseRunState(run_state) : null, usage: st?.usage ?? null, limit: st?.stop ?? null } : null,
+    };
+  }));
 }
 
 export async function listRules(c: Ctx, project?: string) {

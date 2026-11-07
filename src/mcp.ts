@@ -8,6 +8,10 @@ export const SERVER_INFO = { name: 'kunla', version: '0.1.0' };
 
 const key = { type: 'string', description: 'Task key, e.g. MKT-42' };
 const session = { type: 'string', description: 'Link to this chat or agent session (e.g. https://claude.ai/chat/..., https://claude.ai/code/session_...), or a reference like "claude --resume <id>", so people can open it from the task later' };
+const spend = {
+  cost_usd: { type: 'number', description: 'Optional: what this stretch of work cost in USD, if you know it. Counts toward a continuous-mode budget.' },
+  tokens: { type: 'number', description: 'Optional: tokens used for this stretch of work, if you know it. Counts toward a continuous-mode budget.' },
+};
 const links = {
   type: 'array', description: 'Links to the work: PR, doc, file, message',
   items: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' } }, required: ['url'] },
@@ -24,7 +28,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'next_task', readOnly: true,
-    description: "The best next thing for you: your task in progress, then work assigned to you, then reviews waiting on you, then open Ready work in your lane, focused projects first. Returns the full brief, playbook, rules, the team's current focus, and ready-made references.",
+    description: "The best next thing for you: your task in progress, then work assigned to you, then reviews waiting on you, then open Ready work in your lane, focused projects first. Returns the full brief, playbook, rules, the team's current focus, and ready-made references. If your sponsor turned on continuous mode, the reply has continuous.go: keep taking tasks while it is true, and stop (with its stop_reason) when it is false.",
     inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Limit to a project key, e.g. MKT' } } },
     run: (c, a) => core.nextTask(c, a.project).then((r) => r ?? { message: 'Nothing waiting for you. Use log_work to record work you do outside the queue.' }),
   },
@@ -64,7 +68,7 @@ export const TOOLS: Tool[] = [
         blocked_question: { type: 'string', description: 'What you need answered to continue' },
         blocked_on: { type: 'string', description: 'Who should answer (name); empty means anyone' },
         title: { type: 'string' }, brief: { type: 'string' }, criteria: { type: 'array', items: { type: 'string' } },
-        priority: { type: 'number', description: '0 urgent to 3 low' }, session,
+        priority: { type: 'number', description: '0 urgent to 3 low' }, session, ...spend,
       },
     },
     run: (c, a) => core.updateTask(c, a.key, a),
@@ -78,7 +82,7 @@ export const TOOLS: Tool[] = [
         summary: { type: 'string', description: 'What was done, in one or two sentences' },
         task: { type: 'string', description: 'Task key, if the work belongs to one' },
         project: { type: 'string', description: 'Project key for a new task; leave out for workspace-level work' },
-        title: { type: 'string' }, deliverables: links, session,
+        title: { type: 'string' }, deliverables: links, session, ...spend,
         status: { type: 'string', enum: ['in_progress', 'review', 'done'], description: "For a new task; default 'done'" },
       },
     },
@@ -87,7 +91,7 @@ export const TOOLS: Tool[] = [
   {
     name: 'submit_for_review',
     description: 'Hand finished work to a reviewer. Needs a short summary and at least one deliverable link.',
-    inputSchema: { type: 'object', required: ['key', 'summary', 'deliverables'], properties: { key, summary: { type: 'string' }, deliverables: links, reviewer: { type: 'string' }, session } },
+    inputSchema: { type: 'object', required: ['key', 'summary', 'deliverables'], properties: { key, summary: { type: 'string' }, deliverables: links, reviewer: { type: 'string' }, session, ...spend } },
     run: (c, a) => core.submitForReview(c, a.key, a),
   },
   {
@@ -169,7 +173,8 @@ Working agreement:
 5. Split big work into sub-tasks with create_task parent; search before creating so nobody files the same work twice.
 6. Pass session (a link to this chat or agent session) when you claim, log work or submit, so people can open the conversation from the task later.
 7. A parked task was put off by a person on purpose. Do not resume it, claim it, or ask about it unless the user brings it up.
-8. Approved means merge: when a person approves a task whose deliverable is your open PR, squash-merge it once checks pass, unless Kunla already did.`;
+8. Approved means merge: when a person approves a task whose deliverable is your open PR, squash-merge it once checks pass, unless Kunla already did.
+9. Continuous mode: when next_task returns continuous.go true, work through tasks one by one: claim, do, submit (or ask with blocked_question), then call next_task again. Being blocked on one task is not a reason to stop; stop only when next_task says go false. Report cost_usd or tokens with log_work or submit_for_review when you know them.`;
 
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');

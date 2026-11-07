@@ -3,7 +3,7 @@
 // by itself within seconds. One signed POST per decision, sent after the response; no polling.
 import type { Ctx, Member, Task } from './core';
 
-export type WakeEvent = 'approved' | 'changes_requested' | 'answered' | 'assigned' | 'ping';
+export type WakeEvent = 'approved' | 'changes_requested' | 'answered' | 'assigned' | 'work_ready' | 'ping';
 export type WakeFormat = 'kunla' | 'github_dispatch';
 
 /** Stored as JSON in members.callback. The secret signs every call; auth is an optional Authorization header. */
@@ -36,6 +36,7 @@ const NEXT: Record<WakeEvent, (key: string) => string> = {
   changes_requested: (k) => `${k} was sent back. Call get_task ${k}, read the review and the rules, fix it, and submit again.`,
   answered: (k) => `Your question on ${k} was answered. Call get_task ${k} and continue.`,
   assigned: (k) => `${k} was handed to you. Call get_task ${k}, claim it and start.`,
+  work_ready: (k) => `${k ? `${k} is` : 'New work is'} ready in your lane (continuous mode). Call next_task, claim what it gives you, and keep taking the next task until next_task says stop.`,
   ping: () => 'Test call from Kunla. Nothing to do.',
 };
 
@@ -108,4 +109,6 @@ export async function wakeMember(c: Ctx, memberId: string | null | undefined, ev
   const fresh = await c.db.prepare('SELECT id, key, title, status FROM tasks WHERE id = ?').bind(task.id).first<{ id: string; key: string; title: string; status: string }>();
   c.notify({ member: { id: m.id, name: m.name }, callback, event, task: fresh, note: note ?? null, by: c.me.name, baseUrl: c.baseUrl,
     merge: extra.merge ? { pr: extra.merge, by_kunla: !!extra.by_kunla } : null });
+  // A continuous agent that was stopped is now on its way, so new work doesn't wake it a second time.
+  await c.db.prepare(`UPDATE members SET run_state = json_set(run_state, '$.state', 'woken', '$.reason', NULL) WHERE id = ? AND continuous IS NOT NULL AND json_extract(run_state, '$.state') = 'stopped'`).bind(m.id).run();
 }
