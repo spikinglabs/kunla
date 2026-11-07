@@ -383,7 +383,7 @@ pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: va
   .cmdk kbd { display: none; }
   .main { padding: 22px 16px 110px; }
   .tabbar { display: flex; position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 30; background: var(--ink); border-radius: 999px; padding: 6px; justify-content: space-between; }
-  .tabbar a { flex: 1; text-align: center; color: var(--canvas); opacity: .75; text-decoration: none; font-size: 12.5px; font-weight: 500; padding: 9px 0; border-radius: 999px; position: relative; }
+  .tabbar a { flex: 1; min-width: 0; text-align: center; color: var(--canvas); opacity: .75; text-decoration: none; font-size: 12px; letter-spacing: -.01em; font-weight: 500; padding: 9px 0; border-radius: 999px; position: relative; }
   .tabbar a.on { background: var(--lime); color: var(--on-lime); opacity: 1; }
   .tabbar .n { position: absolute; top: 1px; right: 8%; font: 600 9.5px/15px var(--mono); min-width: 15px; border-radius: 99px; background: var(--lime); color: var(--on-lime); }
   .tabbar a.on .n { background: var(--on-lime); color: var(--lime); }

@@ -155,7 +155,7 @@ const NAV = [['', 'Briefing'], ['map', 'Map'], ['tasks', 'Tasks'], ['team', 'Tea
 function renderShell(view) {
   const link = ([k, label]) => html`<a href="#/${k}" class="${k === view ? 'on' : ''}">${label}${raw(k === '' && decisionCount ? `<span class="n">${decisionCount}</span>` : '')}</a>`;
   $('nav').innerHTML = NAV.map(link).join('');
-  $('tabbar').innerHTML = NAV.slice(0, 4).map(link).join('');
+  $('tabbar').innerHTML = NAV.map(link).join('');
   $('me').innerHTML = av({ name: me.name, kind: 'human' });
   $('me').title = `${me.name}: workspaces and sign out`;
   $('space').innerHTML = html`<span class="sp-dot"></span><span class="sp-name">${me.workspace?.name ?? 'Workspace'}</span><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
