@@ -1,5 +1,7 @@
 # Deploys your copy of Kunla to your Cloudflare account. Runs on demand, or on every push to main if you
-# set the repository variable KUNLA_AUTO_DEPLOY to "true". Needs secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
+# set the repository variable KUNLA_AUTO_DEPLOY to "true". Needs secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID,
+# and the repository variable KUNLA_D1_ID (from `wrangler d1 create kunla`) unless wrangler.toml already has the id.
+# Optional secret KUNLA_SETUP_TOKEN: only someone who knows it can run first-time setup.
 name: Deploy
 on:
   workflow_dispatch:
@@ -8,13 +10,24 @@ jobs:
   deploy:
     if: github.event_name == 'workflow_dispatch' || vars.KUNLA_AUTO_DEPLOY == 'true'
     runs-on: ubuntu-latest
+    env:
+      KUNLA_SETUP_TOKEN: ${{ secrets.KUNLA_SETUP_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm test
+      - name: Use your D1 database
+        if: vars.KUNLA_D1_ID != ''
+        run: sed -i "s/REPLACE_WITH_YOUR_D1_ID/${{ vars.KUNLA_D1_ID }}/" wrangler.toml
       - run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Protect first-time setup
+        if: env.KUNLA_SETUP_TOKEN != ''
+        run: printf '%s' "$KUNLA_SETUP_TOKEN" | npx wrangler secret put SETUP_TOKEN
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
