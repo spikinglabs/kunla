@@ -47,7 +47,7 @@ const requireAuth = async (c: C, next: () => Promise<void>) => {
 
 // Bearer tokens only, no cookies, so any origin may call the API: this is what lets one
 // person's web app show several workspaces (each its own deployment) side by side.
-app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PATCH', 'OPTIONS'], maxAge: 86400 }));
+app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'], maxAge: 86400 }));
 
 // ---------- public ----------
 app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: '0.1.0' }));
@@ -112,7 +112,9 @@ api.post('/tasks/:key/answer', async (c) => c.json(await core.answer(c.get('ctx'
 api.post('/log', async (c) => c.json(await core.logWork(c.get('ctx'), await c.req.json())));
 
 api.get('/members', async (c) => c.json(await core.trackRecord(c.env.DB)));
-api.patch('/members/:id', async (c) => c.json(await core.setScope(c.get('ctx'), c.req.param('id'), (await c.req.json<any>()).scope ?? [])));
+api.patch('/members/:id', async (c) => c.json(await core.updateMember(c.get('ctx'), c.req.param('id'), await c.req.json())));
+api.post('/members/:id/token', async (c) => c.json(await core.rotateToken(c.get('ctx'), c.req.param('id'))));
+api.delete('/members/:id', async (c) => c.json(await core.removeMember(c.get('ctx'), c.req.param('id'))));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
 api.get('/projects', async (c) => c.json(await core.listProjects(c.env.DB)));
 api.get('/projects/:key', async (c) => c.json(await core.getProject(c.env.DB, c.req.param('key'))));

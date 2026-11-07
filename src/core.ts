@@ -58,7 +58,7 @@ export async function memberForToken(db: D1Database, token: string): Promise<Mem
   const hash = await sha256(token);
   const row = await db.prepare(
     `SELECT m.*, t.id AS token_id, t.last_used_at AS token_used FROM tokens t JOIN members m ON m.id = t.member_id
-     WHERE t.token_hash = ? AND t.revoked_at IS NULL`).bind(hash).first<Member & { token_id: string; token_used: string | null }>();
+     WHERE t.token_hash = ? AND t.revoked_at IS NULL AND m.removed_at IS NULL`).bind(hash).first<Member & { token_id: string; token_used: string | null }>();
   if (!row) return null;
   // "Last used" only needs hour precision; writing it on every request would cost a row write per call.
   const now = new Date();
@@ -165,25 +165,87 @@ export async function setScope(c: Ctx, memberIdOrName: string, scope: string[]) 
 }
 
 export async function listMembers(db: D1Database) {
-  return (await db.prepare('SELECT * FROM members ORDER BY kind DESC, created_at').all<Member>()).results;
+  return (await db.prepare('SELECT * FROM members WHERE removed_at IS NULL ORDER BY kind DESC, created_at').all<Member>()).results;
 }
 
 export async function getMember(db: D1Database, idOrName: string): Promise<Member> {
-  const m = await db.prepare('SELECT * FROM members WHERE id = ? OR lower(name) = lower(?)').bind(idOrName, idOrName).first<Member>();
+  const m = await db.prepare('SELECT * FROM members WHERE id = ? OR lower(name) = lower(?) ORDER BY removed_at IS NOT NULL LIMIT 1').bind(idOrName, idOrName).first<Member>();
   if (!m) throw new KunlaError(404, `No member ${idOrName}.`);
   return m;
 }
 
-/** A person adds a member: another person, or an AI connection they sponsor. Returns its token. */
+/**
+ * A person adds a member: another person, or an AI connection they sponsor. Returns its token.
+ * Connecting an agent again under the same name reuses that member and gives it a new token,
+ * so a second click or a second laptop does not create a duplicate.
+ */
 export async function addMember(c: Ctx, input: { name: string; kind: Kind; platform?: string; roles?: string[] }) {
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can add members.');
   if (input.kind === 'human' && !isAdmin(c.me)) throw new KunlaError(403, 'Only admins can add people.');
+  const name = required(input.name, 'name').trim();
+  if (input.kind === 'ai') {
+    const same = await c.db.prepare(`SELECT * FROM members WHERE kind = 'ai' AND sponsor_id = ? AND lower(name) = lower(?) AND removed_at IS NULL`)
+      .bind(c.me.id, name).first<Member>();
+    if (same) return { member: same, token: await issueToken(c.db, same.id, input.platform || 'ai'), reconnected: true };
+  }
+  await assertNameFree(c.db, name);
   const mid = id();
   await c.db.prepare('INSERT INTO members (id, name, kind, platform, sponsor_id, roles, created_at) VALUES (?,?,?,?,?,?,?)').bind(
-    mid, required(input.name, 'name'), input.kind === 'ai' ? 'ai' : 'human', input.platform ?? null,
+    mid, name, input.kind === 'ai' ? 'ai' : 'human', input.platform ?? null,
     input.kind === 'ai' ? c.me.id : null, JSON.stringify(input.roles ?? []), nowIso(c)).run();
   const token = await issueToken(c.db, mid, input.platform || input.kind);
-  return { member: await getMember(c.db, mid), token };
+  return { member: await getMember(c.db, mid), token, reconnected: false };
+}
+
+async function assertNameFree(db: D1Database, name: string, except?: string) {
+  const taken = await db.prepare('SELECT id FROM members WHERE lower(name) = lower(?) AND removed_at IS NULL AND id != ?').bind(name, except ?? '').first();
+  if (taken) throw new KunlaError(409, `Someone is already called ${name}. Pick another name.`);
+}
+
+/** Who may manage a member: its sponsor or an admin, and people themselves. */
+function assertCanManage(c: Ctx, m: Member) {
+  if (c.me.kind !== 'human' || !(isAdmin(c.me) || m.sponsor_id === c.me.id || m.id === c.me.id))
+    throw new KunlaError(403, `Only ${m.kind === 'ai' ? "the agent's sponsor" : 'they'} or an admin can change ${m.name}.`);
+}
+
+/** Rename a member and/or change its lane. */
+export async function updateMember(c: Ctx, memberId: string, input: { name?: string; scope?: string[] }) {
+  const m = await getMember(c.db, memberId);
+  assertCanManage(c, m);
+  if (input.name !== undefined && input.name.trim() !== m.name) {
+    const name = required(input.name, 'name').trim().slice(0, 80);
+    await assertNameFree(c.db, name, m.id);
+    await c.db.prepare('UPDATE members SET name = ? WHERE id = ?').bind(name, m.id).run();
+  }
+  if (input.scope !== undefined) return setScope(c, m.id, input.scope);
+  const after = await getMember(c.db, m.id);
+  return { id: after.id, name: after.name, scope: parseList(after.scope) };
+}
+
+/** Revoke every token a member has and issue one new one. The old ones stop working at once. */
+export async function rotateToken(c: Ctx, memberId: string) {
+  const m = await getMember(c.db, memberId);
+  assertCanManage(c, m);
+  await c.db.prepare('UPDATE tokens SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL').bind(nowIso(c), m.id).run();
+  return { member: m, token: await issueToken(c.db, m.id, m.platform || m.kind) };
+}
+
+/**
+ * Remove a member: its tokens stop working and it leaves the team list, but everything it did
+ * stays in the record under its name. Work it held goes back to Ready.
+ */
+export async function removeMember(c: Ctx, memberId: string) {
+  const m = await getMember(c.db, memberId);
+  assertCanManage(c, m);
+  if (m.id === c.me.id) throw new KunlaError(400, 'You cannot remove yourself.');
+  if (m.kind === 'human' && !isAdmin(c.me)) throw new KunlaError(403, 'Only admins can remove people.');
+  const t = nowIso(c);
+  await c.db.batch([
+    c.db.prepare('UPDATE tokens SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL').bind(t, m.id),
+    c.db.prepare(`UPDATE tasks SET status = 'ready', assignee_id = NULL, lease_expires_at = NULL, updated_at = ? WHERE assignee_id = ? AND status = 'in_progress'`).bind(t, m.id),
+    c.db.prepare('UPDATE members SET removed_at = ? WHERE id = ?').bind(t, m.id),
+  ]);
+  return { id: m.id, name: m.name, removed: true };
 }
 
 // ---------- tasks ----------
@@ -703,7 +765,7 @@ export async function trackRecord(db: D1Database) {
        (SELECT COUNT(DISTINCT r.task_id) FROM reviews r WHERE r.worker_id = m.id AND r.verdict = 'approved'
           AND NOT EXISTS (SELECT 1 FROM reviews r2 WHERE r2.task_id = r.task_id AND r2.verdict = 'changes_requested')) AS first_pass,
        (SELECT MAX(e.created_at) FROM events e WHERE e.actor_id = m.id) AS last_active
-     FROM members m LEFT JOIN members s ON s.id = m.sponsor_id ORDER BY m.kind DESC, m.created_at`).all<any>()).results;
+     FROM members m LEFT JOIN members s ON s.id = m.sponsor_id WHERE m.removed_at IS NULL ORDER BY m.kind DESC, m.created_at`).all<any>()).results;
   return rows.map((r) => ({ ...r, scope: parseList(r.scope), first_pass_rate: r.reviewed ? Math.round((r.first_pass / r.reviewed) * 100) : null }));
 }
 
