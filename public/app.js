@@ -856,7 +856,7 @@ async function viewTeam(sub) {
 // Dialogs live outside the page, so the 30-second refresh never wipes them. A "sticky" one
 // (a token shown once) closes only from its own button, not by tapping outside or Escape.
 let sheetSticky = false;
-function openSheet(inner, handlers = {}, { sticky = false } = {}) {
+function openSheet(inner, handlers = {}, { sticky = false, focus = true } = {}) {
   const s = $('sheet');
   sheetSticky = sticky;
   s.innerHTML = `<div class="pal sheet-card" role="dialog" aria-modal="true">${inner}</div>`;
@@ -866,7 +866,7 @@ function openSheet(inner, handlers = {}, { sticky = false } = {}) {
     copy: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); el.textContent = 'Copied'; setTimeout(() => { el.textContent = 'Copy'; }, 1600); } catch { toast('Copy did not work here. Select the text and copy it.'); } },
     ...handlers,
   });
-  s.querySelector('input:not([type=hidden]):not([type=date])')?.focus();
+  if (focus) s.querySelector('input:not([type=hidden]):not([type=date])')?.focus();
 }
 function closeSheet(force) {
   if (sheetSticky && !force) return;
@@ -980,7 +980,7 @@ async function showGitHub(secret) {
   const fresh = typeof secret === 'string';
   openSheet(html`<div class="sheet-body stack">
     <div><h2>Connect GitHub</h2><p class="muted">Pull requests and commits that mention a task key (like ${projects[0]?.key || 'MKT'}-12 in the title, branch, description or a commit message) then show up on the task without anyone logging them. An opened PR sends the task to Review with the PR attached; a merged PR finishes it, or waits for a person's review if the project asks for one.</p></div>
-    <p class="muted" style="font-size:13.5px">${info.last_delivery_at ? `Last heard from GitHub ${agoLong(info.last_delivery_at)}.` : info.secret_set ? 'Set up, but nothing has arrived from GitHub yet.' : 'Not connected yet.'}</p>
+    ${raw(fresh ? '' : hookStatus(info))}
     ${raw(fresh ? '' : html`<div><button class="btn go" data-act="click:make">${info.secret_set ? 'Make a new secret' : 'Make the secret'}</button></div>
       ${raw(info.secret_set ? '<p class="muted" style="font-size:13.5px">A new secret replaces the old one at once; paste it into every repository that uses the old one.</p>' : '')}`)}
     ${raw(fresh ? html`<ol class="steps"><li>In the GitHub repository, open <b>Settings → Webhooks → Add webhook</b>.</li><li>Paste these values. Kunla shows the secret only once.</li></ol>
@@ -994,7 +994,23 @@ async function showGitHub(secret) {
     token: async (f) => { const v = formData(f).token; if (!v) return toast('Paste a token first.'); await api('PUT', '/api/integrations/github/token', { token: v }); toast('Saved. Approving now merges PRs.'); showGitHub(); },
     untoken: async () => { await api('PUT', '/api/integrations/github/token', { token: null }); toast('Removed. Approving now asks the agent to merge.'); showGitHub(); },
     make: async () => { const r = await api('POST', '/api/integrations/github'); showGitHub.last = r; showGitHub(r.secret); },
-  }, { sticky: fresh });
+    recheck: () => showGitHub(),
+  }, { sticky: fresh, focus: false });
+}
+
+// What GitHub has sent: the state in one sentence, each repository's latest delivery, and the last few.
+function hookStatus(info) {
+  const repos = info.repos || [], recent = info.recent || [];
+  const ok = (st) => st < 300;
+  const line = info.rejected
+    ? html`<p class="prstate bad">GitHub reached Kunla ${agoLong(info.rejected.created_at)}${info.rejected.repo ? ` from ${info.rejected.repo}` : ''}, but the secret didn't match. Paste the current secret into that webhook, or make a new secret and paste it there.</p>`
+    : info.last_delivery_at ? html`<p class="prstate">Connected. Last heard from GitHub ${agoLong(info.last_delivery_at)}.</p>`
+    : info.secret_set ? html`<p class="prstate bad">Set up, but nothing has arrived from GitHub yet. If you've added the webhook, check its Recent Deliveries on GitHub (see below).</p>`
+    : html`<p class="prstate">Not connected yet.</p>`;
+  const repoList = repos.length ? html`<div class="stack" style="gap:6px"><div class="label">Repositories sending events</div><ul class="hooklog">${raw(repos.map((r) => html`<li><b>${r.repo}</b><span class="${ok(r.status) ? '' : 'bad'}">${r.result}</span><time>${agoLong(r.created_at)}</time></li>`).join(''))}</ul></div>` : '';
+  const recentList = recent.length ? html`<details class="hookmore"><summary>Last ${recent.length} deliveries</summary><ul class="hooklog">${raw(recent.map((r) => html`<li><b>${r.event.replace('_', ' ')}</b>${r.repo ? html` <span class="muted">${r.repo}</span>` : ''}<span class="${ok(r.status) ? '' : 'bad'}">${r.result}</span><time>${agoLong(r.created_at)}</time></li>`).join(''))}</ul></details>` : '';
+  const help = info.secret_set ? html`<details class="hookmore"${info.last_delivery_at && !info.rejected ? '' : ' open'}><summary>Check it on GitHub</summary><ol class="steps"><li>In the repository, open <b>Settings → Webhooks</b> and click the Kunla webhook (${info.webhook_url}).</li><li>Open <b>Recent Deliveries</b>. A green tick means Kunla answered. A red mark shows Kunla's reply under <b>Response</b>: 401 means the secret doesn't match, and a timeout or 404 means the Payload URL is wrong.</li><li>Click <b>Redeliver</b> on the ping, then <b>Check again</b> here.</li></ol></details>` : '';
+  return html`<div class="stack" style="gap:10px">${raw(line)}${raw(repoList)}${raw(recentList)}${raw(help)}${raw(info.secret_set ? '<div><button class="btn sm" type="button" data-act="click:recheck">Check again</button></div>' : '')}</div>`;
 }
 
 const PROJECT_NOTE = `Use the Kunla connector as this project's record of work.

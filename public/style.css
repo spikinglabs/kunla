@@ -134,6 +134,13 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.45; }
 .prstate { font-size: 13.5px; color: var(--ink-2); margin: 0; }
 .prstate:empty { display: none; }
 .prstate.bad { color: var(--warn); }
+.hooklog { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13.5px; }
+.hooklog li { display: grid; gap: 2px; overflow-wrap: anywhere; }
+.hooklog li span { color: var(--ink-2); }
+.hooklog li span.bad { color: var(--warn); }
+.hooklog time { color: var(--muted); font-size: 12.5px; }
+details.hookmore summary { cursor: pointer; font-size: 13.5px; color: var(--ink-2); }
+details.hookmore[open] summary { margin-bottom: 8px; }
 .ask { font-size: 20px; line-height: 1.4; letter-spacing: -.01em; }
 .links { display: flex; gap: 8px; flex-wrap: wrap; }
 .links a.pill { height: 32px; padding: 0 12px; font-size: 13.5px; background: var(--canvas); }
