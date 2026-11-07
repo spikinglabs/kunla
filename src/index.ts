@@ -1,6 +1,7 @@
 // Kunla Worker: REST API, remote MCP server and OAuth for chat connectors, in front of one D1 database.
 // The web app is static files in ./public, served by Workers static assets without running this code.
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import type { Context } from 'hono';
 import * as core from './core';
 import { handleRpc, TOOLS } from './mcp';
@@ -43,6 +44,10 @@ const requireAuth = async (c: C, next: () => Promise<void>) => {
   c.set('ctx', ctx);
   await next();
 };
+
+// Bearer tokens only, no cookies, so any origin may call the API: this is what lets one
+// person's web app show several workspaces (each its own deployment) side by side.
+app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PATCH', 'OPTIONS'], maxAge: 86400 }));
 
 // ---------- public ----------
 app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: '0.1.0' }));
@@ -95,6 +100,7 @@ api.get('/next', async (c) => c.json(await core.nextTask(c.get('ctx'), c.req.que
 api.get('/status', async (c) => c.json(await core.projectStatus(c.get('ctx'), c.req.query('project'))));
 api.get('/tasks', async (c) => c.json(await core.listTasks(c.get('ctx'), c.req.query() as any)));
 api.post('/tasks', async (c) => c.json(await core.createTask(c.get('ctx'), await c.req.json())));
+api.get('/similar', async (c) => c.json(await core.similarOpenTasks(c.env.DB, c.req.query('title') ?? '', c.req.query('project'))));
 api.get('/tasks/:key', async (c) => c.json(await core.taskDetail(c.get('ctx'), c.req.param('key'))));
 api.patch('/tasks/:key', async (c) => c.json(await core.updateTask(c.get('ctx'), c.req.param('key'), await c.req.json())));
 api.post('/tasks/:key/claim', async (c) => c.json(await core.claimTask(c.get('ctx'), c.req.param('key'))));
@@ -106,8 +112,10 @@ api.post('/tasks/:key/answer', async (c) => c.json(await core.answer(c.get('ctx'
 api.post('/log', async (c) => c.json(await core.logWork(c.get('ctx'), await c.req.json())));
 
 api.get('/members', async (c) => c.json(await core.trackRecord(c.env.DB)));
+api.patch('/members/:id', async (c) => c.json(await core.setScope(c.get('ctx'), c.req.param('id'), (await c.req.json<any>()).scope ?? [])));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
 api.get('/projects', async (c) => c.json(await core.listProjects(c.env.DB)));
+api.get('/projects/:key', async (c) => c.json(await core.getProject(c.env.DB, c.req.param('key'))));
 api.post('/projects', async (c) => c.json(await core.createProject(c.get('ctx'), await c.req.json())));
 api.patch('/projects/:key', async (c) => c.json(await core.updateProject(c.get('ctx'), c.req.param('key'), await c.req.json())));
 api.get('/rules', async (c) => c.json(await views.rulesWithReach(c.env.DB, c.req.query('project'))));

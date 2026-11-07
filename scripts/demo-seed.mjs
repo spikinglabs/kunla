@@ -26,7 +26,19 @@ const D = (daysAgo, hour, min = 0) => { // hours before now for "N days ago at H
   return Math.max(0.05, (n - t) / 3600_000);
 };
 
-const { token: L } = await call('POST', '/api/setup', null, { name: 'L', project_key: 'MKT', project_name: 'Q1 campaign' });
+const second = process.argv[3] === 'community';
+if (second) {
+  // A second, separate workspace, to show the switcher: different people, different data.
+  const { token } = await call('POST', '/api/setup', null, { name: 'L', workspace_name: 'Berlin AI meetup', workspace_key: 'MEET', project_key: 'TALK', project_name: 'Talks' });
+  await call('POST', '/api/tasks', token, { project: 'TALK', title: 'Confirm the December speakers' });
+  const t = await call('POST', '/api/tasks', token, { title: 'Find a venue for January' });
+  const bot = (await call('POST', '/api/members', token, { name: "L's claude.ai", kind: 'ai', platform: 'claude-ai' })).token;
+  await tool(bot, 'claim_task', { key: t.key });
+  await tool(bot, 'submit_for_review', { key: t.key, summary: 'Three venues compared; betahaus fits 80 people and is free on 14 Jan.', deliverables: [{ url: 'https://docs.google.com/document/d/venues', title: 'Venue shortlist' }] });
+  console.log(JSON.stringify({ L: token }));
+  process.exit(0);
+}
+const { token: L } = await call('POST', '/api/setup', null, { name: 'L', workspace_name: 'Spiking Labs', workspace_key: 'SL', project_key: 'MKT', project_name: 'Q1 campaign' });
 await call('PATCH', '/api/projects/MKT', L, { playbook: '## Voice\n- Plain English, short sentences.\n- Prices in EUR.\n\n## Links\n- DACH landing page: https://example.com/dach' });
 await call('POST', '/api/projects', L, { key: 'DATA', name: 'Sales data' });
 const add = async (body) => (await call('POST', '/api/members', L, body)).token;
@@ -74,6 +86,21 @@ await tool(cc, 'log_work', { task: 'MKT-5', summary: 'Wrote two subject lines an
 await tool(cc, 'create_task', { project: 'MKT', title: 'Add EUR prices to the FAQ', brief: 'Found while writing MKT-2: the FAQ still lists prices in USD only.' }); at('MKT-6', 'created', D(0, 10, 50));
 await call('POST', '/api/tasks', L, { project: 'DATA', title: 'Week 45 pipeline summary', brief: 'From the CRM export. Top five deals and the risks.', criteria: ['Top 5 deals', 'Risks'] }); at('DATA-3', 'created', D(0, 8, 0));
 
+// Hierarchy and steering: a launch split into sub-tasks, workspace-level work, focus, a lane, tidy-up.
+await call('PATCH', '/api/projects/MKT', L, { focus: true, ends_at: new Date(Date.now() + 12 * 86400_000).toISOString() });
+await call('POST', '/api/tasks', L, { title: 'Renew the spikinglabs.com domain', brief: 'Expires on 2 December.' });
+await call('POST', '/api/tasks', L, { title: 'Book the team offsite', assignee: 'Maya' });
+const launch = await call('POST', '/api/tasks', L, { project: 'MKT', title: 'DACH launch page', brief: 'One page for the DACH launch: German copy, EUR prices, three customer logos.', criteria: ['German copy reviewed', 'Prices in EUR', 'Three logos'] });
+for (const title of ['Hero copy in German', 'Pricing table in EUR', 'Customer logos strip']) await tool(cc, 'create_task', { parent: launch.key, title, status: 'ready' });
+const kids = (await call('GET', `/api/tasks/${launch.key}`, L)).subtasks.map((x) => x.key);
+await tool(cc, 'claim_task', { key: kids[0] });
+await tool(cc, 'submit_for_review', { key: kids[0], summary: 'Hero copy in German, checked against the playbook voice.', deliverables: gh(52) });
+await call('POST', `/api/tasks/${kids[0]}/review`, L, { verdict: 'approved' });
+await tool(cc, 'create_task', { project: 'MKT', title: 'Add EUR prices to the FAQ page' }); // returns the existing MKT-6 instead
+const ms = await call('GET', '/api/members', L);
+await call('PATCH', `/api/members/${ms.find((m) => m.name === "Jon's Codex").id}`, jon, { scope: ['DATA'] });
+await tool(chat, 'create_task', { project: 'MKT', title: 'Translate the old press kit', force: true });
+
 // Backdate in the local D1.
 const iso = (h) => new Date(Date.now() - h * 3600_000).toISOString();
 const seen = new Map();
@@ -85,6 +112,7 @@ for (const [key, type, h] of timeline) {
 sql.push(`UPDATE tasks SET created_at = (SELECT MIN(created_at) FROM events WHERE task_id = tasks.id), updated_at = (SELECT MAX(created_at) FROM events WHERE task_id = tasks.id);`);
 sql.push(`UPDATE rules SET created_at = (SELECT MIN(e.created_at) FROM events e WHERE e.type = 'rule_added');`);
 sql.push(`UPDATE reviews SET created_at = (SELECT MAX(e.created_at) FROM events e WHERE e.task_id = reviews.task_id AND e.type IN ('approved','changes_requested') AND e.created_at <= (SELECT MAX(created_at) FROM events));`);
+sql.push(`UPDATE tasks SET updated_at = '${iso(24 * 20)}' WHERE title = 'Translate the old press kit';`);
 sql.push(`UPDATE tasks SET lease_expires_at = '${new Date(Date.now() + 30 * 60_000).toISOString()}' WHERE status = 'in_progress';`);
 const dir = mkdtempSync(join(tmpdir(), 'kunla-seed-'));
 writeFileSync(join(dir, 'backdate.sql'), sql.join('\n'));

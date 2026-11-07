@@ -23,7 +23,8 @@ export async function briefing(c: Ctx, sinceHours = 24) {
     `SELECT t.key, t.title, m.name AS worker FROM events e JOIN tasks t ON t.id = e.task_id LEFT JOIN members m ON m.id = t.assignee_id
      WHERE e.type = 'approved' AND e.created_at > ? ORDER BY e.id DESC LIMIT 5`).bind(since).all()).results;
   const rulesAdded = (await c.db.prepare(`SELECT COUNT(*) AS n FROM rules WHERE created_at > ?`).bind(since).first<{ n: number }>())?.n ?? 0;
-  return { since, members: [...by.values()], finished, rules_added: rulesAdded };
+  const tidied = (await c.db.prepare(`SELECT COUNT(*) AS n FROM events WHERE type = 'tidied' AND created_at > ?`).bind(since).first<{ n: number }>())?.n ?? 0;
+  return { since, members: [...by.values()], finished, rules_added: rulesAdded, tidied };
 }
 
 /** One line per member: what they are doing right now, and whether they are live. */
@@ -140,7 +141,8 @@ export async function workMap(c: Ctx, days = 5) {
 export async function rulesWithReach(db: D1Database, project?: string) {
   const sql = `SELECT r.id, r.text, r.active, r.created_at, p.key AS project, m.name AS created_by, t.key AS source_task,
       (SELECT COUNT(DISTINCT e.task_id) FROM events e JOIN tasks t2 ON t2.id = e.task_id
-        WHERE t2.project_id = r.project_id AND e.type = 'claimed' AND e.created_at > r.created_at) AS sent_with
+        WHERE (t2.project_id = r.project_id OR p.kind = 'workspace') AND e.type = 'claimed' AND e.created_at > r.created_at) AS sent_with,
+      p.kind = 'workspace' AS everywhere
     FROM rules r JOIN projects p ON p.id = r.project_id LEFT JOIN members m ON m.id = r.created_by
     LEFT JOIN reviews rv ON rv.id = r.review_id LEFT JOIN tasks t ON t.id = rv.task_id
     ${project ? 'WHERE p.key = ?' : ''} ORDER BY r.created_at DESC`;

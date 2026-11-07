@@ -120,9 +120,9 @@ describe('the record of work', () => {
 
   it('log_work records chat work with a new key, or adds to an existing task', async () => {
     const r = await tool(ai, 'log_work', { summary: 'Wrote the October newsletter draft', deliverables: [{ url: 'https://docs.example/1' }] });
-    expect(r.data).toMatchObject({ key: 'MKT-1', status: 'done', origin: 'logged' });
-    const r2 = await tool(ai, 'log_work', { summary: 'Draft for review', status: 'review', deliverables: [{ url: 'https://docs.example/2' }] });
-    expect(r2.data.status).toBe('review');
+    expect(r.data).toMatchObject({ key: 'WS-1', status: 'done', origin: 'logged', project: null });
+    const r2 = await tool(ai, 'log_work', { summary: 'Draft for review', project: 'MKT', status: 'review', deliverables: [{ url: 'https://docs.example/2' }] });
+    expect(r2.data).toMatchObject({ key: 'MKT-1', status: 'review' });
     const r3 = await tool(ai, 'log_work', { task: 'MKT-1', summary: 'Fixed a typo' });
     expect(r3.data.history[0]).toMatchObject({ type: 'work_logged', note: 'Fixed a typo' });
   });
@@ -164,6 +164,63 @@ describe('the record of work', () => {
   it('every MCP tool is also a REST call', async () => {
     const r = await call('POST', '/api/tools/whoami', ai, {});
     expect(r.body.result.name).toBe("L's Claude Code");
+  });
+});
+
+describe('hierarchy and steering', () => {
+  it('allows workspace-level tasks and keeps sub-tasks one level under a task', async () => {
+    const ws = await call('POST', '/api/tasks', human, { title: 'Renew the domain' });
+    expect(ws.body.key).toBe('WS-1');
+    const parent = await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Launch page' });
+    const sub = await tool(ai, 'create_task', { parent: 'MKT-1', title: 'Hero copy', status: 'ready' });
+    expect(sub.data.key).toBe('MKT-2');
+    const deeper = await tool(ai, 'create_task', { parent: 'MKT-2', title: 'Too deep' });
+    expect(deeper.isError).toBe(true);
+    expect((await call('POST', '/api/tasks', human, { parent: 'MKT-1', project: 'WS', title: 'Wrong project' })).status).toBe(400);
+    // The parent is not offered while it has open sub-tasks; the sub-task is.
+    expect((await tool(ai, 'next_task', { project: 'MKT' })).data.task.key).toBe('MKT-2');
+    // When the last sub-task is approved, the parent finishes on its own.
+    await tool(ai, 'claim_task', { key: 'MKT-2' });
+    await tool(ai, 'submit_for_review', { key: 'MKT-2', summary: 'Done', deliverables: [{ url: 'https://docs.example/hero' }] });
+    await call('POST', '/api/tasks/MKT-2/review', human, { verdict: 'approved' });
+    const p = await call('GET', '/api/tasks/MKT-1', human);
+    expect(p.body.status).toBe('done');
+    expect(p.body.history[0]).toMatchObject({ type: 'rolled_up', actor: null });
+    expect(p.body.subtasks).toHaveLength(1);
+    const list = await call('GET', '/api/tasks?project=MKT', human);
+    expect(list.body.find((t: any) => t.key === 'MKT-1')).toMatchObject({ project: 'MKT', subtasks: { total: 1, done: 1 } });
+    expect(list.body.find((t: any) => t.key === 'MKT-2')).toMatchObject({ parent: 'MKT-1' });
+    expect(parent.status).toBe(200);
+  });
+
+  it('offers focused projects first and keeps agents in their lane', async () => {
+    await call('POST', '/api/projects', human, { key: 'DATA', name: 'Sales data' });
+    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Newsletter' });
+    await call('POST', '/api/tasks', human, { project: 'DATA', title: 'Pipeline summary' });
+    expect((await tool(ai, 'next_task')).data.task.key).toBe('MKT-1');
+    await call('PATCH', '/api/projects/DATA', human, { focus: true, ends_at: '2026-12-01' });
+    const n = await tool(ai, 'next_task');
+    expect(n.data.task.key).toBe('DATA-1');
+    expect(n.data.focus).toEqual(['DATA Sales data']);
+    const members = await call('GET', '/api/members', human);
+    const id = members.body.find((m: any) => m.kind === 'ai').id;
+    expect((await call('PATCH', `/api/members/${id}`, human, { scope: ['MKT'] })).body.scope).toEqual(['MKT']);
+    expect((await tool(ai, 'next_task')).data.task.key).toBe('MKT-1');
+    expect((await call('PATCH', `/api/members/${id}`, ai, { scope: [] })).status).toBe(403);
+  });
+
+  it('stops agents filing the same work twice and tidies stale proposals', async () => {
+    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Q1 newsletter draft for DACH' });
+    const dup = await tool(ai, 'create_task', { project: 'MKT', title: 'Draft the Q1 newsletter for DACH' });
+    expect(dup.data).toMatchObject({ created: false, possible_duplicates: [{ key: 'MKT-1' }] });
+    const forced = await tool(ai, 'create_task', { project: 'MKT', title: 'Draft the Q1 newsletter for DACH', force: true });
+    expect(forced.data).toMatchObject({ key: 'MKT-2', status: 'inbox' });
+    await env.DB.prepare(`UPDATE tasks SET updated_at = '2000-01-01T00:00:00.000Z' WHERE key = 'MKT-2'`).run();
+    const inbox = await call('GET', '/api/inbox', human);
+    expect(inbox.body.items.some((i: any) => i.task.key === 'MKT-2')).toBe(false);
+    const t2 = (await call('GET', '/api/tasks/MKT-2', human)).body;
+    expect(t2.status).toBe('declined');
+    expect(t2.history[0]).toMatchObject({ type: 'tidied', actor: null });
   });
 });
 

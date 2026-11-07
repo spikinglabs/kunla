@@ -9,12 +9,20 @@ import { join, dirname } from 'node:path';
 const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'kunla');
 const CONFIG = join(CONFIG_DIR, 'config.json');
 const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+const git = (...args) => { try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+// A repo can say which workspace and project it belongs to with a .kunla file at its root:
+//   {"url": "https://startup.kunla.example", "project": "WEB"}
+// so Claude Code in that repo talks to the right workspace and gets work from the right project.
+const repoFile = () => { const top = git('rev-parse', '--show-toplevel'); return (top && readJson(join(top, '.kunla'))) || {}; };
+const trim = (u) => (u || '').replace(/\/$/, '');
 const cfg = () => {
   const file = readJson(CONFIG) || {};
-  return { url: (process.env.KUNLA_URL || file.url || '').replace(/\/$/, ''), token: process.env.KUNLA_TOKEN || file.token || '' };
+  const url = trim(process.env.KUNLA_URL || repoFile().url || file.url);
+  // One token per workspace; never send one workspace's token to another.
+  const token = process.env.KUNLA_TOKEN || file.workspaces?.[url] || (url === trim(file.url) ? file.token : '') || '';
+  return { url, token };
 };
-
-const git = (...args) => { try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+const repoProject = () => process.env.KUNLA_PROJECT || repoFile().project || undefined;
 const gitDir = () => { const d = git('rev-parse', '--absolute-git-dir'); return d || null; };
 
 async function api(method, path, body) {
@@ -59,15 +67,15 @@ async function currentTask() {
 function briefText(t, { agreement = true } = {}) {
   const lines = [
     `# Kunla task ${t.key}: ${t.title}`,
-    `Project: ${t.project.name} (${t.project.key}) · Status: ${t.status} · Link: ${t.references.link}`,
+    `${t.project ? `Project: ${t.project.name} (${t.project.key})` : `Workspace: ${t.workspace?.name ?? ''} (no project)`}${t.parent ? ` · Sub-task of ${t.parent.key} ${t.parent.title}` : ''} · Status: ${t.status} · Link: ${t.references.link}`,
     '', '## Brief', t.brief || '(no brief)',
   ];
   if (t.criteria?.length) lines.push('', '## Acceptance criteria', ...t.criteria.map((c) => `- ${c}`));
-  if (t.rules?.length) lines.push('', '## Project rules (from earlier reviews; always follow)', ...t.rules.map((r) => `- ${r.text}`));
+  if (t.rules?.length) lines.push('', '## Rules (from earlier reviews; always follow)', ...t.rules.map((r) => `- ${r.text}`));
   const changes = (t.reviews || []).filter((r) => r.verdict === 'changes_requested').slice(-1)[0];
   if (changes && t.status === 'in_progress') lines.push('', `## Changes requested by ${changes.reviewer}`, [changes.comment, changes.what_was_wrong].filter(Boolean).join('\n'));
   if (t.blocked_question) lines.push('', `## Blocked on`, t.blocked_question);
-  if (t.playbook?.trim()) lines.push('', '## Project playbook', t.playbook.trim());
+  if (t.playbook?.trim()) lines.push('', '## Playbook', t.playbook.trim());
   lines.push('', '## How to cite this task',
     `- Commit trailer: ${t.references.commit_trailer} (added automatically by the git hook)`,
     `- Branch: ${t.references.branch} · PR title: ${t.references.pr_title}`,
@@ -168,14 +176,17 @@ const hooks = {
       console.log(`You are working on Kunla task ${t.key}. Its brief, rules and playbook follow; follow them.\n\n${briefText(t)}`);
       return;
     }
-    const next = await tool('next_task', {});
+    const next = await tool('next_task', { project: repoProject() });
     const me = await tool('whoami', {});
+    const focus = me.projects.filter((p) => p.focus).map((p) => `${p.key} ${p.name}`);
     console.log([
-      `Kunla is connected: you are "${me.name}", an AI member of the team's record of work (${me.board}).`,
+      `Kunla is connected: you are "${me.name}", an AI member of ${me.workspace?.name ?? 'the team'}'s record of work (${me.board}).`,
+      focus.length ? `The team's focus right now: ${focus.join(', ')}.` : '',
+      repoProject() ? `This repo belongs to project ${repoProject()}; file new tasks there.` : '',
       next?.task ? `Next task waiting for you: ${next.task.key} "${next.task.title}" (${next.reason}). If the user wants it, call claim_task and follow its brief.` : 'No task is waiting for you.',
       'If the user asks for work that has no task, call log_work when you finish it so it lands in the record with a key.',
       'If the work belongs to a task, claim it with claim_task first; the commit hook will then cite it automatically.',
-    ].join('\n'));
+    ].filter(Boolean).join('\n'));
   },
   async prompt() {
     const key = await currentTask();
@@ -226,6 +237,7 @@ const HELP = `kunla: the team's record of work, from the command line.
 
   kunla login <url> <token>        Save your connection (~/.config/kunla/config.json)
   kunla whoami                     Who you are in Kunla
+  kunla init [PROJECT]             Tie this repo to the current workspace (and a project) with a .kunla file
   kunla next [--project P]         The best next task for you
   kunla use <KEY>                  Claim a task and pin it to this repo
   kunla show [KEY]                 The brief, rules and history
@@ -248,14 +260,24 @@ async function main() {
       const [url, token] = f._;
       if (!url || !token) throw new Error('Usage: kunla login <url> <token>');
       mkdirSync(CONFIG_DIR, { recursive: true });
-      writeFileSync(CONFIG, JSON.stringify({ url: url.replace(/\/$/, ''), token }, null, 2), { mode: 0o600 });
+      const prev = readJson(CONFIG) || {};
+      const workspaces = { ...(prev.workspaces || {}), ...(prev.url && prev.token ? { [trim(prev.url)]: prev.token } : {}), [trim(url)]: token };
+      writeFileSync(CONFIG, JSON.stringify({ url: trim(url), token, workspaces }, null, 2), { mode: 0o600 });
       const me = await tool('whoami');
       console.log(`Connected to ${url} as ${me.name} (${me.kind}).`);
       return;
     }
-    case 'whoami': { const me = await tool('whoami'); console.log(`${me.name} (${me.kind}${me.sponsor ? `, sponsored by ${me.sponsor}` : ''})\nProjects: ${me.projects.map((p) => p.key).join(', ')}\nBoard: ${me.board}`); return; }
+    case 'whoami': { const me = await tool('whoami'); console.log(`${me.name} (${me.kind}${me.sponsor ? `, sponsored by ${me.sponsor}` : ''}) in ${me.workspace?.name}\nProjects: ${me.projects.map((p) => p.key + (p.focus ? '*' : '')).join(', ')}${me.lane?.length ? `\nLane: ${me.lane.join(', ')}` : ''}\nBoard: ${me.board}`); return; }
+    case 'init': {
+      const top = git('rev-parse', '--show-toplevel');
+      if (!top) throw new Error('Run kunla init inside a git repo.');
+      const data = { url: cfg().url, ...(f._[0] ? { project: f._[0].toUpperCase() } : {}) };
+      writeFileSync(join(top, '.kunla'), JSON.stringify(data, null, 2) + '\n');
+      console.log(`Wrote ${join(top, '.kunla')}: this repo now talks to ${data.url}${data.project ? ` and works on ${data.project}` : ''}. Commit it so teammates and agents share it.`);
+      return;
+    }
     case 'next': {
-      const n = await tool('next_task', { project: f.project });
+      const n = await tool('next_task', { project: f.project || repoProject() });
       if (!n?.task) return console.log('Nothing waiting for you.');
       console.log(`${n.task.key}  ${n.task.title}  (${n.reason})\n${n.task.references.link}`);
       return;
@@ -278,7 +300,7 @@ async function main() {
     case 'log': {
       const summary = f._.join(' ');
       const task = f.task || pinnedTask() || undefined;
-      const t = await tool('log_work', { summary, task, project: f.project, deliverables: f.link.map((url) => ({ url })), status: f.review ? 'review' : undefined });
+      const t = await tool('log_work', { summary, task, project: f.project || (task ? undefined : repoProject()), deliverables: f.link.map((url) => ({ url })), status: f.review ? 'review' : undefined });
       console.log(`Logged on ${t.key}: ${t.references.link}`);
       return;
     }

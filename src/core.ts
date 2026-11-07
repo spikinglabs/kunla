@@ -6,14 +6,16 @@ export type Status = 'inbox' | 'ready' | 'in_progress' | 'blocked' | 'review' | 
 export const STATUSES: Status[] = ['inbox', 'ready', 'in_progress', 'blocked', 'review', 'done', 'declined'];
 export const MAX_REVIEW_ROUNDS = 3;
 const STALE_HOURS = 2;
+const PROPOSAL_DAYS = 14; // proposals nobody triaged are tidied away after this
 
 export interface Member {
   id: string; name: string; kind: Kind; platform: string | null;
-  sponsor_id: string | null; roles: string; created_at: string;
+  sponsor_id: string | null; roles: string; scope: string; created_at: string;
 }
 export interface Project {
   id: string; key: string; name: string; playbook: string;
   require_human_review: number; next_seq: number; created_at: string;
+  kind: 'project' | 'workspace'; focus: number; rank: number; ends_at: string | null;
 }
 export interface Task {
   id: string; project_id: string; key: string; title: string; brief: string; criteria: string;
@@ -76,13 +78,16 @@ export async function isSetUp(db: D1Database): Promise<boolean> {
 }
 
 /** First-run setup: the first human (admin), the first project, and their token. */
-export async function setup(db: D1Database, input: { name: string; project_key: string; project_name: string }) {
+export async function setup(db: D1Database, input: { name: string; workspace_name?: string; workspace_key?: string; project_key?: string; project_name?: string }) {
   if (await isSetUp(db)) throw new KunlaError(409, 'Kunla is already set up.');
   const t = new Date().toISOString();
   const memberId = id();
   await db.prepare('INSERT INTO members (id, name, kind, roles, created_at) VALUES (?,?,?,?,?)')
     .bind(memberId, required(input.name, 'name'), 'human', '["admin"]', t).run();
-  await insertProject(db, input.project_key, input.project_name, memberId);
+  const ws = await getWorkspace(db);
+  const wsKey = input.workspace_key?.trim() ? checkKey(input.workspace_key) : ws.key;
+  await db.prepare('UPDATE projects SET name = ?, key = ? WHERE id = ?').bind(input.workspace_name?.trim() || ws.name, wsKey, ws.id).run();
+  if (input.project_key?.trim() && input.project_name?.trim()) await insertProject(db, input.project_key, input.project_name, memberId);
   const token = await issueToken(db, memberId, 'web');
   return { member_id: memberId, token };
 }
@@ -92,9 +97,14 @@ function required(v: unknown, name: string): string {
   return v.trim();
 }
 
+function checkKey(key: string) {
+  const k = required(key, 'key').toUpperCase();
+  if (!/^[A-Z][A-Z0-9]{1,9}$/.test(k)) throw new KunlaError(400, 'A key must be 2 to 10 letters or digits, starting with a letter (like MKT).');
+  return k;
+}
+
 async function insertProject(db: D1Database, key: string, name: string, _by: string) {
-  const k = required(key, 'project key').toUpperCase();
-  if (!/^[A-Z][A-Z0-9]{1,9}$/.test(k)) throw new KunlaError(400, 'Project key must be 2 to 10 letters or digits, starting with a letter (like MKT).');
+  const k = checkKey(key);
   const exists = await db.prepare('SELECT 1 FROM projects WHERE key = ?').bind(k).first();
   if (exists) throw new KunlaError(409, `Project ${k} already exists.`);
   const pid = id();
@@ -110,13 +120,24 @@ export async function createProject(c: Ctx, input: { key: string; name: string; 
   return getProject(c.db, input.key);
 }
 
-export async function updateProject(c: Ctx, key: string, input: { name?: string; playbook?: string; require_human_review?: boolean }) {
+export async function updateProject(c: Ctx, key: string, input: {
+  name?: string; playbook?: string; require_human_review?: boolean; focus?: boolean; rank?: number; ends_at?: string | null;
+}) {
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can change project settings.');
   const p = await getProject(c.db, key);
-  await c.db.prepare('UPDATE projects SET name = ?, playbook = ?, require_human_review = ? WHERE id = ?').bind(
+  const ends = input.ends_at === undefined ? p.ends_at : input.ends_at ? new Date(input.ends_at).toISOString() : null;
+  await c.db.prepare('UPDATE projects SET name = ?, playbook = ?, require_human_review = ?, focus = ?, rank = ?, ends_at = ? WHERE id = ?').bind(
     input.name ?? p.name, input.playbook ?? p.playbook,
-    input.require_human_review === undefined ? p.require_human_review : input.require_human_review ? 1 : 0, p.id).run();
-  return getProject(c.db, key);
+    input.require_human_review === undefined ? p.require_human_review : input.require_human_review ? 1 : 0,
+    input.focus === undefined ? p.focus : input.focus ? 1 : 0, input.rank ?? p.rank, ends, p.id).run();
+  return getProject(c.db, p.id);
+}
+
+/** The workspace: the top of the hierarchy. Tasks with no project live here, and its playbook and rules apply everywhere. */
+export async function getWorkspace(db: D1Database): Promise<Project> {
+  const w = await db.prepare(`SELECT * FROM projects WHERE kind = 'workspace' LIMIT 1`).first<Project>();
+  if (!w) throw new KunlaError(500, 'Workspace row missing; run the migrations.');
+  return w;
 }
 
 export async function getProject(db: D1Database, keyOrId: string): Promise<Project> {
@@ -125,8 +146,19 @@ export async function getProject(db: D1Database, keyOrId: string): Promise<Proje
   return p;
 }
 
+/** Projects in steering order: focused first, then by rank. The workspace row is not a project. */
 export async function listProjects(db: D1Database) {
-  return (await db.prepare('SELECT * FROM projects ORDER BY created_at').all<Project>()).results;
+  return (await db.prepare(`SELECT * FROM projects WHERE kind = 'project' ORDER BY focus DESC, rank, created_at`).all<Project>()).results;
+}
+
+/** Lanes: set which projects a member works on (empty = all). The member's sponsor or an admin can change it. */
+export async function setScope(c: Ctx, memberIdOrName: string, scope: string[]) {
+  const m = await getMember(c.db, memberIdOrName);
+  if (c.me.kind !== 'human' || !(isAdmin(c.me) || m.sponsor_id === c.me.id || m.id === c.me.id)) throw new KunlaError(403, "Only the member's sponsor or an admin can change its lane.");
+  const keys: string[] = [];
+  for (const k of scope ?? []) keys.push((await getProject(c.db, k)).key);
+  await c.db.prepare('UPDATE members SET scope = ? WHERE id = ?').bind(JSON.stringify(keys), m.id).run();
+  return { id: m.id, name: m.name, scope: keys };
 }
 
 export async function listMembers(db: D1Database) {
@@ -185,6 +217,7 @@ export async function sweepLeases(c: Ctx) {
        WHERE id = ? AND status = 'in_progress' AND lease_expires_at < ?`).bind(now, t.id, now).run();
     if (r.meta.changes) await event(c, t.id, 'lease_expired', `No heartbeat for ${c.leaseMinutes} minutes, so ${t.key} went back to Ready.`, { previous_assignee: t.assignee_id }, null);
   }
+  await tidy(c);
 }
 
 function leaseFor(c: Ctx, m: Member): string | null {
@@ -193,10 +226,17 @@ function leaseFor(c: Ctx, m: Member): string | null {
 }
 
 export async function createTask(c: Ctx, input: {
-  project: string; title: string; brief?: string; criteria?: string[]; priority?: number;
+  project?: string; title: string; brief?: string; criteria?: string[]; priority?: number;
   assignee?: string; reviewer?: string; status?: 'inbox' | 'ready'; parent?: string; due_at?: string;
 }) {
-  const p = await getProject(c.db, required(input.project, 'project'));
+  // Middle levels are optional: no project means a workspace-level task. A sub-task always
+  // belongs to a task, takes its parent's project, and cannot have sub-tasks of its own.
+  const parentTask = input.parent ? await getTask(c.db, input.parent) : null;
+  if (parentTask?.parent_id) throw new KunlaError(400, `${parentTask.key} is already a sub-task; add this under its parent instead.`);
+  const p = parentTask ? await getProject(c.db, parentTask.project_id)
+    : input.project?.trim() ? await getProject(c.db, input.project) : await getWorkspace(c.db);
+  if (parentTask && input.project?.trim() && (await getProject(c.db, input.project)).id !== p.id)
+    throw new KunlaError(400, `A sub-task stays in its parent's project (${p.key}).`);
   // People write Ready tasks; AI-created tasks land in the Inbox as proposals unless they say Ready.
   const status: Status = input.status ?? (c.me.kind === 'human' ? 'ready' : 'inbox');
   const seq = await c.db.prepare('UPDATE projects SET next_seq = next_seq + 1 WHERE id = ? RETURNING next_seq').bind(p.id).first<{ next_seq: number }>();
@@ -204,7 +244,7 @@ export async function createTask(c: Ctx, input: {
   const t = nowIso(c);
   const assignee = input.assignee ? (await getMember(c.db, input.assignee)).id : null;
   const reviewer = input.reviewer ? (await getMember(c.db, input.reviewer)).id : null;
-  const parent = input.parent ? (await getTask(c.db, input.parent)).id : null;
+  const parent = parentTask?.id ?? null;
   await c.db.prepare(
     `INSERT INTO tasks (id, project_id, key, title, brief, criteria, status, priority, created_by, assignee_id, reviewer_id, parent_id, due_at, created_at, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
@@ -274,6 +314,7 @@ export async function updateTask(c: Ctx, key: string, input: {
   const type = input.blocked_question ? 'blocked' : fields.status && fields.status !== t.status ? 'status' : 'note';
   if (input.note || type !== 'note' || Object.keys(fields).length)
     await event(c, t.id, type, input.note ?? input.blocked_question ?? null, { from: t.status, to: fields.status ?? t.status });
+  if (fields.status === 'done' || fields.status === 'declined') await rollUp(c, t.parent_id);
   return getTask(c.db, t.id);
 }
 
@@ -304,10 +345,8 @@ export async function logWork(c: Ctx, input: {
     if (input.status === 'review') return submitForReview(c, t.key, { summary, deliverables: input.deliverables ?? [] });
     return getTask(c.db, t.id);
   }
-  const project = input.project ?? (await listProjects(c.db))[0]?.key;
-  if (!project) throw new KunlaError(400, 'Create a project first.');
   const status = input.status ?? 'done';
-  const p = await getProject(c.db, project);
+  const p = input.project?.trim() ? await getProject(c.db, input.project) : await getWorkspace(c.db);
   const seq = await c.db.prepare('UPDATE projects SET next_seq = next_seq + 1 WHERE id = ? RETURNING next_seq').bind(p.id).first<{ next_seq: number }>();
   const key = `${p.key}-${seq!.next_seq}`;
   const t = nowIso(c);
@@ -358,6 +397,7 @@ export async function reviewTask(c: Ctx, key: string, input: {
   }
   if (input.verdict === 'approved') {
     await touch(c, t.id, { status: 'done', reviewer_id: c.me.id });
+    await rollUp(c, t.parent_id);
   } else {
     const assignee = t.assignee_id ? await getMember(c.db, t.assignee_id) : null;
     await touch(c, t.id, {
@@ -369,6 +409,48 @@ export async function reviewTask(c: Ctx, key: string, input: {
   if (input.verdict === 'changes_requested' && t.review_rounds + 1 >= MAX_REVIEW_ROUNDS)
     await event(c, t.id, 'flagged', `${t.review_rounds + 1} review rounds; a person should look at the brief.`, {}, null);
   return getTask(c.db, t.id);
+}
+
+/** When the last sub-task finishes, the parent finishes too, with a note saying why. */
+async function rollUp(c: Ctx, parentId: string | null) {
+  if (!parentId) return;
+  const parent = await getTask(c.db, parentId);
+  if (!['ready', 'in_progress', 'blocked'].includes(parent.status)) return;
+  const r = await c.db.prepare(`SELECT COUNT(*) AS n, SUM(CASE WHEN status IN ('done','declined') THEN 1 ELSE 0 END) AS finished FROM tasks WHERE parent_id = ?`)
+    .bind(parentId).first<{ n: number; finished: number }>();
+  if (!r?.n || r.finished < r.n) return;
+  await touch(c, parentId, { status: 'done', lease_expires_at: null, blocked_question: null, blocked_on_id: null });
+  await event(c, parentId, 'rolled_up', `All ${r.n} sub-tasks are finished, so ${parent.key} is done.`, {}, null);
+}
+
+/** Open tasks whose titles look like this one, so nobody (person or agent) files the same work twice. */
+export async function similarOpenTasks(db: D1Database, title: string, projectKey?: string) {
+  const words = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9äöüß ]/g, ' ').split(/\s+/).filter((w) => w.length > 2));
+  const mine = words(title);
+  if (!mine.size) return [];
+  const rows = (await db.prepare(
+    `SELECT t.key, t.title, t.status FROM tasks t JOIN projects p ON p.id = t.project_id
+     WHERE t.status IN ('inbox','ready','in_progress','blocked','review') ${projectKey ? 'AND p.key = ?' : ''} LIMIT 500`)
+    .bind(...(projectKey ? [projectKey.toUpperCase()] : [])).all<{ key: string; title: string; status: string }>()).results;
+  return rows.map((r) => {
+    const theirs = words(r.title);
+    const shared = [...mine].filter((w) => theirs.has(w)).length;
+    return { ...r, score: shared / Math.max(1, Math.min(mine.size, theirs.size)) };
+  }).filter((r) => r.score >= 0.6).sort((a, b) => b.score - a.score).slice(0, 3);
+}
+
+/**
+ * Housekeeping that runs lazily on reads, like lease expiry: proposals nobody triaged for
+ * two weeks are declined with a note, so the Inbox never turns into a graveyard.
+ */
+export async function tidy(c: Ctx) {
+  const cutoff = new Date((c.now ? c.now() : new Date()).getTime() - PROPOSAL_DAYS * 86400_000).toISOString();
+  const old = (await c.db.prepare(`SELECT id, key FROM tasks WHERE status = 'inbox' AND updated_at < ?`).bind(cutoff).all<{ id: string; key: string }>()).results;
+  for (const t of old) {
+    await touch(c, t.id, { status: 'declined' });
+    await event(c, t.id, 'tidied', `Nobody picked this proposal up in ${PROPOSAL_DAYS} days, so Kunla closed it. Reopen it by moving it to Ready.`, {}, null);
+  }
+  return old.length;
 }
 
 /** Triage a proposal from the Inbox. */
@@ -417,16 +499,22 @@ export async function taskDetail(c: Ctx, key: string) {
     c.db.prepare('SELECT url, title, created_at FROM deliverables WHERE task_id = ? ORDER BY created_at').bind(t.id).all(),
     c.db.prepare(`SELECT e.id, e.type, e.note, e.data, e.created_at, m.name AS actor, m.kind AS actor_kind
                   FROM events e LEFT JOIN members m ON m.id = e.actor_id WHERE e.task_id = ? ORDER BY e.id DESC LIMIT 50`).bind(t.id).all(),
-    c.db.prepare('SELECT id, text, created_at FROM rules WHERE project_id = ? AND active = 1 ORDER BY created_at').bind(p.id).all(),
+    c.db.prepare(`SELECT r.id, r.text, r.created_at, p.key AS project FROM rules r JOIN projects p ON p.id = r.project_id
+                  WHERE (r.project_id = ? OR p.kind = 'workspace') AND r.active = 1 ORDER BY p.kind DESC, r.created_at`).bind(p.id).all(),
     c.db.prepare(`SELECT r.verdict, r.comment, r.what_was_wrong, r.created_at, m.name AS reviewer FROM reviews r
                   JOIN members m ON m.id = r.reviewer_id WHERE r.task_id = ? ORDER BY r.created_at`).bind(t.id).all(),
-    c.db.prepare('SELECT key, title, status FROM tasks WHERE parent_id = ? ORDER BY created_at').bind(t.id).all(),
+    c.db.prepare(`SELECT t.key, t.title, t.status, m.name AS assignee FROM tasks t LEFT JOIN members m ON m.id = t.assignee_id
+                  WHERE t.parent_id = ? ORDER BY t.created_at`).bind(t.id).all(),
   ]);
+  const parent = t.parent_id ? await c.db.prepare('SELECT key, title, status FROM tasks WHERE id = ?').bind(t.parent_id).first() : null;
+  const ws = p.kind === 'workspace' ? p : await getWorkspace(c.db);
   const names = await memberNames(c.db);
   return {
     ...publicTask(t, names),
-    project: { key: p.key, name: p.name, require_human_review: !!p.require_human_review },
-    playbook: p.playbook,
+    project: p.kind === 'workspace' ? null : { key: p.key, name: p.name, require_human_review: !!p.require_human_review, focus: !!p.focus, ends_at: p.ends_at },
+    workspace: { key: ws.key, name: ws.name },
+    parent,
+    playbook: [ws.playbook, p.kind === 'workspace' ? '' : p.playbook].filter((x) => x?.trim()).join('\n\n'),
     rules: rules.results,
     deliverables: deliverables.results,
     reviews: reviews.results,
@@ -442,10 +530,13 @@ async function memberNames(db: D1Database) {
   return map;
 }
 
-function publicTask(t: Task, names: Map<string, Member>) {
+function publicTask(t: Task & { project_key?: string | null; project_kind?: string; parent_key?: string | null; sub_total?: number; sub_done?: number }, names: Map<string, Member>) {
   const who = (mid: string | null) => (mid && names.get(mid) ? { id: mid, name: names.get(mid)!.name, kind: names.get(mid)!.kind } : null);
   return {
-    key: t.key, title: t.title, brief: t.brief, criteria: parseList(t.criteria), status: t.status,
+    key: t.key,
+    ...(t.project_kind !== undefined ? { project: t.project_kind === 'workspace' ? null : t.project_key } : {}),
+    ...(t.parent_key !== undefined ? { parent: t.parent_key } : {}),
+    ...(t.sub_total ? { subtasks: { total: t.sub_total, done: t.sub_done ?? 0 } } : {}), title: t.title, brief: t.brief, criteria: parseList(t.criteria), status: t.status,
     priority: t.priority, origin: t.origin, assignee: who(t.assignee_id), reviewer: who(t.reviewer_id),
     created_by: who(t.created_by), lease_expires_at: t.lease_expires_at, blocked_question: t.blocked_question,
     blocked_on: who(t.blocked_on_id), review_rounds: t.review_rounds, due_at: t.due_at,
@@ -453,7 +544,7 @@ function publicTask(t: Task, names: Map<string, Member>) {
   };
 }
 
-export async function listTasks(c: Ctx, f: { project?: string; status?: string; assignee?: string; q?: string; limit?: number } = {}) {
+export async function listTasks(c: Ctx, f: { project?: string; status?: string; assignee?: string; q?: string; limit?: number; updated_since?: string } = {}) {
   await sweepLeases(c);
   const where: string[] = [];
   const args: unknown[] = [];
@@ -461,9 +552,14 @@ export async function listTasks(c: Ctx, f: { project?: string; status?: string; 
   if (f.status) { const s = f.status.split(','); where.push(`t.status IN (${s.map(() => '?').join(',')})`); args.push(...s); }
   if (f.assignee) { where.push('t.assignee_id = ?'); args.push(f.assignee === 'me' ? c.me.id : (await getMember(c.db, f.assignee)).id); }
   if (f.q) { where.push('(t.title LIKE ? OR t.brief LIKE ? OR t.key = ?)'); args.push(`%${f.q}%`, `%${f.q}%`, f.q.toUpperCase()); }
+  if (f.updated_since) { where.push('t.updated_at > ?'); args.push(f.updated_since); }
   const rows = (await c.db.prepare(
-    `SELECT t.* FROM tasks t JOIN projects p ON p.id = t.project_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-     ORDER BY t.priority, t.updated_at DESC LIMIT ?`).bind(...args, Math.min(f.limit ?? 200, 500)).all<Task>()).results;
+    `SELECT t.*, p.key AS project_key, p.kind AS project_kind, pt.key AS parent_key,
+       (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id) AS sub_total,
+       (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.status IN ('done','declined')) AS sub_done
+     FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN tasks pt ON pt.id = t.parent_id
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY t.priority, t.updated_at DESC LIMIT ?`).bind(...args, Math.min(f.limit ?? 200, 1000)).all<Task>()).results;
   const names = await memberNames(c.db);
   return rows.map((t) => publicTask(t, names));
 }
@@ -471,20 +567,27 @@ export async function listTasks(c: Ctx, f: { project?: string; status?: string; 
 /** The best next thing for me to do: my work in progress, then my assigned work, then reviews, then open work. */
 export async function nextTask(c: Ctx, project?: string) {
   await sweepLeases(c);
-  const proj = project ? 'AND p.key = ?' : '';
-  const pa = project ? [project.toUpperCase()] : [];
-  const q = (sql: string, ...args: unknown[]) =>
-    c.db.prepare(`SELECT t.* FROM tasks t JOIN projects p ON p.id = t.project_id WHERE ${sql} ${proj}
-                  ORDER BY t.priority, coalesce(t.due_at, '9999'), t.created_at LIMIT 1`).bind(...args, ...pa).first<Task>();
+  // Steering: an explicit project wins; otherwise open work is limited to the member's lane
+  // and offered in focus order (focused projects, then rank, then workspace-level work).
+  const lane = parseList(c.me.scope);
+  const keys = project ? [project.toUpperCase()] : [];
+  const proj = keys.length ? 'AND p.key = ?' : '';
+  const laneSql = !keys.length && lane.length ? `AND (p.key IN (${lane.map(() => '?').join(',')}) OR p.kind = 'workspace')` : '';
+  const laneArgs = !keys.length ? lane : [];
+  const q = (sql: string, useLane: boolean, ...args: unknown[]) =>
+    c.db.prepare(`SELECT t.* FROM tasks t JOIN projects p ON p.id = t.project_id WHERE ${sql} ${proj} ${useLane ? laneSql : ''}
+                  ORDER BY p.focus DESC, CASE p.kind WHEN 'workspace' THEN 1 ELSE 0 END, p.rank, t.priority, coalesce(t.due_at, p.ends_at, '9999'), t.created_at LIMIT 1`)
+      .bind(...args, ...keys, ...(useLane ? laneArgs : [])).first<Task>();
   const picks: [string, Task | null][] = [
-    ['continue', await q(`t.status = 'in_progress' AND t.assignee_id = ?`, c.me.id)],
-    ['assigned', await q(`t.status = 'ready' AND t.assignee_id = ?`, c.me.id)],
-    ['review', await q(`t.status = 'review' AND t.reviewer_id = ? AND (t.assignee_id IS NULL OR t.assignee_id != ?)`, c.me.id, c.me.id)],
-    ['open', await q(`t.status = 'ready' AND t.assignee_id IS NULL`)],
+    ['continue', await q(`t.status = 'in_progress' AND t.assignee_id = ?`, false, c.me.id)],
+    ['assigned', await q(`t.status = 'ready' AND t.assignee_id = ?`, false, c.me.id)],
+    ['review', await q(`t.status = 'review' AND t.reviewer_id = ? AND (t.assignee_id IS NULL OR t.assignee_id != ?)`, false, c.me.id, c.me.id)],
+    ['open', await q(`t.status = 'ready' AND t.assignee_id IS NULL AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))`, true)],
   ];
   const hit = picks.find(([, t]) => t);
+  const focus = (await listProjects(c.db)).filter((p) => p.focus).map((p) => `${p.key} ${p.name}`);
   if (!hit) return null;
-  return { reason: hit[0], task: await taskDetail(c, hit[1]!.key) };
+  return { reason: hit[0], focus, lane: lane.length ? lane : 'all projects', task: await taskDetail(c, hit[1]!.key) };
 }
 
 /** The decision inbox: everything waiting on a person. The home screen. */
@@ -580,7 +683,9 @@ export async function whoami(c: Ctx) {
   return {
     id: c.me.id, name: c.me.name, kind: c.me.kind, platform: c.me.platform, roles: parseList(c.me.roles),
     sponsor: sponsor ? sponsor.name : null,
-    projects: projects.map((p) => ({ key: p.key, name: p.name })),
+    workspace: await getWorkspace(c.db).then((w) => ({ key: w.key, name: w.name })),
+    lane: parseList(c.me.scope),
+    projects: projects.map((p) => ({ key: p.key, name: p.name, focus: !!p.focus, ends_at: p.ends_at })),
     board: c.baseUrl,
   };
 }
@@ -588,7 +693,7 @@ export async function whoami(c: Ctx) {
 /** Per-member track record, so autonomy can be earned from evidence. */
 export async function trackRecord(db: D1Database) {
   const rows = (await db.prepare(
-    `SELECT m.id, m.name, m.kind, m.platform, s.name AS sponsor,
+    `SELECT m.id, m.name, m.kind, m.platform, m.scope, s.name AS sponsor, m.sponsor_id,
        (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status = 'done') AS done,
        (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status IN ('in_progress','blocked','review')) AS active,
        (SELECT COUNT(DISTINCT r.task_id) FROM reviews r WHERE r.worker_id = m.id) AS reviewed,
@@ -596,7 +701,7 @@ export async function trackRecord(db: D1Database) {
           AND NOT EXISTS (SELECT 1 FROM reviews r2 WHERE r2.task_id = r.task_id AND r2.verdict = 'changes_requested')) AS first_pass,
        (SELECT MAX(e.created_at) FROM events e WHERE e.actor_id = m.id) AS last_active
      FROM members m LEFT JOIN members s ON s.id = m.sponsor_id ORDER BY m.kind DESC, m.created_at`).all<any>()).results;
-  return rows.map((r) => ({ ...r, first_pass_rate: r.reviewed ? Math.round((r.first_pass / r.reviewed) * 100) : null }));
+  return rows.map((r) => ({ ...r, scope: parseList(r.scope), first_pass_rate: r.reviewed ? Math.round((r.first_pass / r.reviewed) * 100) : null }));
 }
 
 export async function listRules(db: D1Database, project?: string) {

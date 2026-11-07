@@ -23,7 +23,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'next_task', readOnly: true,
-    description: 'The best next thing for you: your task in progress, then work assigned to you, then reviews waiting on you, then open Ready work. Returns the full brief, playbook, project rules and ready-made references.',
+    description: "The best next thing for you: your task in progress, then work assigned to you, then reviews waiting on you, then open Ready work in your lane, focused projects first. Returns the full brief, playbook, rules, the team's current focus, and ready-made references.",
     inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Limit to a project key, e.g. MKT' } } },
     run: (c, a) => core.nextTask(c, a.project).then((r) => r ?? { message: 'Nothing waiting for you. Use log_work to record work you do outside the queue.' }),
   },
@@ -75,7 +75,7 @@ export const TOOLS: Tool[] = [
       properties: {
         summary: { type: 'string', description: 'What was done, in one or two sentences' },
         task: { type: 'string', description: 'Task key, if the work belongs to one' },
-        project: { type: 'string', description: 'Project key for a new task (defaults to the first project)' },
+        project: { type: 'string', description: 'Project key for a new task; leave out for workspace-level work' },
         title: { type: 'string' }, deliverables: links,
         status: { type: 'string', enum: ['in_progress', 'review', 'done'], description: "For a new task; default 'done'" },
       },
@@ -103,17 +103,23 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'create_task',
-    description: 'Create a task. Tasks from AIs land in the Inbox as proposals for a person to accept, unless status is ready.',
+    description: "Create a task. Project is optional (leave it out for workspace-level work). To split your work, pass parent with a task key: the sub-task joins the parent's project, and the parent finishes when all sub-tasks do. Tasks from AIs land in the Inbox as proposals unless status is ready. If a similar open task exists you get it back instead; work on that one, or pass force true if it really is different.",
     inputSchema: {
-      type: 'object', required: ['project', 'title'],
+      type: 'object', required: ['title'],
       properties: {
-        project: { type: 'string' }, title: { type: 'string' }, brief: { type: 'string' },
+        project: { type: 'string', description: 'Project key, e.g. MKT; leave out for workspace-level work' }, title: { type: 'string' }, brief: { type: 'string' },
         criteria: { type: 'array', items: { type: 'string' } }, priority: { type: 'number' },
-        assignee: { type: 'string' }, reviewer: { type: 'string' }, parent: { type: 'string' },
-        status: { type: 'string', enum: ['inbox', 'ready'] },
+        assignee: { type: 'string' }, reviewer: { type: 'string' }, parent: { type: 'string', description: 'Parent task key; makes this a sub-task' },
+        status: { type: 'string', enum: ['inbox', 'ready'] }, force: { type: 'boolean', description: 'Create even if a similar open task exists' },
       },
     },
-    run: (c, a) => core.createTask(c, a),
+    run: async (c, a) => {
+      if (!a.force && !a.parent) {
+        const similar = await core.similarOpenTasks(c.db, a.title ?? '', a.project);
+        if (similar.length) return { created: false, possible_duplicates: similar, message: 'A similar open task already exists. Work on it (or add a sub-task under it) instead; pass force: true only if this is really different.' };
+      }
+      return core.createTask(c, a);
+    },
   },
   {
     name: 'decision_inbox', readOnly: true,
@@ -154,10 +160,11 @@ const err = (id: Rpc['id'], code: number, message: string) => ({ jsonrpc: '2.0',
 
 export const INSTRUCTIONS = `Kunla is the team's record of work, shared by people and AIs.
 Working agreement:
-1. Before starting, call next_task or get_task; follow the brief, the playbook and every project rule.
+1. Before starting, call next_task or get_task; follow the brief, the playbook and every rule. next_task respects the team's focus and your lane, so prefer it over picking work yourself.
 2. Cite the task key in everything you produce (commit trailer, PR title, doc source line); get_task gives the exact text.
 3. Record progress with log_work (one sentence). If work has no task yet, log_work creates one.
-4. When done, submit_for_review with at least one deliverable link. If you are stuck, update_task with blocked_question.`;
+4. When done, submit_for_review with at least one deliverable link. If you are stuck, update_task with blocked_question.
+5. Split big work into sub-tasks with create_task parent; search before creating so nobody files the same work twice.`;
 
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');

@@ -8,7 +8,12 @@ It runs on Cloudflare (one Worker, one D1 database, static files) and costs clos
 
 ## What's in v1
 
-- **Decision inbox** as the home screen: approve or request changes, answer an AI's question, accept or decline a proposal.
+- **Briefing** as the home screen: what happened while you were away, then one decision at a time (approve, send back, or teach the team a rule), who is working on what right now, and the rules every agent follows.
+- **Work map**: a lane per person and agent showing work, waiting and decisions, built from the record, plus where work is waiting on a person.
+- **Flexible hierarchy**: workspace > project > task > sub-task, where projects are optional (a task can live straight in the workspace) and a sub-task always belongs to a task. When the last sub-task finishes, its parent finishes too.
+- **Steering**: mark projects as *focus* and rank them; `next_task` offers focused work first. Give each member a *lane* (the projects it works on). A `.kunla` file in a repo ties it to a workspace and project.
+- **Built for hundreds of tasks**: a grouped list (by project, person or status) with filters like Mine, Stuck and Done this week, saved views, and ⌘K to delegate in one line or jump anywhere. Agents check for duplicates before creating tasks, and proposals nobody triaged for 14 days are closed with a note.
+- **Separate workspaces**: one deployment per workspace (say, work, startup and community), each with its own people, agents and data. The web app switches between them and shows what waits on you elsewhere; the browser holds one token per workspace.
 - **Structured reviews.** When you request changes you say what was wrong and can tick *apply next time*. That becomes a project rule, sent to every agent with every future task.
 - **Record of work.** Tasks with briefs, acceptance criteria, deliverables, a full history, and per-project playbooks. Board, progress and team views.
 - **People and AIs as members.** Each AI connection has its own identity and a human sponsor. The team page shows each AI's track record (tasks done, first-pass approval rate).
@@ -75,15 +80,16 @@ kunla submit "Drafted the page" --link https://github.com/org/repo/pull/7
 | Tool | What it does |
 |---|---|
 | `whoami` | Your member profile, sponsor and projects |
-| `next_task` | Your task in progress, then assigned work, then reviews for you, then open Ready work |
+| `next_task` | Your task in progress, then assigned work, then reviews for you, then open Ready work in your lane, focused projects first |
 | `list_tasks`, `get_task` | Search; one task with brief, playbook, rules, history and citation text |
 | `claim_task`, `heartbeat` | Take a task atomically; keep the lease alive |
 | `update_task` | Note, status, or `blocked_question` for a person |
 | `log_work` | One sentence of progress; creates a task with a key if there is none |
 | `submit_for_review` | Summary plus at least one deliverable link |
 | `review_task` | Approve or request changes, with an optional *apply next time* rule |
-| `create_task` | New task; from an AI it lands in the inbox as a proposal |
+| `create_task` | New task, optionally without a project or as a sub-task (`parent`); from an AI it lands in the inbox as a proposal, and a similar open task is returned instead of a duplicate |
 | `decision_inbox`, `answer_question`, `triage_proposal` | The decisions waiting on people |
+| `team_pulse` | What every person and agent is doing right now |
 | `project_status` | Counts, who is on what, blockers, recent activity, share of updates recorded by agents |
 
 Tool replies can carry a one-line reminder (for example "MKT-51 has no update for 2+ hours"), so nobody has to chase.
