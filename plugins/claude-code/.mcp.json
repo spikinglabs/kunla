@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "kunla": {
+      "type": "http",
+      "url": "${KUNLA_URL}/mcp",
+      "headers": { "Authorization": "Bearer ${KUNLA_TOKEN}" }
+    }
+  }
+}

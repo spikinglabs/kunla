@@ -1,0 +1,11 @@
+Kunla Enterprise License
+
+Copyright (c) 2026 Spiking Labs. All rights reserved.
+
+The files in this directory (ee/) and its subdirectories are NOT licensed under
+the Apache License 2.0 that applies to the rest of this repository.
+
+You may view and modify these files for development and testing. Using them in
+production requires a valid commercial agreement with Spiking Labs.
+
+The full license terms are to be finalised before any code is added here.

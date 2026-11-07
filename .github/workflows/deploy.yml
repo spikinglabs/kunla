@@ -1,0 +1,20 @@
+# Deploys your copy of Kunla to your Cloudflare account. Runs on demand, or on every push to main if you
+# set the repository variable KUNLA_AUTO_DEPLOY to "true". Needs secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
+name: Deploy
+on:
+  workflow_dispatch:
+  push: { branches: [main] }
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || vars.KUNLA_AUTO_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm test
+      - run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

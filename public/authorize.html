@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connect to Kunla</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="gate"><div class="gate-card" id="box"><p class="muted">Loading…</p></div></main>
+  <script type="module">
+    const box = document.getElementById('box');
+    const q = new URLSearchParams(location.search);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    let token = null;
+    try { token = localStorage.getItem('kunla.token'); } catch {}
+
+    async function main() {
+      const client = await fetch(`/oauth/client/${encodeURIComponent(q.get('client_id') || '')}`).then((r) => r.ok ? r.json() : null);
+      if (!client) { box.innerHTML = '<h1>Unknown app</h1><p>This connection request is not valid. Try adding the connector again.</p>'; return; }
+      let me = token ? await fetch('/api/me', { headers: { authorization: `Bearer ${token}` } }).then((r) => r.ok ? r.json() : null) : null;
+      if (!me) {
+        box.innerHTML = `<h1>Sign in to connect ${esc(client.name)}</h1>
+          <p>Paste your personal Kunla token.</p>
+          <form id="f" class="stack"><div class="field"><label for="tok">Token</label><input id="tok" name="token" type="password" required placeholder="kun_…"></div>
+          <button class="primary" style="justify-content:center">Continue</button></form>`;
+        document.getElementById('f').onsubmit = (e) => {
+          e.preventDefault();
+          token = new FormData(e.target).get('token').trim();
+          try { localStorage.setItem('kunla.token', token); } catch {}
+          main();
+        };
+        return;
+      }
+      const defaultName = `${me.name}'s ${client.name}`;
+      box.innerHTML = `<h1>Connect ${esc(client.name)} to Kunla</h1>
+        <p>It joins your workspace as an agent you sponsor. It can read tasks, record work and submit work for review, all under its own name.</p>
+        <form id="f" class="stack"><div class="field"><label for="nm">Name in Kunla</label><input id="nm" name="name" value="${esc(defaultName)}" required></div>
+        <div class="row"><button class="primary">Allow</button><button type="button" class="ghost" id="deny">Cancel</button></div></form>`;
+      document.getElementById('deny').onclick = () => {
+        const u = new URL(q.get('redirect_uri')); u.searchParams.set('error', 'access_denied');
+        if (q.get('state')) u.searchParams.set('state', q.get('state'));
+        if (client.redirect_uris.includes(q.get('redirect_uri'))) location.href = u.toString();
+      };
+      document.getElementById('f').onsubmit = async (e) => {
+        e.preventDefault();
+        const r = await fetch('/oauth/approve', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            client_id: q.get('client_id'), redirect_uri: q.get('redirect_uri'), state: q.get('state'),
+            code_challenge: q.get('code_challenge'), code_challenge_method: q.get('code_challenge_method') || 'S256',
+            name: new FormData(e.target).get('name'), platform: /claude/i.test(client.name) ? 'claude-ai' : 'chat',
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok) { box.insertAdjacentHTML('beforeend', `<p class="warn">${esc(d.error)}</p>`); return; }
+        location.href = d.redirect;
+      };
+    }
+    main();
+  </script>
+</body>
+</html>
