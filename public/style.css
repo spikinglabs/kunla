@@ -470,3 +470,4 @@ a.inline-link:hover { border-color: var(--ink-2); }
 .links { min-width: 0; }
 .links .pill { max-width: 100%; min-width: 0; flex-wrap: nowrap; }
 .pill-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deck { touch-action: pan-y pinch-zoom; }
