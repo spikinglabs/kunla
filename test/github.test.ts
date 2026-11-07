@@ -211,3 +211,39 @@ describe('webhooks with several workspaces', () => {
     expect((await call('GET', '/api/integrations/github', ws.token)).body.secret_set).toBe(true);
   });
 });
+
+describe('delivery log', () => {
+  const info = async () => (await call('GET', '/api/integrations/github', human)).body;
+  it('counts a ping as a delivery and lists the repository', async () => {
+    expect((await info()).last_delivery_at).toBeNull();
+    await hook('ping', { zen: 'Keep it simple.', repository: { full_name: 'acme/app' } });
+    const i = await info();
+    expect(i.last_delivery_at).not.toBeNull();
+    expect(i.repos).toEqual([expect.objectContaining({ repo: 'acme/app', event: 'ping', status: 200, result: 'Ping received: connected' })]);
+    expect(i.rejected).toBeNull();
+  });
+  it('describes what each delivery did, newest first', async () => {
+    await hook('pull_request', { ...pr('opened'), repository: { full_name: 'acme/app' } });
+    await hook('push', { ref: 'refs/heads/x', commits: [{ id: 'abc1234', message: 'nothing', distinct: true }], repository: { full_name: 'acme/site' } });
+    const i = await info();
+    expect(i.recent.map((r: any) => r.result)).toEqual(['No task key found in the commit messages', 'Updated MKT-1 → review']);
+    expect(i.repos.map((r: any) => r.repo).sort()).toEqual(['acme/app', 'acme/site']);
+  });
+  it('shows a delivery rejected for a wrong secret until a good one arrives', async () => {
+    await hook('ping', { repository: { full_name: 'acme/app' } }, { secret: 'old-secret' });
+    let i = await info();
+    expect(i.rejected).toMatchObject({ event: 'ping', repo: 'acme/app' });
+    expect(i.recent).toEqual([]);
+    await hook('ping', { repository: { full_name: 'acme/app' } });
+    i = await info();
+    expect(i.rejected).toBeNull();
+  });
+  it('keeps each workspace to its own deliveries', async () => {
+    await hook('ping', { repository: { full_name: 'acme/app' } });
+    const ws = (await call('POST', '/api/workspaces', human, { name: 'Community' })).body;
+    const other = (await call('GET', '/api/integrations/github', ws.token)).body;
+    expect(other.repos).toEqual([]);
+    expect(other.last_delivery_at).toBeNull();
+  });
+});
+
