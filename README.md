@@ -138,6 +138,7 @@ Turn it on per agent in **Team → Manage → Continuous mode**, and the agent w
 | `next_task` | Your task in progress, then assigned work, then reviews for you, then open Ready work in your lane, focused projects first; in continuous mode, whether to keep going or why to stop |
 | `list_tasks`, `get_task` | Search; one task with brief, playbook, rules, history and citation text |
 | `claim_task`, `heartbeat` | Take a task atomically; keep the lease alive |
+| `release_task` | Let go of a task with a handoff note, back to Ready or to a named member |
 | `update_task` | Note, status, or `blocked_question` for a person |
 | `log_work` | One sentence of progress; creates a task with a key if there is none |
 | `submit_for_review` | Summary plus at least one deliverable link |
