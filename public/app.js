@@ -212,7 +212,8 @@ async function spaceCounts() {
 }
 // The token travels in the URL fragment, which browsers never send to a server.
 // Within this Kunla only the fragment changes, so the app switches without reloading.
-const switchTo = (sp) => { location.href = `${sp.url === location.origin ? location.pathname : sp.url + '/'}#/use/${encodeURIComponent(sp.token)}`; };
+const closePalette = () => { const box = $('palette'); box.hidden = true; box.innerHTML = ''; };
+const switchTo = (sp) => { closePalette(); location.href = `${sp.url === location.origin ? location.pathname : sp.url + '/'}#/use/${encodeURIComponent(sp.token)}`; };
 async function openSpaces() {
   const box = $('palette');
   box.hidden = false;
@@ -905,6 +906,9 @@ function showConnect(kind) {
   });
 }
 
+// Each workspace has its own MCP address, so chat apps that allow one connector per URL can add one per workspace.
+const mcpUrl = () => `${location.origin}/mcp/${me.workspace.key}`;
+
 function showToken(r, kind, platform) {
   const origin = location.origin;
   const head = r.reconnected
@@ -913,7 +917,7 @@ function showToken(r, kind, platform) {
   const setup = kind === 'human' ? '<p>Send it to them privately. They paste it on the sign-in page.</p>'
     : platform === 'claude-code' ? copyBlock('In your terminal', `export KUNLA_URL=${origin}\nexport KUNLA_TOKEN=${r.token}\nclaude plugin marketplace add spikinglabs/kunla\nclaude plugin install kunla@kunla`)
       + '<p class="muted" style="font-size:13.5px">From then on it picks up work with <code>/kunla:next</code>, cites the task in every commit, and records progress without being asked.</p>'
-    : copyBlock('MCP server', `URL     ${origin}/mcp\nHeader  Authorization: Bearer ${r.token}`);
+    : copyBlock('MCP server', `URL     ${mcpUrl()}\nHeader  Authorization: Bearer ${r.token}`);
   openSheet(html`<div class="sheet-body stack"><div>${raw(head)}</div>${raw(copyBlock('Token', r.token, { secret: true }))}${raw(setup)}
     <div class="row"><button class="btn ink" data-act="click:close">I've saved it</button></div></div>`, {}, { sticky: true });
 }
@@ -1002,13 +1006,13 @@ const PROJECT_NOTE = `Use the Kunla connector as this project's record of work.
 function showClaudeAi() {
   const origin = location.origin;
   openSheet(html`<div class="sheet-body stack">
-    <div><h2>Use Kunla in claude.ai</h2><p class="muted">One connector covers every chat and every Project on your claude.ai account, on web, desktop and phone. It joins Kunla as one agent, ${me.name}'s Claude, that you sponsor.</p></div>
+    <div><h2>Use Kunla in claude.ai</h2><p class="muted">One connector covers every chat and every Project on your claude.ai account, on web, desktop and phone. It joins ${me.workspace.name} as one agent, ${me.name}'s Claude, that you sponsor. Each workspace has its own address, so add one connector per workspace.</p></div>
     <ol class="steps">
-      <li>In claude.ai, open <b>Settings → Connectors</b> and choose <b>Add custom connector</b>. Name it Kunla and paste this URL:</li>
+      <li>In claude.ai, open <b>Settings → Connectors</b> and choose <b>Add custom connector</b>. Name it Kunla ${me.workspace.name} and paste this URL:</li>
     </ol>
-    ${raw(copyBlock('Connector URL', `${origin}/mcp`))}
+    ${raw(copyBlock('Connector URL', mcpUrl()))}
     <ol class="steps" start="2">
-      <li>Click <b>Connect</b>. A Kunla page opens; check the name and click <b>Allow</b>. If it asks for a token, paste your personal one.</li>
+      <li>Click <b>Connect</b>. A Kunla page opens; check the name and click <b>Allow</b>. If it asks for a token, paste your personal token for ${me.workspace.name}.</li>
       <li>In a chat, open the tools menu under the message box and switch Kunla on. Chats inside a Project use the same switch, so nothing extra is needed per Project.</li>
       <li>Optional, for a Project: paste this into the Project's instructions so Claude records its work there without being asked.</li>
     </ol>
@@ -1177,6 +1181,8 @@ async function route() {
   // Arriving from another workspace with a token in the fragment: keep it, then drop it from the address bar.
   const use = (location.hash || '').match(/^#\/use\/(.+)$/);
   if (use) {
+    // Switching workspace: nothing open from the old one (the workspace menu, a sheet) may stay on screen.
+    closePalette(); $('sheet').hidden = true;
     token = decodeURIComponent(use[1]); me = null;
     try { localStorage.setItem(TOKEN_KEY, token); } catch {}
     history.replaceState(null, '', location.pathname + '#/');

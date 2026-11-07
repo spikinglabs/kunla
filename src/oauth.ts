@@ -9,9 +9,13 @@ import type { Env } from './index';
 export const oauth = new Hono<{ Bindings: Env }>();
 const origin = (c: Context<any>) => (c.env.PUBLIC_URL || new URL(c.req.url).origin).replace(/\/$/, '');
 
-function protectedResource(c: Context<any>) {
+async function protectedResource(c: Context<any>) {
+  // /mcp/<KEY> is one workspace's address; its OAuth flow signs in to that workspace (see authorize.html).
+  const key: string | undefined = c.req.param('ws');
+  const ws = key ? await core.workspaceByKey(c.env.DB, key) : null;
+  if (key && !ws) return c.json({ error: 'No such workspace' }, 404);
   return c.json({
-    resource: `${origin(c)}/mcp`,
+    resource: `${origin(c)}/mcp${ws ? '/' + ws.key : ''}`,
     authorization_servers: [origin(c)],
     bearer_methods_supported: ['header'],
     resource_name: 'Kunla',
@@ -19,8 +23,9 @@ function protectedResource(c: Context<any>) {
 }
 oauth.get('/.well-known/oauth-protected-resource', protectedResource);
 oauth.get('/.well-known/oauth-protected-resource/mcp', protectedResource);
+oauth.get('/.well-known/oauth-protected-resource/mcp/:ws', protectedResource);
 
-oauth.get('/.well-known/oauth-authorization-server', (c) => c.json({
+const authServer = (c: Context<any>) => c.json({
   issuer: origin(c),
   authorization_endpoint: `${origin(c)}/oauth/authorize`,
   token_endpoint: `${origin(c)}/oauth/token`,
@@ -29,7 +34,17 @@ oauth.get('/.well-known/oauth-authorization-server', (c) => c.json({
   grant_types_supported: ['authorization_code'],
   code_challenge_methods_supported: ['S256'],
   token_endpoint_auth_methods_supported: ['none'],
-}));
+});
+oauth.get('/.well-known/oauth-authorization-server', authServer);
+// Some clients look for the metadata under the resource's path too; it is the same server.
+oauth.get('/.well-known/oauth-authorization-server/mcp/:ws', authServer);
+oauth.get('/.well-known/openid-configuration/mcp/:ws', authServer);
+
+/** The workspace an OAuth request is for, from its resource (…/mcp/KEY); null means any workspace. */
+export function workspaceKeyFromResource(resource: unknown): string | null {
+  if (typeof resource !== 'string') return null;
+  try { return new URL(resource).pathname.match(/^\/mcp\/([A-Za-z][A-Za-z0-9]{1,9})\/?$/)?.[1]?.toUpperCase() ?? null; } catch { return null; }
+}
 
 oauth.post('/oauth/register', async (c) => {
   const body = await c.req.json<any>().catch(() => ({}));
@@ -67,6 +82,13 @@ oauth.post('/oauth/approve', async (c) => {
   if (!client) return c.json({ error: 'Unknown client.' }, 400);
   if (!JSON.parse(client.redirect_uris).includes(b.redirect_uri)) return c.json({ error: 'Redirect URI not registered.' }, 400);
   if (!b.code_challenge || (b.code_challenge_method ?? 'S256') !== 'S256') return c.json({ error: 'PKCE S256 is required.' }, 400);
+  // A connector added at /mcp/KEY must join that workspace, or its token would be turned away there.
+  const wsKey = workspaceKeyFromResource(b.resource);
+  if (wsKey) {
+    const ws = await core.workspaceByKey(c.env.DB, wsKey);
+    if (!ws) return c.json({ error: `No workspace ${wsKey} on this Kunla.` }, 400);
+    if (ws.id !== me.space_id) return c.json({ error: `This connector is for ${ws.name}. Sign in with your token for ${ws.name}.`, workspace: { key: ws.key, name: ws.name } }, 403);
+  }
 
   const ctx: core.Ctx = { db: c.env.DB, me, space: me.space_id, baseUrl: origin(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30) };
   const name = String(b.name || `${me.name}'s ${client.name}`).slice(0, 80);
