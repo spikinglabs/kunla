@@ -100,9 +100,12 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .nav ul a { text-decoration: none; }
 .nav ul a:hover { color: var(--ink); }
 .nav .spacer { flex: 1; }
+.brand { display: inline-flex; align-items: center; gap: 8px; }
+.lab-tag { font: 500 11px/18px var(--sans); color: var(--ink-2); border: 1px solid var(--rule-2); border-radius: 4px; padding: 0 5px; text-decoration: none; }
+.lab-tag:hover { color: var(--ink); border-color: var(--ink-2); }
 .btn {
   display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px; border-radius: 999px;
-  font: 600 15px/1 var(--sans); text-decoration: none; border: 1px solid var(--ink); background: var(--ink); color: var(--canvas);
+  white-space: nowrap; font: 600 15px/1 var(--sans); text-decoration: none; border: 1px solid var(--ink); background: var(--ink); color: var(--canvas);
   transition: transform .15s ease;
 }
 .btn:hover { transform: translateY(-1px); }
@@ -421,7 +424,7 @@ footer a { color: var(--ink-2); }
 
 <header class="nav">
   <div class="wrap">
-    <a class="logo" href="#top" aria-label="Kunla home">kunla<i></i></a>
+    <span class="brand"><a class="logo" href="#top" aria-label="Kunla home">kunla<i></i></a><a class="lab-tag" href="https://spikinglabs.com/lab" title="Kunla is a Spiking Labs Lab experiment. Things may change, and test data may be deleted when the test ends.">Lab</a></span>
     <ul>
       <li><a href="#how">How it works</a></li>
       <li><a href="#screens">The app</a></li>
@@ -905,8 +908,9 @@ footer a { color: var(--ink-2); }
 <footer>
   <div class="wrap">
     <span class="logo">kunla<i></i></span>
-    <span class="grow">From Esperanto <i>kunlabori</i>, to work together. Made by Spiking Labs.</span>
-    <a href="https://github.com/spikinglabs/kunla">GitHub</a>
+    <span class="grow">Kunla is a <a href="https://spikinglabs.com">Spiking Labs</a> product, running as an experiment in the <a href="https://spikinglabs.com/lab">Spiking Labs Lab</a>. The name comes from Esperanto <i>kunlabori</i>, to work together.</span>
+    <a href="https://github.com/spikinglabs/kunla">Open source</a>
+    <a href="https://github.com/spikinglabs/kunla/issues/new">Send feedback</a>
     <a href="https://github.com/spikinglabs/kunla/blob/main/LICENSE">Apache-2.0</a>
   </div>
 </footer>
