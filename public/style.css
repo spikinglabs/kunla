@@ -478,3 +478,9 @@ a.inline-link:hover { border-color: var(--ink-2); }
 @media (max-width: 760px) {
   .paused { top: auto; bottom: calc(80px + env(safe-area-inset-bottom)); height: 44px; font-size: 14px; }
 }
+
+/* A decision recorded from a chat (KD-26): the person's words, who recorded it, the chat link. */
+.via { margin-top: 4px; font-family: var(--sans); font-size: 13.5px; overflow-wrap: anywhere; }
+.via .btn { margin-left: 4px; }
+.via q { font-style: italic; color: var(--ink); }
+.via a { color: var(--ink-2); }

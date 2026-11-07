@@ -105,7 +105,23 @@ export const TOOLS: Tool[] = [
         rule: { type: 'string', description: "'Apply next time' rule for this project" },
       },
     },
-    run: (c, a) => core.reviewTask(c, a.key, a),
+    run: (c, a) => core.reviewTask(c, a.key, { ...a, via: undefined }),
+  },
+  {
+    name: 'record_decision',
+    description: "When the person who sponsors you decides something about a task in your chat (approves it, says merge, sends it back, or answers your question), record it here so it counts in Kunla as their decision, with this chat as the source. Only for your own sponsor's words; never for anyone else, and never on your own judgement. Approving work in Review merges its PR as usual; approving open work marks it done.",
+    inputSchema: {
+      type: 'object', required: ['key', 'verdict', 'source_url', 'quote'],
+      properties: {
+        key,
+        verdict: { type: 'string', enum: ['approved', 'changes_requested', 'answer'] },
+        source_url: { type: 'string', description: 'https link to this chat or thread, where the person decided' },
+        quote: { type: 'string', description: "The person's own words, verbatim (e.g. \"Merge\")" },
+        comment: { type: 'string' }, what_was_wrong: { type: 'string', description: 'For changes_requested: what the person said needs to change' },
+        answer: { type: 'string', description: "For answer: the person's answer to the blocked question" },
+      },
+    },
+    run: (c, a) => core.recordDecision(c, a.key, a),
   },
   {
     name: 'create_task',
@@ -174,7 +190,8 @@ Working agreement:
 6. Pass session (a link to this chat or agent session) when you claim, log work or submit, so people can open the conversation from the task later.
 7. A parked task was put off by a person on purpose. Do not resume it, claim it, or ask about it unless the user brings it up.
 8. Approved means merge: when a person approves a task whose deliverable is your open PR, squash-merge it once checks pass, unless Kunla already did.
-9. Continuous mode: when next_task returns continuous.go true, work through tasks one by one: claim, do, submit (or ask with blocked_question), then call next_task again. Being blocked on one task is not a reason to stop; stop only when next_task says go false. Report cost_usd or tokens with log_work or submit_for_review when you know them.`;
+9. Continuous mode: when next_task returns continuous.go true, work through tasks one by one: claim, do, submit (or ask with blocked_question), then call next_task again. Being blocked on one task is not a reason to stop; stop only when next_task says go false. Report cost_usd or tokens with log_work or submit_for_review when you know them.
+10. When the person who sponsors you decides something about a task in your chat (approve, merge, send back, an answer), call record_decision with their words and a link to the chat, so it counts in Kunla. Never record a decision they didn't make.`;
 
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');
