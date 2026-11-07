@@ -137,7 +137,10 @@ api.patch('/tasks/:key', async (c) => c.json(await core.updateTask(c.get('ctx'),
 api.post('/tasks/:key/claim', async (c) => c.json(await core.claimTask(c.get('ctx'), c.req.param('key'), (await c.req.json<any>().catch(() => ({})))?.session)));
 api.post('/tasks/:key/heartbeat', async (c) => c.json(await core.heartbeat(c.get('ctx'), c.req.param('key'))));
 api.post('/tasks/:key/submit', async (c) => c.json(await core.submitForReview(c.get('ctx'), c.req.param('key'), await c.req.json())));
-api.post('/tasks/:key/review', async (c) => c.json(await core.reviewTask(c.get('ctx'), c.req.param('key'), await c.req.json())));
+api.post('/tasks/:key/review', async (c) => c.json(await core.reviewTask(c.get('ctx'), c.req.param('key'), { ...(await c.req.json<any>()), via: undefined })));
+// An agent records a decision its sponsor made in a chat; the person can undo it from the task.
+api.post('/tasks/:key/decision', async (c) => c.json(await core.recordDecision(c.get('ctx'), c.req.param('key'), await c.req.json())));
+api.post('/tasks/:key/decision/undo', async (c) => c.json(await core.undoDecision(c.get('ctx'), c.req.param('key'))));
 api.post('/tasks/:key/triage', async (c) => c.json(await core.triage(c.get('ctx'), c.req.param('key'), await c.req.json())));
 api.post('/tasks/:key/answer', async (c) => c.json(await core.answer(c.get('ctx'), c.req.param('key'), (await c.req.json<any>()).answer)));
 api.post('/tasks/:key/park', async (c) => c.json(await core.parkTask(c.get('ctx'), c.req.param('key'), await c.req.json().catch(() => ({})))));

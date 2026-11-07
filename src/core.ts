@@ -12,6 +12,9 @@ export const MAX_REVIEW_ROUNDS = 3;
 const STALE_HOURS = 2;
 const PROPOSAL_DAYS = 14; // proposals nobody triaged are tidied away after this
 
+/** A decision a person made in a chat, recorded in Kunla by their agent (record_decision). */
+export interface Via { agent_id: string; agent: string; source_url: string; quote: string }
+
 export interface Member {
   id: string; name: string; kind: Kind; platform: string | null;
   sponsor_id: string | null; roles: string; scope: string; created_at: string; space_id: string;
@@ -524,7 +527,7 @@ export async function updateTask(c: Ctx, key: string, input: {
   note?: string; status?: Status; blocked_question?: string; blocked_on?: string;
   title?: string; brief?: string; criteria?: string[]; priority?: number; assignee?: string | null; reviewer?: string | null; session?: string;
   cost_usd?: number; tokens?: number;
-}) {
+}, via?: Via) {
   let t = await getTask(c, key);
   await recordSession(c, t.id, input.session);
   const fields: Partial<Task> = {};
@@ -545,6 +548,11 @@ export async function updateTask(c: Ctx, key: string, input: {
     if (t.status === 'parked') { fields.parked_from = null; fields.snoozed_until = null; }
     if (input.status === 'review') throw new KunlaError(400, 'Use submit_for_review to move a task to Review; it needs a deliverable.');
     if (input.status === 'done' && t.status === 'review') throw new KunlaError(400, 'Use review_task to approve a task in Review.');
+    if (input.status === 'done' && t.status !== 'done' && c.me.kind !== 'human') {
+      // Agents finish work by sending it for review; only a person marks it done where the project asks for one.
+      const proj = await getProject(c, t.project_id);
+      if (proj.require_human_review) throw new KunlaError(403, `Project ${proj.key} needs a person to approve work. Use submit_for_review with a link to the work, or record_decision if your sponsor said it's done in your chat.`);
+    }
     if (input.status === 'done' && t.status !== 'done') {
       const open = await openSubtasks(c.db, t.id);
       if (open.length) throw new KunlaError(409, `${t.key} still has open sub-tasks (${open.join(', ')}). It finishes by itself when the last one does; decline the ones you no longer need.`);
@@ -559,7 +567,7 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (Object.keys(fields).length) await touch(c, t.id, fields);
   const type = input.blocked_question ? 'blocked' : fields.status && fields.status !== t.status ? 'status' : 'note';
   if (input.note || type !== 'note' || Object.keys(fields).length)
-    await event(c, t.id, type, input.note ?? input.blocked_question ?? null, { from: t.status, to: fields.status ?? t.status, ...spend(input) });
+    await event(c, t.id, type, input.note ?? input.blocked_question ?? null, { from: t.status, to: fields.status ?? t.status, ...spend(input), ...(via ? { via } : {}) });
   if (fields.status === 'done' || fields.status === 'declined') await rollUp(c, t.parent_id);
   if (fields.assignee_id && fields.assignee_id !== t.assignee_id && (fields.status ?? t.status) === 'ready')
     await wakeMember(c, fields.assignee_id, 'assigned', t, input.note ?? null);
@@ -640,7 +648,7 @@ export async function submitForReview(c: Ctx, key: string, input: { summary: str
 }
 
 export async function reviewTask(c: Ctx, key: string, input: {
-  verdict: 'approved' | 'changes_requested'; comment?: string; what_was_wrong?: string; rule?: string;
+  verdict: 'approved' | 'changes_requested'; comment?: string; what_was_wrong?: string; rule?: string; via?: Via;
 }) {
   const t = await getTask(c, key);
   if (t.status !== 'review') throw new KunlaError(409, `${t.key} is ${t.status}, not in Review.`);
@@ -650,8 +658,8 @@ export async function reviewTask(c: Ctx, key: string, input: {
   if (!['approved', 'changes_requested'].includes(input.verdict)) throw new KunlaError(400, 'verdict must be approved or changes_requested.');
   if (input.verdict === 'changes_requested' && !input.comment && !input.what_was_wrong) throw new KunlaError(400, 'Say what needs to change.');
   const rid = id();
-  await c.db.prepare('INSERT INTO reviews (id, task_id, reviewer_id, worker_id, verdict, comment, what_was_wrong, created_at) VALUES (?,?,?,?,?,?,?,?)')
-    .bind(rid, t.id, c.me.id, t.assignee_id, input.verdict, input.comment ?? null, input.what_was_wrong ?? null, nowIso(c)).run();
+  await c.db.prepare('INSERT INTO reviews (id, task_id, reviewer_id, worker_id, verdict, comment, what_was_wrong, created_at, via) VALUES (?,?,?,?,?,?,?,?,?)')
+    .bind(rid, t.id, c.me.id, t.assignee_id, input.verdict, input.comment ?? null, input.what_was_wrong ?? null, nowIso(c), input.via ? JSON.stringify(input.via) : null).run();
   let ruleId: string | null = null;
   if (input.rule?.trim()) {
     ruleId = id();
@@ -675,7 +683,9 @@ export async function reviewTask(c: Ctx, key: string, input: {
     });
   }
   const waiting = open.length ? `Approved. ${t.key} finishes when ${open.join(', ')} ${open.length === 1 ? 'is' : 'are'} done.` : null;
-  await event(c, t.id, input.verdict, [input.comment, input.what_was_wrong, waiting].filter(Boolean).join('\n') || null, { review_id: rid, rule_id: ruleId, waiting_on: open });
+  const to: Status = input.verdict === 'approved' && !open.length ? 'done' : 'in_progress';
+  await event(c, t.id, input.verdict, [input.comment, input.what_was_wrong, waiting].filter(Boolean).join('\n') || null,
+    { review_id: rid, rule_id: ruleId, waiting_on: open, from: 'review', to, ...(input.via ? { via: input.via } : {}) });
   if (input.verdict === 'changes_requested' && t.review_rounds + 1 >= MAX_REVIEW_ROUNDS)
     await event(c, t.id, 'flagged', `${t.review_rounds + 1} review rounds; a person should look at the brief.`, {}, null);
   // Approve in Kunla = merge the PR: Kunla merges it itself when it has a GitHub token, otherwise the woken agent does.
@@ -685,8 +695,10 @@ export async function reviewTask(c: Ctx, key: string, input: {
     const job = () => mergeApproved(c, t, pr);
     if (c.defer) c.defer(job); else await job();
   }
-  await wakeMember(c, t.assignee_id, input.verdict, t, [input.comment, input.what_was_wrong, input.rule ? `New rule: ${input.rule}` : null].filter(Boolean).join('\n') || null,
-    pr ? { merge: pr.url, by_kunla: byKunla } : {});
+  // An agent that recorded its sponsor's decision from the chat already knows; no need to wake it.
+  if (input.via?.agent_id !== t.assignee_id)
+    await wakeMember(c, t.assignee_id, input.verdict, t, [input.comment, input.what_was_wrong, input.rule ? `New rule: ${input.rule}` : null].filter(Boolean).join('\n') || null,
+      pr ? { merge: pr.url, by_kunla: byKunla } : {});
   return getTask(c, t.id);
 }
 
@@ -745,7 +757,7 @@ export async function triage(c: Ctx, key: string, input: { accept: boolean; note
 }
 
 /** Answer a blocked task's question; the task goes back to its worker. */
-export async function answer(c: Ctx, key: string, text: string) {
+export async function answer(c: Ctx, key: string, text: string, via?: Via) {
   const t = await getTask(c, key);
   if (t.status !== 'blocked') throw new KunlaError(409, `${t.key} is not blocked.`);
   const holder = t.assignee_id ? await getMember(c, t.assignee_id) : null;
@@ -753,8 +765,65 @@ export async function answer(c: Ctx, key: string, text: string) {
     status: holder ? 'in_progress' : 'ready', blocked_question: null, blocked_on_id: null,
     lease_expires_at: holder ? leaseFor(c, holder) : null,
   });
-  await event(c, t.id, 'answered', required(text, 'answer'), { question: t.blocked_question });
-  if (holder) await wakeMember(c, holder.id, 'answered', t, text);
+  await event(c, t.id, 'answered', required(text, 'answer'), { question: t.blocked_question, from: 'blocked', to: holder ? 'in_progress' : 'ready', blocked_on_id: t.blocked_on_id, ...(via ? { via } : {}) });
+  if (holder && via?.agent_id !== holder.id) await wakeMember(c, holder.id, 'answered', t, text);
+  return getTask(c, t.id);
+}
+
+// ---------- decisions made in chat (KD-26) ----------
+
+/**
+ * An agent records a decision its sponsor made in a chat ("approve", "merge", "send it back", an
+ * answer to its question), so it counts in Kunla as that person's decision, with the chat as the
+ * source. An agent can only speak for its own sponsor, and the person can undo it from the task.
+ */
+export async function recordDecision(c: Ctx, key: string, input: {
+  verdict: 'approved' | 'changes_requested' | 'answer'; source_url: string; quote?: string;
+  comment?: string; what_was_wrong?: string; answer?: string; session?: string;
+}) {
+  if (c.me.kind !== 'ai' || !c.me.sponsor_id) throw new KunlaError(403, "Only an agent records a decision from its chat, and only on behalf of the person who sponsors it.");
+  const sponsor = await c.db.prepare(`SELECT * FROM members WHERE id = ? AND space_id = ? AND kind = 'human' AND removed_at IS NULL`).bind(c.me.sponsor_id, c.space).first<Member>();
+  if (!sponsor) throw new KunlaError(403, 'Your sponsor is no longer in this workspace, so you cannot record decisions for them.');
+  const source = String(input.source_url ?? '').trim();
+  if (!/^https:\/\/\S+$/i.test(source)) throw new KunlaError(400, 'source_url must be an https link to the chat where the decision was made.');
+  if (!['approved', 'changes_requested', 'answer'].includes(input.verdict)) throw new KunlaError(400, 'verdict must be approved, changes_requested or answer.');
+  const via: Via = { agent_id: c.me.id, agent: c.me.name, source_url: source.slice(0, 500), quote: String(input.quote ?? '').trim().slice(0, 500) };
+  const t = await getTask(c, key);
+  await recordSession(c, t.id, input.session ?? source);
+  const pc: Ctx = { ...c, me: sponsor };
+  if (input.verdict === 'answer') {
+    if (t.status !== 'blocked') throw new KunlaError(409, `${t.key} is ${t.status}, so there is no question to answer.`);
+    return answer(pc, key, input.answer || via.quote || required('', 'answer'), via);
+  }
+  if (t.status === 'review') return reviewTask(pc, key, { verdict: input.verdict, comment: input.comment, what_was_wrong: input.what_was_wrong, via });
+  if (input.verdict === 'changes_requested') throw new KunlaError(409, `${t.key} is ${t.status}, not in Review, so there is nothing to send back.`);
+  if (t.status === 'done') throw new KunlaError(409, `${t.key} is already done.`);
+  // "It's done" about work that never went through Review (e.g. a setup step the person did themselves).
+  return updateTask(pc, key, { status: 'done', note: input.comment }, via);
+}
+
+const DECISION_TYPES = new Set(['approved', 'changes_requested', 'answered', 'status']);
+
+/** The person undoes the last decision their agent recorded for them from a chat, if nothing has moved since. */
+export async function undoDecision(c: Ctx, key: string) {
+  const t = await getTask(c, key);
+  const last = await c.db.prepare(`SELECT id, type, actor_id, data FROM events WHERE task_id = ? AND type IN ('approved','changes_requested','answered','status','decision_undone') ORDER BY id DESC LIMIT 1`)
+    .bind(t.id).first<{ id: number; type: string; actor_id: string | null; data: string }>();
+  const d = last ? JSON.parse(last.data || '{}') : {};
+  if (!last || !DECISION_TYPES.has(last.type) || !d.via) throw new KunlaError(409, `${t.key} has no decision recorded from a chat to undo.`);
+  if (last.actor_id !== c.me.id) throw new KunlaError(403, 'Only the person the decision was recorded for can undo it.');
+  if (t.status !== d.to) throw new KunlaError(409, `${t.key} has moved on since (it is ${t.status} now), so the decision can't be undone here.`);
+  const fields: Partial<Task> = { status: d.from, lease_expires_at: null };
+  if (last.type === 'answered') { fields.blocked_question = d.question ?? null; fields.blocked_on_id = d.blocked_on_id ?? null; }
+  if (d.review_id) {
+    await c.db.prepare('DELETE FROM reviews WHERE id = ?').bind(d.review_id).run();
+    if (last.type === 'changes_requested') fields.review_rounds = Math.max(0, t.review_rounds - 1);
+  }
+  await touch(c, t.id, fields);
+  const merged = d.review_id && last.type === 'approved'
+    ? await c.db.prepare(`SELECT 1 FROM events WHERE task_id = ? AND type = 'merged' AND id > ?`).bind(t.id, last.id).first() : null;
+  await event(c, t.id, 'decision_undone', `Undid the decision ${d.via.agent} recorded from the chat. ${t.key} is back in ${d.from === 'review' ? 'Review' : d.from}.${merged ? ' The PR stays merged; revert it on GitHub if needed.' : ''}`,
+    { undone_event: last.id, from: d.to, to: d.from });
   return getTask(c, t.id);
 }
 
@@ -783,7 +852,7 @@ export async function taskDetail(c: Ctx, key: string) {
                   FROM events e LEFT JOIN members m ON m.id = e.actor_id WHERE e.task_id = ? ORDER BY e.id DESC LIMIT 50`).bind(t.id).all(),
     c.db.prepare(`SELECT r.id, r.text, r.created_at, p.key AS project FROM rules r JOIN projects p ON p.id = r.project_id
                   WHERE r.project_id IN (?, ?) AND r.active = 1 ORDER BY p.kind DESC, r.created_at`).bind(p.id, c.space).all(),
-    c.db.prepare(`SELECT r.verdict, r.comment, r.what_was_wrong, r.created_at, m.name AS reviewer FROM reviews r
+    c.db.prepare(`SELECT r.verdict, r.comment, r.what_was_wrong, r.created_at, m.name AS reviewer, r.via FROM reviews r
                   JOIN members m ON m.id = r.reviewer_id WHERE r.task_id = ? ORDER BY r.created_at`).bind(t.id).all(),
     c.db.prepare(`SELECT t.key, t.title, t.status, m.name AS assignee FROM tasks t LEFT JOIN members m ON m.id = t.assignee_id
                   WHERE t.parent_id = ? ORDER BY t.created_at`).bind(t.id).all(),
@@ -801,7 +870,7 @@ export async function taskDetail(c: Ctx, key: string) {
     playbook: [ws.playbook, p.kind === 'workspace' ? '' : p.playbook].filter((x) => x?.trim()).join('\n\n'),
     rules: rules.results,
     deliverables: deliverables.results,
-    reviews: reviews.results,
+    reviews: reviews.results.map((r: any) => ({ ...r, via: r.via ? JSON.parse(r.via) : null })),
     subtasks: subtasks.results,
     sessions: sessions.results.map((s: any) => ({ ...s, url: /^https?:\/\//i.test(s.ref) ? s.ref : null })),
     history: events.results.map((e: any) => ({ ...e, data: JSON.parse(e.data || '{}') })),

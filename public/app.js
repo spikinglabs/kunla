@@ -694,15 +694,22 @@ function pinchZoom(el) {
 // ---------- task: review and teach ----------
 const EVENT = {
   created: (e) => e.data?.status === 'inbox' ? 'proposed it' : 'wrote the brief', claimed: () => 'picked it up', work_logged: () => 'logged work',
-  submitted: () => 'sent it for review', approved: () => 'approved it', changes_requested: () => 'sent it back', rule_added: () => 'taught the team a rule',
-  blocked: () => 'asked a question', answered: () => 'answered', accepted: () => 'made it ready', declined: () => 'declined it',
+  submitted: () => 'sent it for review', approved: (e) => (e.data?.via ? 'approved it in a chat' : 'approved it'), changes_requested: (e) => (e.data?.via ? 'sent it back in a chat' : 'sent it back'),
+  decision_undone: () => 'undid a decision recorded from a chat', rule_added: () => 'taught the team a rule',
+  blocked: () => 'asked a question', answered: (e) => (e.data?.via ? 'answered in a chat' : 'answered'), accepted: () => 'made it ready', declined: () => 'declined it',
   parked: (e) => (e.data?.until ? `put it off until ${new Date(e.data.until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}` : 'put it off for someday'),
   unparked: () => 'brought it back',
-  lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `moved it to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
+  lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `${e.data?.via ? 'said in a chat to move it' : 'moved it'} to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
   merged: () => 'merged the PR', merge_waiting: () => 'will merge the PR when checks pass', merge_blocked: () => 'could not merge the PR yet',
   woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
   github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
 };
+// Under a decision recorded from a chat: who recorded it, the person's words, a link to the chat, and Undo.
+function viaLine(e, t, undoable) {
+  const v = e.data?.via;
+  if (!v) return '';
+  return html`<div class="via">${raw(v.quote ? html`<q>${v.quote}</q> ` : '')}<span class="muted">Recorded by ${v.agent} from</span> <a href="${v.source_url}" target="_blank" rel="noopener">${sessionLabel(v.source_url)} ↗</a>${raw(undoable === e.id ? html` <button class="btn quiet sm" data-act="click:undodecision">Undo</button>` : '')}</div>`;
+}
 // A readable name for the chat or agent session a task links back to.
 function sessionLabel(url) {
   try {
@@ -724,6 +731,9 @@ async function viewTask(key) {
   } else if (t.status === 'blocked') decision = decisionCard({ kind: 'question', task: t }, { solo: true });
   else if (t.status === 'inbox') decision = decisionCard({ kind: 'proposal', task: t }, { solo: true });
   const mark = new Set(['submitted', 'approved', 'changes_requested', 'blocked', 'answered', 'rule_added']);
+  // The person can undo the last decision their agent recorded from a chat, while nothing has moved since.
+  const lastDecision = t.history.find((e) => ['approved', 'changes_requested', 'answered', 'status', 'decision_undone'].includes(e.type));
+  const undoable = lastDecision?.data?.via && lastDecision.actor === me.name && t.status === lastDecision.data.to ? lastDecision.id : null;
   const p = t.project ?? { key: t.workspace.key, name: t.workspace.name };
   const subs = t.subtasks;
   const subDone = subs.filter((x) => ['done', 'declined'].includes(x.status)).length;
@@ -751,7 +761,7 @@ async function viewTask(key) {
         : html`<span class="pill" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}"><code class="pill-t">${x.ref}</code></span>`))}</div></div>` : '')}
       <div class="sec"><h3>How it got here</h3><div class="trail">${join(hist.map((e) => html`<div class="ev ${mark.has(e.type) ? 'mark' : ''} ${e.type === 'rule_added' ? 'rule' : ''}">
         <span class="when">${when(e.created_at)}</span>${raw(e.actor ? av({ name: e.actor, kind: e.actor_kind }, 'sm') : '<span class="av sm">K</span>')}
-        <div><div class="what">${e.actor ?? 'Kunla'} ${(EVENT[e.type] || (() => e.type))(e)}</div>${raw(e.note && e.type !== 'created' ? html`<div class="note">${prose(e.note)}</div>` : '')}</div></div>`))}</div></div>
+        <div><div class="what">${e.actor ?? 'Kunla'} ${(EVENT[e.type] || (() => e.type))(e)}</div>${raw(e.note && e.type !== 'created' ? html`<div class="note">${prose(e.note)}</div>` : '')}${raw(viaLine(e, t, undoable))}</div></div>`))}</div></div>
       <div class="sec"><h3>Comment</h3><form class="composer" data-act="submit:comment">
         <textarea name="text" rows="3" placeholder="${t.assignee?.kind === 'ai' ? `${t.assignee.name} reads this the next time it opens ${t.key}.` : 'Add a note to the record.'}"></textarea>
         <div class="acts"><button class="btn ink">Comment</button></div>
@@ -769,6 +779,7 @@ async function viewTask(key) {
     ...decisionHandlers(reload),
     later: () => showLater(t.key, reload),
     unpark: async () => { const r = await api('POST', `/api/tasks/${t.key}/unpark`); toast(`${t.key} is back in ${STATUS[r.status]}.`); reload(); },
+    undodecision: async () => { const r = await api('POST', `/api/tasks/${t.key}/decision/undo`); toast(`Undone. ${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     addsub: async (f) => {
       const title = formData(f).title.trim(); if (!title) return;
       const n = await api('POST', '/api/tasks', { parent: t.key, title });
