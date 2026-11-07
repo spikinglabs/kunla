@@ -7,6 +7,7 @@ const SUPPORTED = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 export const SERVER_INFO = { name: 'kunla', version: '0.1.0' };
 
 const key = { type: 'string', description: 'Task key, e.g. MKT-42' };
+const session = { type: 'string', description: 'Link to this chat or agent session (e.g. https://claude.ai/chat/..., https://claude.ai/code/session_...), or a reference like "claude --resume <id>", so people can open it from the task later' };
 const links = {
   type: 'array', description: 'Links to the work: PR, doc, file, message',
   items: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' } }, required: ['url'] },
@@ -42,8 +43,8 @@ export const TOOLS: Tool[] = [
   {
     name: 'claim_task',
     description: 'Take a Ready task atomically so nobody else works on it. For AIs the claim is a lease that lapses after a quiet period; any update renews it. Returns the full task.',
-    inputSchema: { type: 'object', properties: { key }, required: ['key'] },
-    run: async (c, a) => { await core.claimTask(c, a.key); return core.taskDetail(c, a.key); },
+    inputSchema: { type: 'object', properties: { key, session }, required: ['key'] },
+    run: async (c, a) => { await core.claimTask(c, a.key, a.session); return core.taskDetail(c, a.key); },
   },
   {
     name: 'heartbeat',
@@ -62,7 +63,7 @@ export const TOOLS: Tool[] = [
         blocked_question: { type: 'string', description: 'What you need answered to continue' },
         blocked_on: { type: 'string', description: 'Who should answer (name); empty means anyone' },
         title: { type: 'string' }, brief: { type: 'string' }, criteria: { type: 'array', items: { type: 'string' } },
-        priority: { type: 'number', description: '0 urgent to 3 low' },
+        priority: { type: 'number', description: '0 urgent to 3 low' }, session,
       },
     },
     run: (c, a) => core.updateTask(c, a.key, a),
@@ -76,7 +77,7 @@ export const TOOLS: Tool[] = [
         summary: { type: 'string', description: 'What was done, in one or two sentences' },
         task: { type: 'string', description: 'Task key, if the work belongs to one' },
         project: { type: 'string', description: 'Project key for a new task; leave out for workspace-level work' },
-        title: { type: 'string' }, deliverables: links,
+        title: { type: 'string' }, deliverables: links, session,
         status: { type: 'string', enum: ['in_progress', 'review', 'done'], description: "For a new task; default 'done'" },
       },
     },
@@ -85,7 +86,7 @@ export const TOOLS: Tool[] = [
   {
     name: 'submit_for_review',
     description: 'Hand finished work to a reviewer. Needs a short summary and at least one deliverable link.',
-    inputSchema: { type: 'object', required: ['key', 'summary', 'deliverables'], properties: { key, summary: { type: 'string' }, deliverables: links, reviewer: { type: 'string' } } },
+    inputSchema: { type: 'object', required: ['key', 'summary', 'deliverables'], properties: { key, summary: { type: 'string' }, deliverables: links, reviewer: { type: 'string' }, session } },
     run: (c, a) => core.submitForReview(c, a.key, a),
   },
   {
@@ -164,7 +165,8 @@ Working agreement:
 2. Cite the task key in everything you produce (commit trailer, PR title, doc source line); get_task gives the exact text.
 3. Record progress with log_work (one sentence). If work has no task yet, log_work creates one.
 4. When done, submit_for_review with at least one deliverable link. If you are stuck, update_task with blocked_question.
-5. Split big work into sub-tasks with create_task parent; search before creating so nobody files the same work twice.`;
+5. Split big work into sub-tasks with create_task parent; search before creating so nobody files the same work twice.
+6. Pass session (a link to this chat or agent session) when you claim, log work or submit, so people can open the conversation from the task later.`;
 
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');

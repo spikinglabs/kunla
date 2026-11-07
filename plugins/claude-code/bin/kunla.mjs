@@ -38,8 +38,19 @@ async function api(method, path, body) {
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
+// The chat or agent session doing the work, so the task can link back to it. KUNLA_SESSION wins;
+// a Claude Code cloud session has a claude.ai link; a local one can be reopened with claude --resume.
+function sessionRef() {
+  const e = process.env;
+  if (e.KUNLA_SESSION) return e.KUNLA_SESSION;
+  if (e.CLAUDE_CODE_REMOTE_SESSION_ID) return `https://claude.ai/code/session_${e.CLAUDE_CODE_REMOTE_SESSION_ID.replace(/^cse_/, '')}`;
+  if (e.CLAUDE_CODE_SESSION_ID) return `claude --resume ${e.CLAUDE_CODE_SESSION_ID}`;
+  return undefined;
+}
+const WITH_SESSION = new Set(['claim_task', 'log_work', 'submit_for_review', 'update_task']);
 const tool = async (name, args = {}) => {
-  const r = await api('POST', `/api/tools/${name}`, args);
+  const session = WITH_SESSION.has(name) && !args.session ? sessionRef() : undefined;
+  const r = await api('POST', `/api/tools/${name}`, session ? { ...args, session } : args);
   for (const line of r.reminders || []) console.error(`kunla: ${line}`);
   return r.result;
 };
