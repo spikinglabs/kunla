@@ -68,7 +68,7 @@ claude plugin install kunla@kunla
 
 The plugin adds the MCP server, the working-agreement skill, commands (`/kunla:next`, `/kunla:use MKT-42`, `/kunla:submit`, `/kunla:log`, `/kunla:status`) and hooks. On first session start it installs a `commit-msg` git hook in the repo unless one already exists (set `KUNLA_GIT_HOOK=0` to skip).
 
-**claude.ai** (web, desktop, mobile): Settings → Connectors → Add custom connector → `https://kunla.example.com/mcp`. You approve it on a Kunla page, and it joins as e.g. "L's claude.ai". Add `skills/kunla-chat/SKILL.md` as a skill so it cites keys and logs work.
+**claude.ai** (web, desktop, mobile): Settings → Connectors → Add custom connector → `https://kunla.example.com/mcp/KEY`, where KEY is the workspace key (Team → Use in claude.ai shows it). Each workspace has its own address, so you can add one connector per workspace; plain `/mcp` also works and takes a token from any workspace. You approve it on a Kunla page, and it joins as e.g. "L's claude.ai". Add `skills/kunla-chat/SKILL.md` as a skill so it cites keys and logs work.
 
 **Codex, Cursor, Gemini CLI, Goose and other MCP agents:** an HTTP MCP server at `<url>/mcp` with header `Authorization: Bearer <token>`. Point the agent at `AGENTS.md` for the working agreement.
 
