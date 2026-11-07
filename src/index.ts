@@ -10,6 +10,7 @@ import * as views from './views';
 import * as github from './github';
 import * as wake from './wake';
 import * as merge from './merge';
+import * as continuous from './continuous';
 
 export interface Env {
   DB: D1Database;
@@ -155,6 +156,7 @@ api.post('/members/:id/wake/test', async (c) => {
   if (!cb) return c.json({ error: `${m.name} has no wake-up URL yet.` }, 400);
   return c.json(await wake.deliver(c.env.DB, { member: { id: m.id, name: m.name }, callback: cb, event: 'ping', task: null, note: null, by: ctx.me.name, baseUrl: ctx.baseUrl }));
 });
+api.put('/members/:id/continuous', async (c) => c.json(await core.setContinuous(c.get('ctx'), c.req.param('id'), await c.req.json())));
 api.post('/members/:id/token', async (c) => c.json(await core.rotateToken(c.get('ctx'), c.req.param('id'))));
 api.delete('/members/:id', async (c) => c.json(await core.removeMember(c.get('ctx'), c.req.param('id'))));
 api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ctx'), await c.req.json())));
@@ -192,4 +194,12 @@ app.route('/api', api);
 // Anything else falls through to the static web app.
 app.all('*', (c) => (c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : c.text('Not found', 404)));
 
-export default app;
+// Cron (wrangler.toml [triggers]): at the start of each UTC day, wake continuous agents that stopped on a daily budget.
+export async function scheduled(_e: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
+  const base = (env.PUBLIC_URL || '').replace(/\/$/, '');
+  const jobs: Promise<unknown>[] = [];
+  await continuous.newDay({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30), notify: (w) => { jobs.push(wake.deliver(env.DB, w).catch((e) => console.error('wake failed', e))); } });
+  ctx.waitUntil(Promise.all(jobs));
+}
+
+export default { fetch: app.fetch, scheduled };

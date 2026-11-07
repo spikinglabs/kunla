@@ -434,6 +434,45 @@ function subline(brief, pulse) {
   return out.join(' ');
 }
 
+// Horizontal swipe on a card deck. Vertical scrolling stays with the browser (touch-action: pan-y),
+// and a swipe that starts in a text field or while text is selected is ignored.
+function swipeDeck(el, go) {
+  let x0 = 0, y0 = 0, t0 = 0, dx = 0, mode = null;
+  const card = () => el.firstElementChild;
+  el.addEventListener('touchstart', (e) => {
+    mode = null; dx = 0;
+    if (e.touches.length !== 1 || e.target.closest('textarea, input, select, [contenteditable]') || String(getSelection())) { mode = 'off'; return; }
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (mode === 'off' || e.touches.length !== 1) return;
+    const mx = e.touches[0].clientX - x0, my = e.touches[0].clientY - y0;
+    if (!mode) {
+      if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
+      mode = Math.abs(mx) > Math.abs(my) * 1.3 ? 'x' : 'off';
+      if (mode === 'off') return;
+    }
+    dx = mx;
+    const c = card(); if (c) { c.style.transition = 'none'; c.style.transform = `translateX(${dx}px) rotate(${dx / 60}deg)`; }
+  }, { passive: true });
+  const end = () => {
+    if (mode !== 'x') { mode = null; return; }
+    mode = null;
+    const c = card(); if (!c) return;
+    const fast = Math.abs(dx) / Math.max(1, Date.now() - t0) > 0.5;
+    if (Math.abs(dx) > Math.min(90, el.clientWidth * 0.25) || (fast && Math.abs(dx) > 30)) {
+      const dir = dx < 0 ? 1 : -1;
+      c.style.transition = 'transform .16s ease-out, opacity .16s ease-out';
+      c.style.transform = `translateX(${-dir * el.clientWidth}px) rotate(${-dir * 6}deg)`; c.style.opacity = '0';
+      setTimeout(() => go(dir), 150);
+    } else {
+      c.style.transition = 'transform .2s ease'; c.style.transform = '';
+    }
+  };
+  el.addEventListener('touchend', end);
+  el.addEventListener('touchcancel', end);
+}
+
 async function viewBriefing() {
   renderShell('');
   const [inbox, brief, pulse, rules, prog] = await Promise.all([
@@ -498,6 +537,9 @@ async function viewBriefing() {
     else if (k === 'k') { e.preventDefault(); deck.i = (deck.i - 1 + items.length) % items.length; viewBriefing(); }
     else if (k === 'enter' && cur) location.hash = `#/t/${cur.task.key}`;
   };
+  // Swipe left or right on the card for the next or previous decision.
+  const deckEl = $app.querySelector('.deck');
+  if (deckEl && items.length > 1) swipeDeck(deckEl, (dir) => { deck.i = (deck.i + dir + items.length) % items.length; viewBriefing(); });
   // ⌘↵ sends an answer from the textarea.
   $app.querySelectorAll('textarea[name=answer]').forEach((ta) => ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ta.form.requestSubmit(); }));
   // What waits on you in your other workspaces, asked directly from each one.
@@ -836,6 +878,24 @@ function trow(t, child = false) {
 // ---------- team ----------
 const canManage = (m) => me.kind === 'human' && (me.roles?.includes('admin') || m.sponsor_id === me.id || m.id === me.id);
 
+// Continuous mode on the agent card: running or why it stopped, and today's use against its limits.
+const STOP_LABEL = {
+  nothing_ready: 'nothing ready in its lane', waiting_on_people: 'everything waits on a person', tasks_budget: 'daily task limit reached',
+  cost_budget: 'daily cost limit reached', tokens_budget: 'daily token limit reached', review_limit: 'too much waiting for review', ended: 'end time passed',
+};
+function continuousLine(m) {
+  const c = m.continuous;
+  if (!c?.settings?.on) return '';
+  const s = c.settings, u = c.usage || {};
+  const reason = c.limit || (c.run?.state === 'stopped' ? c.run.reason : null);
+  const state = c.run?.state === 'woken' && !c.limit ? 'woken for new work' : reason ? `stopped: ${STOP_LABEL[reason] || reason}` : c.run ? 'running' : 'on, waiting for it to ask for work';
+  const parts = [`${u.tasks_today ?? 0}${s.max_tasks_per_day != null ? '/' + s.max_tasks_per_day : ''} tasks today`];
+  if (s.max_cost_per_day != null || u.cost_today) parts.push(`$${u.cost_today ?? 0}${s.max_cost_per_day != null ? '/$' + s.max_cost_per_day : ''}`);
+  if (s.max_tokens_per_day != null || u.tokens_today) parts.push(`${u.tokens_today ?? 0}${s.max_tokens_per_day != null ? '/' + s.max_tokens_per_day : ''} tokens`);
+  if (s.max_in_review != null) parts.push(`${u.in_review ?? 0}/${s.max_in_review} in review`);
+  return html`<div class="continuous ${reason ? 'stopped' : 'running'}"><b>Continuous</b> · ${state}<div class="muted">${parts.join(' · ')}</div></div>`;
+}
+
 async function viewTeam(sub) {
   renderShell('team');
   const [record, pulse] = await Promise.all([api('GET', '/api/members'), api('GET', '/api/pulse')]);
@@ -846,6 +906,7 @@ async function viewTeam(sub) {
     <div class="people-grid">${join(record.map((m) => { const p = ps.get(m.id) || {}; return html`<div class="card pad member">
       <div class="row" style="flex-wrap:nowrap">${raw(av(m, 'lg', p.live))}<div class="grow"><div class="nm">${m.name}</div><div class="muted" style="font-size:13px">${kindLine(m)}</div></div><span class="state ${p.state || 'idle'}">${p.state || 'idle'}</span></div>
       <div style="font-size:14px;color:var(--ink-2);min-height:21px">${raw(p.task ? html`<a href="#/t/${p.task.key}">${p.line}</a>` : esc(m.last_active ? `Last active ${agoLong(m.last_active)}` : 'Not active yet'))}</div>
+      ${raw(continuousLine(m))}
       <div class="stats"><div><b>${m.done}</b><small>done</small></div><div><b>${m.first_pass_rate == null ? '–' : m.first_pass_rate + '%'}</b><small>first try</small></div><div><b>${m.active}</b><small>active</small></div></div>
       ${raw(projects.length ? html`<div><div class="label" style="margin-bottom:6px">Works on</div><div class="row lanepick" data-id="${m.id}">
         <button class="pill ${m.scope.length ? '' : 'on'}" data-act="click:lane" data-k="">Everything</button>${join(projects.map((x) => html`<button class="pill ${m.scope.includes(x.key) ? 'on' : ''}" data-act="click:lane" data-k="${x.key}">${x.key}</button>`))}</div></div>` : '')}
@@ -937,6 +998,24 @@ function showToken(r, kind, platform) {
     <div class="row"><button class="btn ink" data-act="click:close">I've saved it</button></div></div>`, {}, { sticky: true });
 }
 
+function continuousForm(m) {
+  const s = m.continuous?.settings || {};
+  const v = (x) => (x == null ? '' : x);
+  const until = s.until ? new Date(new Date(s.until).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
+  return html`<form class="stack" style="gap:6px" data-act="submit:continuous"><div class="label">Continuous mode</div>
+    <p class="muted" style="font-size:13.5px">${m.name} keeps taking the next ready task in its lane, one by one. A question on one task doesn't stop it; it moves on. It stops only when everything left waits on a person or it reaches a limit below, and Kunla wakes it again when new work is ready${m.wake ? '' : ' (needs a wake-up URL)'}. Empty means no limit. Days are UTC.</p>
+    <label class="row" style="gap:8px;align-items:center"><input type="checkbox" name="on" ${s.on ? 'checked' : ''}> Work through tasks continuously</label>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <div class="field" style="flex:1;min-width:120px"><label for="mc-t">New tasks per day</label><input id="mc-t" name="max_tasks_per_day" type="number" min="0" step="1" value="${v(s.max_tasks_per_day)}"></div>
+      <div class="field" style="flex:1;min-width:120px"><label for="mc-r">Max waiting for review</label><input id="mc-r" name="max_in_review" type="number" min="0" step="1" value="${v(s.max_in_review)}"></div>
+      <div class="field" style="flex:1;min-width:120px"><label for="mc-c">Cost per day (USD)</label><input id="mc-c" name="max_cost_per_day" type="number" min="0" step="0.01" value="${v(s.max_cost_per_day)}"></div>
+      <div class="field" style="flex:1;min-width:120px"><label for="mc-k">Tokens per day</label><input id="mc-k" name="max_tokens_per_day" type="number" min="0" step="1000" value="${v(s.max_tokens_per_day)}"></div>
+    </div>
+    <div class="field"><label for="mc-u">Stop continuous mode at (optional)</label><input id="mc-u" name="until" type="datetime-local" value="${until}"></div>
+    <p class="muted" style="font-size:12.5px">Cost and tokens count only what the agent reports with its updates.</p>
+    <div><button class="btn">Save</button></div></form>`;
+}
+
 function showManage(m) {
   const self = m.id === me.id;
   openSheet(html`<div class="sheet-body stack">
@@ -951,6 +1030,7 @@ function showManage(m) {
       <div class="field"><label for="mw-u">Wake-up URL</label><input id="mw-u" name="url" type="url" placeholder="https://api.github.com/repos/OWNER/REPO/dispatches" value="${m.wake?.url || ''}"></div>
       <div class="field"><label for="mw-a">Token for that URL (optional)</label><input id="mw-a" name="auth" type="password" autocomplete="off" placeholder="${m.wake?.has_auth ? 'Saved. Leave empty to keep it.' : 'GitHub token, or empty'}"></div>
       <div class="row"><button class="btn">${m.wake ? 'Save' : 'Turn on'}</button>${raw(m.wake ? '<button class="btn" type="button" data-act="click:wakeTest">Send a test</button><button class="btn quiet" type="button" data-act="click:wakeOff">Turn off</button>' : '')}</div></form>` : '')}
+    ${raw(m.kind === 'ai' ? continuousForm(m) : '')}
     ${raw(self ? '' : html`<div class="stack" style="gap:6px"><div class="label">Remove</div>
       <p class="muted" style="font-size:13.5px">${m.name} loses access and leaves the team list. Everything it did stays in the record under its name, and work it was holding goes back to Ready.</p>
       <div><button class="btn danger" data-act="click:remove">Remove ${m.kind === 'ai' ? 'agent' : 'person'}</button></div></div>`)}
@@ -963,6 +1043,16 @@ function showManage(m) {
       m.wake = r.callback;
       openSheet(html`<div class="sheet-body stack"><div><h2>${m.name} wakes up by itself</h2><p class="muted">Kunla signs every call with this secret (header X-Kunla-Signature-256, HMAC-SHA256 of the body). Check it if your receiver is public; GitHub's dispatch API doesn't need it. Kunla shows it only once.</p></div>
         ${raw(copyBlock('Signing secret', r.secret, { secret: true }))}<div class="row"><button class="btn ink" data-act="click:close">I've saved it</button></div></div>`, {}, { sticky: true });
+    },
+    continuous: async (f) => {
+      const d = formData(f);
+      const on = !!f.querySelector('[name=on]').checked;
+      const r = await api('PUT', `/api/members/${m.id}/continuous`, {
+        on, max_tasks_per_day: d.max_tasks_per_day || null, max_cost_per_day: d.max_cost_per_day || null,
+        max_tokens_per_day: d.max_tokens_per_day || null, max_in_review: d.max_in_review || null, until: d.until ? new Date(d.until).toISOString() : null,
+      });
+      toast(r.continuous.on ? `${m.name} now works through ready tasks one by one${m.wake ? '' : '. Add a wake-up URL so Kunla can restart it when new work comes in'}.` : `Continuous mode is off for ${m.name}.`);
+      closeSheet(true); viewTeam();
     },
     wakeTest: async () => {
       const r = await api('POST', `/api/members/${m.id}/wake/test`);

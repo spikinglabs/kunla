@@ -206,6 +206,7 @@ const hooks = {
       focus.length ? `The team's focus right now: ${focus.join(', ')}.` : '',
       repoProject() ? `This repo belongs to project ${repoProject()}; file new tasks there.` : '',
       next?.task ? `Next task waiting for you: ${next.task.key} "${next.task.title}" (${next.reason}). If the user wants it, call claim_task and follow its brief.` : 'No task is waiting for you.',
+      next?.continuous?.go ? 'Continuous mode is on for you: work through tasks one by one (claim, do, submit, then next_task again) until next_task says stop.' : '',
       'If the user asks for work that has no task, call log_work when you finish it so it lands in the record with a key.',
       'If the work belongs to a task, claim it with claim_task first; the commit hook will then cite it automatically.',
     ].filter(Boolean).join('\n'));
@@ -300,7 +301,7 @@ async function main() {
     }
     case 'next': {
       const n = await tool('next_task', { project: f.project || repoProject() });
-      if (!n?.task) return console.log('Nothing waiting for you.');
+      if (!n?.task) return console.log(n?.continuous?.message || 'Nothing waiting for you.');
       console.log(`${n.task.key}  ${n.task.title}  (${n.reason})\n${n.task.references.link}`);
       return;
     }
