@@ -212,7 +212,8 @@ async function spaceCounts() {
 }
 // The token travels in the URL fragment, which browsers never send to a server.
 // Within this Kunla only the fragment changes, so the app switches without reloading.
-const switchTo = (sp) => { location.href = `${sp.url === location.origin ? location.pathname : sp.url + '/'}#/use/${encodeURIComponent(sp.token)}`; };
+const closePalette = () => { const box = $('palette'); box.hidden = true; box.innerHTML = ''; };
+const switchTo = (sp) => { closePalette(); location.href = `${sp.url === location.origin ? location.pathname : sp.url + '/'}#/use/${encodeURIComponent(sp.token)}`; };
 async function openSpaces() {
   const box = $('palette');
   box.hidden = false;
@@ -1180,6 +1181,8 @@ async function route() {
   // Arriving from another workspace with a token in the fragment: keep it, then drop it from the address bar.
   const use = (location.hash || '').match(/^#\/use\/(.+)$/);
   if (use) {
+    // Switching workspace: nothing open from the old one (the workspace menu, a sheet) may stay on screen.
+    closePalette(); $('sheet').hidden = true;
     token = decodeURIComponent(use[1]); me = null;
     try { localStorage.setItem(TOKEN_KEY, token); } catch {}
     history.replaceState(null, '', location.pathname + '#/');
