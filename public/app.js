@@ -22,6 +22,21 @@ const deck = { i: 0 };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const html = (strings, ...vals) => strings.reduce((out, s, i) => out + s + (i < vals.length ? (vals[i]?.__raw ?? esc(vals[i])) : ''), '');
 const raw = (s) => ({ __raw: s ?? '' });
+// Free text with links: long URLs become short chips so they never push a card sideways.
+const linkLabel = (u) => {
+  try {
+    const x = new URL(u);
+    const pr = x.hostname === 'github.com' && x.pathname.match(/\/(pull|issues)\/(\d+)/);
+    if (pr) return `${pr[1] === 'pull' ? 'PR' : 'Issue'} #${pr[2]}`;
+    if (x.hostname === 'claude.ai') return 'chat';
+    return x.hostname.replace(/^www\./, '');
+  } catch { return 'link'; }
+};
+const prose = (s) => raw(String(s ?? '').split(/(https?:\/\/[^\s<>"']+)/g).map((part, i) => {
+  if (i % 2 === 0) return esc(part);
+  const m = part.match(/^(.*?)([.,;:!?)\]]*)$/);
+  return html`<a class="inline-link" href="${m[1]}" target="_blank" rel="noopener" title="${m[1]}">${linkLabel(m[1])} ↗</a>` + esc(m[2]);
+}).join(''));
 const join = (arr) => raw(arr.join(''));
 const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
@@ -282,8 +297,8 @@ function decisionCard(item, { solo = false } = {}) {
     return html`<form class="decision ${solo ? '' : 'card'}" data-key="${t.key}" data-act="submit:approve">
       ${raw(head(solo ? 'Waiting on your review' : 'Review'))}${raw(title)}
       <div class="byline">${raw(who(worker, t.deliverables?.some((d) => /^https:\/\/github\.com\//.test(d.url)) ? 'GitHub' : 'Someone'))}<span>sent this ${agoLong(t.updated_at)}${round}</span></div>
-      ${raw(t.summary ? html`<p class="said">${t.summary}</p>` : '')}
-      ${raw(t.deliverables?.length ? html`<div class="links">${join(t.deliverables.map((d) => html`<a class="pill" href="${d.url}" target="_blank" rel="noopener">${d.title || new URL(d.url).hostname} ↗</a>`))}</div>` : '')}
+      ${raw(t.summary ? html`<p class="said">${prose(t.summary)}</p>` : '')}
+      ${raw(t.deliverables?.length ? html`<div class="links">${join(t.deliverables.map((d) => html`<a class="pill" href="${d.url}" target="_blank" rel="noopener" title="${d.title || d.url}"><span class="pill-t">${d.title || new URL(d.url).hostname}</span> ↗</a>`))}</div>` : '')}
       ${raw(t.criteria?.length ? html`<div><div class="label" style="margin-bottom:6px">Tick what's met</div><div class="checks">${join(t.criteria.map((c, i) => html`<label class="check"><input type="checkbox" name="c${i}" data-crit="${c}"><span>${c}</span></label>`))}</div></div>` : '')}
       <div class="field"><label for="n-${t.key}">Note to ${callName(worker) || 'the worker'}</label>
         <textarea id="n-${t.key}" name="note" rows="2" placeholder="Optional when approving. Say what to fix when sending it back."></textarea></div>
@@ -303,7 +318,7 @@ function decisionCard(item, { solo = false } = {}) {
     return html`<form class="decision ${solo ? '' : 'card'}" data-key="${t.key}" data-act="submit:answer">
       ${raw(head('Question'))}${raw(title)}
       <div class="byline">${raw(who(worker, 'An agent'))}<span>is stuck and asked ${agoLong(t.updated_at)}</span></div>
-      <p class="ask">“${t.blocked_question}”</p>
+      <p class="ask">“${prose(t.blocked_question)}”</p>
       <div class="field"><label for="a-${t.key}">Your answer</label><textarea id="a-${t.key}" name="answer" rows="3" required placeholder="${callName(worker) || 'It'} continues as soon as you send this."></textarea></div>
       <div class="acts"><button class="btn go">Send answer <kbd>⌘↵</kbd></button><span class="spacer"></span>
         <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></form>`;
@@ -312,7 +327,7 @@ function decisionCard(item, { solo = false } = {}) {
     return html`<div class="decision ${solo ? '' : 'card'}" data-key="${t.key}">
       ${raw(head('Proposal'))}${raw(title)}
       <div class="byline">${raw(who(t.created_by, 'Someone'))}<span>suggested this ${agoLong(t.created_at)}</span></div>
-      ${raw(t.brief ? html`<p class="said">${t.brief}</p>` : '')}
+      ${raw(t.brief ? html`<p class="said">${prose(t.brief)}</p>` : '')}
       <div class="acts"><button class="btn go" data-act="click:accept">Make it ready <kbd>A</kbd></button>
         <button class="btn" data-act="click:decline">Decline</button><span class="spacer"></span>
         <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></div>`;
@@ -681,20 +696,20 @@ async function viewTask(key) {
       ${raw(t.status === 'parked' ? html`<div class="card pad parked-note"><div class="grow"><b>Put off ${t.snoozed_until ? 'until ' + new Date(t.snoozed_until).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' }) : 'for someday'}.</b>
         <span class="muted">It is out of the briefing and agents leave it alone. When it comes back it returns to ${STATUS[t.returns_to] || 'Ready'}.</span></div><button class="btn go" data-act="click:unpark">Bring it back</button></div>`
         : !decision && OPEN.has(t.status) ? '<div class="row" style="margin-top:12px"><button class="btn quiet sm" data-act="click:later">Later…</button></div>' : '')}
-      ${raw(t.brief ? html`<div class="sec"><h3>Brief</h3><p class="prose">${t.brief}</p></div>` : '')}
+      ${raw(t.brief ? html`<div class="sec"><h3>Brief</h3><p class="prose">${prose(t.brief)}</p></div>` : '')}
       ${raw(!t.parent ? html`<div class="sec"><h3>Sub-tasks${subs.length ? ` · ${subDone} of ${subs.length} done` : ''}</h3>
         ${raw(subs.length ? html`<div class="bar" style="margin:0 0 12px">${raw(subs.length ? `<span class="b-done" style="width:${(subDone / subs.length) * 100}%"></span>` : '')}</div>
           <div class="subs">${join(subs.map((x) => html`<a href="#/t/${x.key}" class="subrow ${['done', 'declined'].includes(x.status) ? 'fin' : ''}"><span class="key">${x.key}</span><span class="t grow">${x.title}</span><span class="muted" style="font-size:13px">${x.assignee ?? ''}</span><span class="pill">${STATUS[x.status]}</span></a>`))}</div>` : '')}
         <form class="row" data-act="submit:addsub" style="margin-top:10px;flex-wrap:nowrap"><input name="title" placeholder="${subs.length ? 'Add another sub-task' : 'Split this into sub-tasks: type one and press Enter'}" aria-label="New sub-task"><button class="btn sm">Add</button></form>
         ${raw(subs.length ? '<p class="muted" style="font-size:13px;margin-top:8px">When every sub-task is finished, this task finishes on its own.</p>' : '')}</div>` : '')}
       ${raw(t.criteria.length && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>Done when</h3><ul class="crit ${t.status === 'done' ? 'met' : ''}">${join(t.criteria.map((c) => html`<li>${c}</li>`))}</ul></div>` : '')}
-      ${raw(t.deliverables.length && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>The work</h3><div class="links">${join(t.deliverables.map((d) => html`<a class="pill" href="${d.url}" target="_blank" rel="noopener">${d.title || d.url} ↗</a>`))}</div></div>` : '')}
+      ${raw(t.deliverables.length && !(t.status === 'review' && decision) ? html`<div class="sec"><h3>The work</h3><div class="links">${join(t.deliverables.map((d) => html`<a class="pill" href="${d.url}" target="_blank" rel="noopener" title="${d.title || d.url}"><span class="pill-t">${d.title || d.url}</span> ↗</a>`))}</div></div>` : '')}
       ${raw(t.sessions?.length ? html`<div class="sec"><h3>Worked on in</h3><div class="links">${join(t.sessions.map((x) => x.url
-        ? html`<a class="pill" href="${x.url}" target="_blank" rel="noopener" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}">${sessionLabel(x.url)}${x.member ? ' · ' + x.member : ''} ↗</a>`
-        : html`<span class="pill" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}"><code>${x.ref}</code></span>`))}</div></div>` : '')}
+        ? html`<a class="pill" href="${x.url}" target="_blank" rel="noopener" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}"><span class="pill-t">${sessionLabel(x.url)}${x.member ? ' · ' + x.member : ''}</span> ↗</a>`
+        : html`<span class="pill" title="${x.member ? x.member + ', ' : ''}${agoLong(x.created_at)}"><code class="pill-t">${x.ref}</code></span>`))}</div></div>` : '')}
       <div class="sec"><h3>How it got here</h3><div class="trail">${join(hist.map((e) => html`<div class="ev ${mark.has(e.type) ? 'mark' : ''} ${e.type === 'rule_added' ? 'rule' : ''}">
         <span class="when">${when(e.created_at)}</span>${raw(e.actor ? av({ name: e.actor, kind: e.actor_kind }, 'sm') : '<span class="av sm">K</span>')}
-        <div><div class="what">${e.actor ?? 'Kunla'} ${(EVENT[e.type] || (() => e.type))(e)}</div>${raw(e.note && e.type !== 'created' ? html`<div class="note">${e.note}</div>` : '')}</div></div>`))}</div></div>
+        <div><div class="what">${e.actor ?? 'Kunla'} ${(EVENT[e.type] || (() => e.type))(e)}</div>${raw(e.note && e.type !== 'created' ? html`<div class="note">${prose(e.note)}</div>` : '')}</div></div>`))}</div></div>
       <div class="sec"><h3>Comment</h3><form class="composer" data-act="submit:comment">
         <textarea name="text" rows="3" placeholder="${t.assignee?.kind === 'ai' ? `${t.assignee.name} reads this the next time it opens ${t.key}.` : 'Add a note to the record.'}"></textarea>
         <div class="acts"><button class="btn ink">Comment</button></div>
