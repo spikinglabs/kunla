@@ -169,6 +169,20 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'create_project',
+    description: 'Propose a new project (KD-16). From an agent it lands in the decision inbox as a proposal; when a person accepts it, the project is created with this key, name and playbook. Search the projects in whoami first so nobody proposes one twice. A person calling it creates the project at once.',
+    inputSchema: {
+      type: 'object', required: ['key', 'name'],
+      properties: {
+        key: { type: 'string', description: 'Task key prefix, 2-10 letters or digits starting with a letter, e.g. DACH' },
+        name: { type: 'string' },
+        why: { type: 'string', description: 'Why it should be its own project: the goal, and the work that would go in it' },
+        playbook: { type: 'string', description: 'Optional playbook for the project, in Markdown' },
+      },
+    },
+    run: (c, a) => core.proposeProject(c, a),
+  },
+  {
     name: 'decision_inbox', readOnly: true, ui: apps.INBOX_URI,
     description: 'What is waiting on a person: reviews, questions from blocked tasks, proposals, and tasks flagged after repeated review rounds.',
     inputSchema: { type: 'object', properties: {} },

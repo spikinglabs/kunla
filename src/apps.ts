@@ -100,7 +100,7 @@ async function act(i,how){const it=data.items[i],k=it.task.key,box=$('#c'+i),out
     if(how==='accept'||how==='decline')r=await tool('triage_proposal',{key:k,accept:how==='accept'});
     else if(human())r=how==='answer'?await tool('answer_question',{key:k,answer:text}):await tool('review_task',{key:k,verdict:how==='approve'?'approved':'changes_requested',comment:text||undefined});
     else r=await tool('record_decision',{key:k,verdict:how==='approve'?'approved':how==='back'?'changes_requested':'answer',source_url:src,quote:quote+' (chosen in the Kunla view in a chat)',comment:how==='back'?text:undefined,answer:how==='answer'?text:undefined});
-    out.textContent={approve:'Approved.',back:'Sent back to '+(it.task.assignee&&it.task.assignee.name||'the worker')+'.',answer:'Answered. The task goes back to its worker.',accept:'Accepted: it is Ready now.',decline:'Declined.'}[how];
+    out.textContent={approve:'Approved.',back:'Sent back to '+(it.task.assignee&&it.task.assignee.name||'the worker')+'.',answer:'Answered. The task goes back to its worker.',accept:'Accepted.',decline:'Declined.'}[how];
   }catch(e){out.className='err';out.textContent=e.message;for(const b of document.querySelectorAll('#i'+i+' button'))b.disabled=false;}}
 function inbox(){const d=data,items=d.items||[];
   let h='<h1>Decision inbox</h1><div class="sub">'+(items.length?items.length+' waiting on '+(human()?'you':'a person'):'Nothing is waiting on a person.')+'</div>';

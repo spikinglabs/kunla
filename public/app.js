@@ -466,7 +466,13 @@ function decisionHandlers(after, later) {
       }
     },
     answer: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/answer`, { answer: formData(el).answer }); toast(`Answer sent. ${k} is moving again.`); await after(); },
-    accept: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: true }); toast(`Accepted. ${k} is Ready for anyone to pick up.`); await after(); },
+    accept: async (el) => {
+      const k = keyOf(el); const r = await api('POST', `/api/tasks/${k}/triage`, { accept: true });
+      // A proposed project (KD-16) becomes a real project, not Ready work.
+      if (r?.project_created) { projects = await api('GET', '/api/projects'); toast(`Project ${r.project_created.name} (${r.project_created.key}) created.`); }
+      else toast(`Accepted. ${k} is Ready for anyone to pick up.`);
+      await after();
+    },
     decline: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: false }); toast(`${k} declined.`); await after(); },
     later: (el) => showLater(keyOf(el), after, later),
   };
