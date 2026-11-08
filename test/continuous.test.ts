@@ -155,3 +155,48 @@ describe('waking an idle continuous agent', () => {
     expect(calls[0].body).toMatchObject({ event: 'work_ready', note: expect.stringContaining('new day'), kunla_url: 'https://kunla.test' });
   });
 });
+
+describe('the agent learns it is in continuous mode by itself', () => {
+  const rpc = async (token: string, method: string, params: unknown = {}) =>
+    (await call('POST', '/mcp', token, { jsonrpc: '2.0', id: 1, method, params })).body.result;
+
+  it('whoami says off, and how it turns on', async () => {
+    const me = await tool(ai, 'whoami');
+    expect(me.continuous).toMatchObject({ on: false });
+    expect(me.continuous.note).toContain('L can turn it on');
+    expect((await tool(human, 'whoami')).continuous).toBeUndefined();
+  });
+
+  it('whoami, the connect instructions and every tool reply say it is on, with what is left today', async () => {
+    await setContinuous({ on: true, max_tasks_per_day: 3, max_in_review: 2, max_tokens_per_day: 50000 });
+    await newTask('One');
+    const me = await tool(ai, 'whoami');
+    expect(me.continuous).toMatchObject({ on: true, go: true, left_today: { tasks: 3, review_slots: 2, tokens: 50000, cost_usd: null } });
+    expect(me.continuous.what_to_do).toContain('next_task');
+    expect(me.continuous.wake_up).toContain('no wake-up URL');
+
+    const init = await rpc(ai, 'initialize', { protocolVersion: '2025-06-18' });
+    expect(init.instructions).toContain('You are in continuous mode: L turned it on');
+    expect((await rpc(human, 'initialize', { protocolVersion: '2025-06-18' })).instructions).not.toContain('You are in continuous mode');
+
+    const claim = await rpc(ai, 'tools/call', { name: 'claim_task', arguments: { key: 'MKT-1' } });
+    const line = claim.content.at(-1).text;
+    expect(line).toContain('Continuous mode is on (1 of 3 tasks started today, 0 of 2 waiting for review, 0 of 50000 tokens)');
+    expect(line).toContain('call next_task');
+    const next = await rpc(ai, 'tools/call', { name: 'next_task', arguments: {} });
+    expect(next.content.some((x: any) => x.text.startsWith('Continuous mode is on'))).toBe(false); // already said in full
+  });
+
+  it('is not promised a wake-up it will never get', async () => {
+    await setContinuous({ on: true });
+    const n = await tool(ai, 'next_task');
+    expect(n.continuous.stop_reason).toBe('nothing_ready');
+    expect(n.continuous.message).not.toContain('Kunla wakes you');
+    expect(n.continuous.message).toContain('no wake-up URL');
+    await call('PUT', `/api/members/${aiId}/wake`, human, { url: 'https://hooks.test/wake' });
+    await newTask('Later'); // wakes it
+    const claim = await tool(ai, 'claim_task', { key: 'MKT-1' });
+    await tool(ai, 'submit_for_review', { key: claim.key, summary: 'ok', deliverables: [{ url: 'https://x.test/1' }] });
+    expect((await tool(ai, 'next_task')).continuous.message).toContain('Kunla wakes you');
+  });
+});

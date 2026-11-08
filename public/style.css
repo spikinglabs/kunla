@@ -303,6 +303,15 @@ details.playbook pre { white-space: pre-wrap; font-size: 12.5px; background: rgb
 .continuous { font-size: 13.5px; padding: 8px 10px; border-radius: 10px; border-left: 3px solid var(--lime); background: var(--canvas); }
 .continuous.stopped { border-left-color: var(--wait); }
 .continuous .muted { font-size: 12.5px; margin-top: 2px; }
+.continuous.off { border-left-color: var(--rule-2); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.linkish { background: none; border: 0; padding: 0; font: inherit; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+/* Continuous mode offer: shows on the Briefing and Tasks page when Ready work piles up. */
+.nudge { display: flex; gap: 12px 16px; align-items: center; flex-wrap: wrap; margin-top: 20px; border-left: 3px solid var(--lime); }
+.nudge p { margin: 4px 0 0; font-size: 14px; }
+.nudge .grow { min-width: 220px; }
+.tlist + .nudge, .head ~ .nudge { margin: 0 0 18px; }
+.cont-how { padding: 12px 14px; border-radius: 12px; background: var(--canvas); border: 1px solid var(--rule); display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.cont-how p { margin: 0; line-height: 1.5; }
 .secret { font: 13px/1.4 var(--mono); padding: 12px; border-radius: 12px; background: var(--brain); color: var(--lime); word-break: break-all; }
 pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: var(--brain); color: var(--on-brain); overflow-x: auto; margin: 0; }
 
@@ -536,10 +545,10 @@ details.notes[open] .nprev { display: none; }
 .kinds-field textarea::placeholder { color: var(--muted); opacity: .6; }
 
 /* ---------- hints: a tiny ? that explains a column, filter or status ---------- */
-.hint { display: inline-grid; place-items: center; width: 16px; height: 16px; padding: 0; border-radius: 50%; border: 1px solid var(--rule-2);
+button.hint { display: inline-grid; place-items: center; width: 16px; height: 16px; padding: 0; border-radius: 50%; border: 1px solid var(--rule-2);
   background: transparent; color: var(--muted); font: 600 10px/1 var(--sans); cursor: help; vertical-align: middle; flex: none; position: relative; }
-.hint::after { content: ''; position: absolute; inset: -10px; } /* a finger-sized target around the small circle */
-.hint:hover, .hint:focus-visible, .hint[aria-expanded="true"] { border-color: var(--ink); color: var(--ink); outline: none; }
+button.hint::after { content: ''; position: absolute; inset: -10px; } /* a finger-sized target around the small circle */
+button.hint:hover, button.hint:focus-visible, button.hint[aria-expanded="true"] { border-color: var(--ink); color: var(--ink); outline: none; }
 .tip { position: fixed; z-index: 60; max-width: min(300px, calc(100vw - 24px)); padding: 10px 12px; border-radius: var(--r-s);
   background: var(--ink); color: var(--canvas); font: 400 13px/1.45 var(--sans); letter-spacing: 0; text-transform: none;
   box-shadow: 0 8px 24px -10px rgba(0,0,0,.45); pointer-events: none; white-space: pre-line; }

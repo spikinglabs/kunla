@@ -1190,7 +1190,7 @@ export async function nextTask(c: Ctx, project?: string) {
          (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')))) LIMIT 5`).bind(c.space, c.me.id).all<{ key: string }>()).results;
     reason = waiting.length ? 'waiting_on_people' : 'nothing_ready';
   }
-  const message = continuous.stopMessage(reason, cs.settings, cs.usage);
+  const message = continuous.stopMessageFor(reason, cs.settings, cs.usage, { platform: c.me.platform, hasWake: !!c.me.callback });
   const before = continuous.parseRunState(c.me.run_state);
   await continuous.setRunState(c, c.me.id, 'stopped', reason, message);
   if (before?.state !== 'stopped' || before.reason !== reason) await event(c, null, 'continuous_stopped', message, { reason, usage: cs.usage });
@@ -1300,7 +1300,18 @@ export async function whoami(c: Ctx) {
       ...(k.projects.some((p) => p.own) ? { projects: Object.fromEntries(k.projects.filter((p) => p.own).map((p) => [p.key, p.kinds.map((d) => d.key)])) } : {}),
     })),
     board: c.baseUrl,
+    // Agents learn continuous mode here (and in every MCP reply), so nobody has to tell them.
+    ...(c.me.kind === 'ai' ? { continuous: continuous.forAgent(await continuous.status(c, c.me), { platform: c.me.platform, hasWake: !!c.me.callback, sponsor: sponsor?.name }) } : {}),
   };
+}
+
+/** Continuous status for the calling agent with what it needs to word it (sponsor, platform, wake-up). */
+export async function myContinuous(c: Ctx) {
+  if (c.me.kind !== 'ai' || !continuous.parseSettings(c.me.continuous)?.on) return null;
+  const st = await continuous.status(c, c.me);
+  if (!st) return null;
+  const sponsor = c.me.sponsor_id ? await getMember(c, c.me.sponsor_id) : null;
+  return { st, who: { platform: c.me.platform, hasWake: !!c.me.callback, sponsor: sponsor?.name ?? null } };
 }
 
 /** Per-member track record, so autonomy can be earned from evidence. */

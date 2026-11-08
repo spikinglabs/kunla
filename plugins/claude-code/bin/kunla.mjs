@@ -206,7 +206,7 @@ const hooks = {
       focus.length ? `The team's focus right now: ${focus.join(', ')}.` : '',
       repoProject() ? `This repo belongs to project ${repoProject()}; file new tasks there.` : '',
       next?.task ? `Next task waiting for you: ${next.task.key} "${next.task.title}" (${next.reason}). If the user wants it, call claim_task and follow its brief.` : 'No task is waiting for you.',
-      next?.continuous?.go ? 'Continuous mode is on for you: work through tasks one by one (claim, do, submit, then next_task again) until next_task says stop.' : '',
+      me.continuous?.on ? `Continuous mode is on for you (${me.sponsor ?? 'your sponsor'} turned it on): ${me.continuous.what_to_do} ${me.continuous.wake_up}` : '',
       'If the user asks for work that has no task, call log_work when you finish it so it lands in the record with a key.',
       'If the work belongs to a task, claim it with claim_task first; the commit hook will then cite it automatically.',
     ].filter(Boolean).join('\n'));

@@ -548,9 +548,12 @@ function swipeDeck(el, go) {
 
 async function viewBriefing() {
   renderShell('');
-  const [inbox, brief, pulse, rules, prog] = await Promise.all([
+  const [inbox, brief, pulse, rules, prog, ready, team] = await Promise.all([
     api('GET', '/api/inbox'), api('GET', '/api/briefing?hours=24'), api('GET', '/api/pulse'), api('GET', '/api/rules'), api('GET', '/api/progress'),
+    api('GET', '/api/tasks?status=ready&limit=200'), me.kind === 'human' ? api('GET', '/api/members') : Promise.resolve(members),
   ]);
+  members = team;
+  const readyFree = ready.filter((t) => !t.assignee).length;
   // Projects first in focus order, then tasks with no project if there are any.
   const stats = [...prog.filter((x) => !x.workspace), ...prog.filter((x) => x.workspace && Object.keys(x.counts).length).map((x) => ({ ...x, name: 'No project' }))]
     .map((x) => ({ project: { key: x.key, name: x.name }, counts: x.counts }));
@@ -577,6 +580,7 @@ async function viewBriefing() {
         : html`<div class="card clear"><div class="big"><svg width="26" height="26" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
           <h2>All clear</h2><p class="muted">Nothing waits on you. Agents keep the record up to date on their own.</p>
           <button class="btn ink" data-act="click:palette">Delegate something <kbd>⌘K</kbd></button></div>`)}
+        ${raw(continuousNudge(readyFree))}
         ${raw(brief.finished.length ? html`<div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Finished since yesterday</h2><a class="muted" href="#/map" style="font-size:13px">See the map</a></div>
           <div class="done-list">${join(brief.finished.map((f) => html`<a href="#/t/${f.key}"><span class="key">${f.key}</span><span class="t grow">${f.title}</span><span class="muted" style="font-size:13px">${f.worker ?? ''}</span></a>`))}</div></div>` : '')}
       </section>
@@ -598,6 +602,7 @@ async function viewBriefing() {
     ...decisionHandlers(viewBriefing, () => { deck.i = (deck.i + 1) % items.length; viewBriefing(); }),
     go: (el) => { deck.i = Number(el.dataset.i); viewBriefing(); },
     palette: () => openPalette(),
+    ...nudgeHandlers(readyFree, viewBriefing),
   });
   keyHandler = (e) => {
     if (typing() || e.metaKey || e.ctrlKey || e.altKey || !$('palette').hidden || !$('sheet').hidden || !cur) return;
@@ -945,6 +950,8 @@ const STATUS_ORDER = ['blocked', 'review', 'in_progress', 'ready', 'inbox', 'par
 async function viewTasks(project) {
   renderShell('tasks');
   const all = await api('GET', `/api/tasks?limit=1000${project ? '&project=' + project : ''}`);
+  if (me.kind === 'human' && !members.length) members = await api('GET', '/api/members').catch(() => []);
+  const readyFree = all.filter((t) => t.status === 'ready' && !t.assignee).length;
   const p = projects.find((x) => x.key === project) || (project === me.workspace.key ? { key: project, name: 'No project' } : null);
   const draw = () => {
     const ql = tv.q.trim().toLowerCase();
@@ -966,7 +973,8 @@ async function viewTasks(project) {
         </div></div>
       <div class="row" style="margin:-4px 0 18px">${raw(!project ? '' : html`<a class="pill" href="#/tasks">← All tasks</a>`)}
         ${join(views.map((v, i) => html`<span class="pill saved"><a href="${v.hash}" data-act="click:view" data-i="${i}">${v.name}</a><button data-act="click:unsave" data-i="${i}" aria-label="Forget ${v.name}">×</button></span>`))}
-        <button class="pill" data-act="click:save" style="border-style:dashed">+ Save this view</button></div>`;
+        <button class="pill" data-act="click:save" style="border-style:dashed">+ Save this view</button></div>
+      ${raw(continuousNudge(readyFree))}`;
     let body;
     if (tv.mode === 'board') {
       const cols = [['inbox', 'Proposed'], ['ready', 'Ready'], ['in_progress', 'In progress'], ['blocked', 'Waiting'], ['review', 'In review'], ['done', 'Done']];
@@ -992,6 +1000,7 @@ async function viewTasks(project) {
     $app.innerHTML = head + `<div class="tlist">${body.__raw ?? body}</div>`;
     bind($app, {
       new: () => openPalette(p && project !== me.workspace.key ? `#${p.key} ` : ''),
+      ...nudgeHandlers(readyFree, draw),
       filter: (el) => { tv.filter = el.dataset.k; saveTv(); draw(); },
       mode: (el) => { tv.mode = el.dataset.m; saveTv(); draw(); },
       group: (el) => { tv.group = el.value; saveTv(); draw(); },
@@ -1030,10 +1039,10 @@ const STOP_LABEL = {
 };
 function continuousLine(m) {
   const c = m.continuous;
-  if (!c?.settings?.on) return '';
+  if (!c?.settings?.on) return m.kind === 'ai' && canManage(m) ? html`<div class="continuous off"><b>Continuous</b> · off <button class="linkish" data-act="click:contOffer" data-id="${m.id}">Let it work through Ready tasks</button></div>` : '';
   const s = c.settings, u = c.usage || {};
   const reason = c.limit || (c.run?.state === 'stopped' ? c.run.reason : null);
-  const state = c.run?.state === 'woken' && !c.limit ? 'woken for new work' : reason ? `stopped: ${STOP_LABEL[reason] || reason}` : c.run ? 'running' : 'on, waiting for it to ask for work';
+  const state = c.run?.state === 'woken' && !c.limit ? 'woken for new work' : reason ? `stopped: ${STOP_LABEL[reason] || reason}${stuckAgent(m) ? '; start it again yourself (no wake-up URL)' : ''}` : c.run ? 'running' : m.wake ? 'on, Kunla starts it when work is Ready' : 'on, waiting for you to start it';
   const parts = [`${u.tasks_today ?? 0}${s.max_tasks_per_day != null ? '/' + s.max_tasks_per_day : ''} tasks today`];
   if (s.max_cost_per_day != null || u.cost_today) parts.push(`$${u.cost_today ?? 0}${s.max_cost_per_day != null ? '/$' + s.max_cost_per_day : ''}`);
   if (s.max_tokens_per_day != null || u.tokens_today) parts.push(`${u.tokens_today ?? 0}${s.max_tokens_per_day != null ? '/' + s.max_tokens_per_day : ''} tokens`);
@@ -1058,6 +1067,7 @@ async function viewTeam(sub) {
       ${raw(canManage(m) ? html`<div><button class="btn sm" data-act="click:manage" data-id="${m.id}">Manage</button></div>` : '')}</div>`; }))}</div>`;
   bind($app, {
     connect: () => showConnect('ai'), addPerson: () => showConnect('human'), claudeai: showClaudeAi, github: showGitHub,
+    contOffer: (el) => showContinuousOffer(el.dataset.id),
     manage: (el) => showManage(record.find((x) => x.id === el.dataset.id)),
     lane: async (el) => {
       const id = el.closest('.lanepick').dataset.id;
@@ -1144,23 +1154,111 @@ function showToken(r, kind, platform) {
     <div class="row"><button class="btn ink" data-act="click:close">I've saved it</button></div></div>`, {}, { sticky: true });
 }
 
+// ---------- continuous mode: offered where people need it, in plain words ----------
+// People meet it on the Briefing and the Tasks page when Ready work piles up, not only in Team → Manage.
+// Agents never need telling: Kunla says it in whoami, on connect and under every reply.
+const CONT_DEFAULTS = { max_tasks_per_day: 10, max_in_review: 5 };
+const WAKEABLE_STOP = ['nothing_ready', 'waiting_on_people', 'review_limit'];
+const myAgents = () => members.filter((m) => m.kind === 'ai' && canManage(m));
+const contOn = (m) => !!m.continuous?.settings?.on;
+// The agent most likely to run on its own: one Kunla can wake, then Claude Code, then any.
+const bestAgent = (list) => [...list].sort((a, b) => (!!b.wake - !!a.wake) || ((b.platform === 'claude-code') - (a.platform === 'claude-code')))[0];
+// Stopped, can't be woken, and there is work: it needs a person to start it again.
+const stuckAgent = (m) => contOn(m) && !m.wake && m.continuous?.run?.state === 'stopped' && WAKEABLE_STOP.includes(m.continuous.run.reason) && !m.continuous.limit;
+const OFFER_KEY = 'kunla.contOffer';
+const offerHidden = () => { try { return Date.now() - Number(localStorage.getItem(OFFER_KEY) || 0) < 3 * 86400000; } catch { return false; } };
+const hideOffer = () => { try { localStorage.setItem(OFFER_KEY, String(Date.now())); } catch {} };
+
+/** How the agent gets going, by kind of agent. Kunla can only start agents that have a wake-up URL. */
+function startStory(m) {
+  if (m.wake) return html`<p><b>Starts by itself.</b> ${m.name} has a wake-up URL, so Kunla starts it as soon as work is Ready, again when you review something, and each morning when the daily limit resets.</p>`;
+  if (m.platform === 'claude-ai') return html`<p><b>You start it.</b> claude.ai chats only run when you write to them, so Kunla can't start ${m.name}. Open a chat with the Kunla connector and say:</p>${raw(copyBlock('Say in the chat', 'Work through my Kunla tasks.'))}<p class="muted" style="font-size:13px">It keeps going in that chat until it reaches a limit or nothing is left, and tells you why it stopped.</p>`;
+  if (m.platform === 'claude-code') return html`<p><b>You start it once.</b> Run this in Claude Code in your repository. It keeps going while the session is open.</p>${raw(copyBlock('In Claude Code', '/kunla:work'))}
+    <p class="muted" style="font-size:13px">To have Kunla start it by itself (when work is Ready, after your reviews, each morning), add a wake-up: a GitHub Action in the repository, about five minutes. <a href="#" data-act="click:setupWake" data-id="${m.id}">Set up wake-up</a></p>`;
+  return html`<p><b>You start it once.</b> Ask it to call <code>next_task</code> and keep going until Kunla says stop. To have Kunla start it by itself, give it a wake-up URL. <a href="#" data-act="click:setupWake" data-id="${m.id}">Set up wake-up</a></p>`;
+}
+const KNOWS = 'You don\'t have to tell it the rules or limits. Kunla tells the agent in every reply that continuous mode is on, how much is left today, and to take the next task.';
+
+/** The limit fields, plain words first. Empty means no limit. */
+function limitFields(s) {
+  const v = (x) => (x == null ? '' : x);
+  const fresh = !s.on && [s.max_tasks_per_day, s.max_in_review, s.max_cost_per_day, s.max_tokens_per_day].every((x) => x == null);
+  const t = fresh ? CONT_DEFAULTS.max_tasks_per_day : s.max_tasks_per_day, r = fresh ? CONT_DEFAULTS.max_in_review : s.max_in_review;
+  return html`<div class="row limits" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <div class="field" style="flex:1;min-width:130px"><label for="mc-t">New tasks a day</label><input id="mc-t" name="max_tasks_per_day" type="number" min="0" step="1" value="${v(t)}" placeholder="No limit"></div>
+      <div class="field" style="flex:1;min-width:130px"><label for="mc-r">Pause at this many in review</label><input id="mc-r" name="max_in_review" type="number" min="0" step="1" value="${v(r)}" placeholder="No limit"></div>
+      <div class="field" style="flex:1;min-width:130px"><label for="mc-k">Tokens a day</label><input id="mc-k" name="max_tokens_per_day" type="number" min="0" step="1000" value="${v(s.max_tokens_per_day)}" placeholder="No limit"></div>
+      <div class="field" style="flex:1;min-width:130px"><label for="mc-c">Cost a day (USD)</label><input id="mc-c" name="max_cost_per_day" type="number" min="0" step="0.01" value="${v(s.max_cost_per_day)}" placeholder="No limit"></div>
+    </div>
+    <p class="muted" style="font-size:12.5px">Tokens and cost count what the agent reports after each task, so they can run a task over. Claude Code knows its usage; chats usually don't, so the task limit is the surer brake. Days are UTC.</p>`;
+}
+const limitBody = (f, on) => {
+  const d = formData(f);
+  return { on, max_tasks_per_day: d.max_tasks_per_day || null, max_cost_per_day: d.max_cost_per_day || null, max_tokens_per_day: d.max_tokens_per_day || null,
+    max_in_review: d.max_in_review || null, ...(d.until !== undefined ? { until: d.until ? new Date(d.until).toISOString() : null } : {}) };
+};
+
 function continuousForm(m) {
   const s = m.continuous?.settings || {};
-  const v = (x) => (x == null ? '' : x);
   const until = s.until ? new Date(new Date(s.until).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
-  return html`<form class="stack" style="gap:6px" data-act="submit:continuous"><div class="label">Continuous mode</div>
-    <p class="muted" style="font-size:13.5px">${m.name} keeps taking the next ready task in its lane, one by one. A question on one task doesn't stop it; it moves on. It stops only when everything left waits on a person or it reaches a limit below, and Kunla wakes it again when new work is ready${m.wake ? '' : ' (needs a wake-up URL)'}. Empty means no limit. Days are UTC.</p>
-    <label class="row" style="gap:8px;align-items:center"><input type="checkbox" name="on" ${s.on ? 'checked' : ''}> Work through tasks continuously</label>
-    <div class="row" style="gap:8px;flex-wrap:wrap">
-      <div class="field" style="flex:1;min-width:120px"><label for="mc-t">New tasks per day</label><input id="mc-t" name="max_tasks_per_day" type="number" min="0" step="1" value="${v(s.max_tasks_per_day)}"></div>
-      <div class="field" style="flex:1;min-width:120px"><label for="mc-r">Max waiting for review</label><input id="mc-r" name="max_in_review" type="number" min="0" step="1" value="${v(s.max_in_review)}"></div>
-      <div class="field" style="flex:1;min-width:120px"><label for="mc-c">Cost per day (USD)</label><input id="mc-c" name="max_cost_per_day" type="number" min="0" step="0.01" value="${v(s.max_cost_per_day)}"></div>
-      <div class="field" style="flex:1;min-width:120px"><label for="mc-k">Tokens per day</label><input id="mc-k" name="max_tokens_per_day" type="number" min="0" step="1000" value="${v(s.max_tokens_per_day)}"></div>
-    </div>
+  return html`<form class="stack" style="gap:8px" data-act="submit:continuous"><div class="label">Continuous mode</div>
+    <p class="muted" style="font-size:13.5px">${m.name} takes the next Ready task in its lane, does it, sends it to you for review, and takes the next one. A question on one task doesn't stop it. It stops when nothing is left or it reaches a limit.</p>
+    <label class="row" style="gap:8px;align-items:center"><input type="checkbox" name="on" ${s.on ? 'checked' : ''}> Work through Ready tasks on its own</label>
+    ${raw(limitFields(s))}
     <div class="field"><label for="mc-u">Stop continuous mode at (optional)</label><input id="mc-u" name="until" type="datetime-local" value="${until}"></div>
-    <p class="muted" style="font-size:12.5px">Cost and tokens count only what the agent reports with its updates.</p>
+    <div class="cont-how">${raw(startStory(m))}<p class="muted" style="font-size:13px">${KNOWS}</p></div>
     <div><button class="btn">Save</button></div></form>`;
 }
+
+/** "Let an agent work through these": the offer people see when Ready work piles up. */
+function showContinuousOffer(pick, ready = 0) {
+  const agents = myAgents();
+  if (!agents.length) { location.hash = '#/team/connect'; return; }
+  const m = agents.find((x) => x.id === pick) || bestAgent(agents.filter((x) => !contOn(x)).length ? agents.filter((x) => !contOn(x)) : agents);
+  const s = m.continuous?.settings || {};
+  openSheet(html`<div class="sheet-body stack">
+    <div><h2>Let ${m.name} work through Ready tasks</h2>
+    <p class="muted">${ready ? `${plural(ready, 'task is', 'tasks are')} Ready and nobody holds them. ` : ''}${m.name} takes the next one in its lane, does it, sends it to you for review, and takes the next. A question on one task doesn't stop it. You still review everything.</p></div>
+    ${raw(agents.length > 1 ? html`<div class="field"><label for="co-a">Agent</label><select id="co-a" data-act="change:pick">${join(agents.map((a) => html`<option value="${a.id}" ${a.id === m.id ? 'selected' : ''}>${a.name} · ${PLATFORM[a.platform] || 'agent'}${contOn(a) ? ' · on' : ''}${a.wake ? ' · starts by itself' : ''}</option>`))}</select></div>` : '')}
+    <form class="stack" style="gap:8px" data-act="submit:start">
+      ${raw(limitFields(s))}
+      <div class="cont-how">${raw(startStory(m))}<p class="muted" style="font-size:13px">${KNOWS}</p></div>
+      <div class="row"><button class="btn go">${contOn(m) ? 'Save limits' : 'Start continuous mode'}</button><button class="btn quiet" type="button" data-act="click:close">Not now</button></div>
+    </form></div>`, {
+    pick: (el) => showContinuousOffer(el.value, ready),
+    setupWake: (el) => showManage(members.find((x) => x.id === el.dataset.id)),
+    start: async (f) => {
+      const r = await api('PUT', `/api/members/${m.id}/continuous`, limitBody(f, true));
+      m.continuous = { ...(m.continuous || {}), settings: r.continuous };
+      hideOffer();
+      openSheet(html`<div class="sheet-body stack"><div><h2>${m.name} is in continuous mode</h2>
+        <p class="muted">Up to ${r.continuous.max_tasks_per_day ?? 'any number of'} new tasks a day${r.continuous.max_in_review != null ? `, pausing when ${r.continuous.max_in_review} wait for your review` : ''}${r.continuous.max_tokens_per_day != null ? `, ${r.continuous.max_tokens_per_day} tokens` : ''}${r.continuous.max_cost_per_day != null ? `, $${r.continuous.max_cost_per_day}` : ''}. Change it any time in Team → Manage.</p></div>
+        <div class="cont-how">${raw(startStory(m))}<p class="muted" style="font-size:13px">${KNOWS}</p></div>
+        <div class="row"><button class="btn ink" data-act="click:close">Done</button></div></div>`, { setupWake: (el) => showManage(members.find((x) => x.id === el.dataset.id)) });
+      route();
+    },
+  }, { focus: false });
+}
+
+/** The nudge on the Briefing and the Tasks page: only when there is Ready work nobody holds and an agent could take it. */
+function continuousNudge(readyFree) {
+  if (me.kind !== 'human' || readyFree < 2 || offerHidden()) return '';
+  const agents = myAgents();
+  if (!agents.length) return '';
+  const stuck = agents.find(stuckAgent);
+  if (stuck) return html`<div class="card pad nudge"><div class="grow"><b>${plural(readyFree, 'task is', 'tasks are')} Ready, but ${stuck.name} stopped and Kunla can't restart it.</b>
+    <p class="muted">${stuck.platform === 'claude-ai' ? 'Chats only run when you write to them. Ask it to work through your Kunla tasks.' : 'It has no wake-up URL. Start it again, or set up wake-up so it starts by itself.'}</p></div>
+    <div class="row"><button class="btn sm ink" data-act="click:contOffer" data-id="${stuck.id}">How to start it</button><button class="btn sm quiet" data-act="click:contHide">Not now</button></div></div>`;
+  if (agents.some(contOn)) return '';
+  const m = bestAgent(agents);
+  return html`<div class="card pad nudge"><div class="grow"><b>${plural(readyFree, 'task is', 'tasks are')} Ready and nobody has picked ${readyFree === 1 ? 'it' : 'them'} up.</b>
+    <p class="muted">Let ${m.name} work through them one by one, up to ${CONT_DEFAULTS.max_tasks_per_day} a day. You still review everything.</p></div>
+    <div class="row"><button class="btn sm go" data-act="click:contOffer" data-id="${m.id}">Let it work through them</button><button class="btn sm quiet" data-act="click:contHide">Not now</button></div></div>`;
+}
+const nudgeHandlers = (readyFree, again) => ({
+  contOffer: (el) => showContinuousOffer(el.dataset.id, readyFree),
+  contHide: () => { hideOffer(); toast('Hidden for three days. Team → Manage has it any time.'); again(); },
+});
 
 function showManage(m) {
   const self = m.id === me.id;
@@ -1172,7 +1270,7 @@ function showManage(m) {
       <p class="muted" style="font-size:13.5px">${self ? 'Get a new personal token. Your old one stops working everywhere, and this browser switches to the new one.' : 'Get a new token if the old one leaked or you set it up somewhere else. Every old token for this agent stops working at once.'}</p>
       <div><button class="btn" data-act="click:rotate">New token</button></div></div>
     ${raw(m.kind === 'ai' ? html`<form class="stack" style="gap:6px" data-act="submit:wake"><div class="label">Wake it up</div>
-      <p class="muted" style="font-size:13.5px">When you approve, send back, answer or hand ${m.name} a task, Kunla calls this URL so it carries on by itself. For Claude Code, use your repository's dispatch URL and a GitHub token, with the workflow from the README.</p>
+      <p class="muted" style="font-size:13.5px">When you approve, send back, answer or hand ${m.name} a task, Kunla calls this URL so it carries on by itself. Chats (claude.ai) can't be woken. For Claude Code: copy <a href="https://github.com/spikinglabs/kunla/blob/main/examples/kunla-wake.yml" target="_blank" rel="noopener">kunla-wake.yml</a> into <code>.github/workflows/</code>, then paste your repository's dispatch URL and a GitHub token (Contents: read and write) here.</p>
       <div class="field"><label for="mw-u">Wake-up URL</label><input id="mw-u" name="url" type="url" placeholder="https://api.github.com/repos/OWNER/REPO/dispatches" value="${m.wake?.url || ''}"></div>
       <div class="field"><label for="mw-a">Token for that URL (optional)</label><input id="mw-a" name="auth" type="password" autocomplete="off" placeholder="${m.wake?.has_auth ? 'Saved. Leave empty to keep it.' : 'GitHub token, or empty'}"></div>
       <div class="row"><button class="btn">${m.wake ? 'Save' : 'Turn on'}</button>${raw(m.wake ? '<button class="btn" type="button" data-act="click:wakeTest">Send a test</button><button class="btn quiet" type="button" data-act="click:wakeOff">Turn off</button>' : '')}</div></form>` : '')}
@@ -1191,15 +1289,12 @@ function showManage(m) {
         ${raw(copyBlock('Signing secret', r.secret, { secret: true }))}<div class="row"><button class="btn ink" data-act="click:close">I've saved it</button></div></div>`, {}, { sticky: true });
     },
     continuous: async (f) => {
-      const d = formData(f);
       const on = !!f.querySelector('[name=on]').checked;
-      const r = await api('PUT', `/api/members/${m.id}/continuous`, {
-        on, max_tasks_per_day: d.max_tasks_per_day || null, max_cost_per_day: d.max_cost_per_day || null,
-        max_tokens_per_day: d.max_tokens_per_day || null, max_in_review: d.max_in_review || null, until: d.until ? new Date(d.until).toISOString() : null,
-      });
-      toast(r.continuous.on ? `${m.name} now works through ready tasks one by one${m.wake ? '' : '. Add a wake-up URL so Kunla can restart it when new work comes in'}.` : `Continuous mode is off for ${m.name}.`);
+      const r = await api('PUT', `/api/members/${m.id}/continuous`, limitBody(f, on));
+      toast(r.continuous.on ? `${m.name} now works through Ready tasks one by one. Kunla tells it so in every reply.` : `Continuous mode is off for ${m.name}.`);
       closeSheet(true); viewTeam();
     },
+    setupWake: () => { const el = $('mw-u'); el?.scrollIntoView({ block: 'center' }); el?.focus(); },
     wakeTest: async () => {
       const r = await api('POST', `/api/members/${m.id}/wake/test`);
       toast(r.ok ? `Test call delivered (HTTP ${r.status}).` : `Test call failed: ${r.error}.`);
