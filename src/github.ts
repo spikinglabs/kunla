@@ -134,8 +134,14 @@ async function onPullRequest(c: core.Ctx, p: any): Promise<Result> {
     : ['edited', 'synchronize'].includes(action) ? 'link' : null;
   if (!move) return { status: 202, body: { ignored: `pull_request.${action}` } };
 
-  const keys = findKeys(pr.title, pr.head?.ref, pr.body);
+  // The title and branch say whose work the PR is. The description counts only when they cite no
+  // task (e.g. "Fixes MKT-2"); otherwise keys there are just mentions, and get a note, not the PR.
+  const own = findKeys(pr.title, pr.head?.ref);
+  const keys = own.length ? own : findKeys(pr.body);
+  const mentioned = own.length ? findKeys(pr.body).filter((k) => !own.includes(k)) : [];
   const tasks = await tasksFor(c, keys);
+  if (mentioned.length && move !== 'link') for (const t of await tasksFor(c, mentioned))
+    await core.event(c, t.id, 'github', `Mentioned in PR #${pr.number}: ${pr.title}`, { what: `Mentioned in PR #${pr.number}`, url: pr.html_url }, null);
   // Merged from a person's linked GitHub account: that merge is their approval, so they don't
   // approve the same work again in Kunla.
   const approver = move === 'merged' ? await personFor(c, pr.merged_by?.login) : null;

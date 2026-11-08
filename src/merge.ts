@@ -6,6 +6,7 @@
 import { type Ctx, type Task } from './core';
 import { wakeMember } from './wake';
 import { installationToken, getApp, installations } from './githubapp';
+import { findKeys } from './github';
 
 const WAIT_PREFIX = 'merge_wait:';
 const API = 'https://api.github.com';
@@ -34,9 +35,14 @@ async function scoped(db: D1Database, space: string, key: string) {
 }
 const waitKey = (db: D1Database, space: string, repo: string, n: number | string) => scoped(db, space, `${WAIT_PREFIX}${repo}#${n}`);
 
+/**
+ * The PR that is this task's work: the newest PR deliverable, skipping PRs that are another task's
+ * work (their title cites other task keys but not this one), so approving never merges someone else's PR.
+ */
 export async function taskPr(db: D1Database, taskId: string): Promise<PrRef | null> {
-  const rows = (await db.prepare('SELECT url FROM deliverables WHERE task_id = ? ORDER BY created_at DESC').bind(taskId).all<{ url: string }>()).results;
-  return prFromLinks(rows);
+  const t = await db.prepare('SELECT key FROM tasks WHERE id = ?').bind(taskId).first<{ key: string }>();
+  const rows = (await db.prepare('SELECT url, title FROM deliverables WHERE task_id = ? ORDER BY created_at DESC').bind(taskId).all<{ url: string; title: string | null }>()).results;
+  return prFromLinks(rows.filter((r) => { const k = findKeys(r.title); return !k.length || (!!t && k.includes(t.key)); }));
 }
 
 /** A token that can act on this PR: a short-lived installation token of the Kunla app, if it's installed here. */

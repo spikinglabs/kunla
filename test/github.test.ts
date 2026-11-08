@@ -246,6 +246,17 @@ describe('delivery log', () => {
 });
 
 
+describe('keys in the description', () => {
+  it('are only mentions when the title or branch already cites a task', async () => {
+    const r = await hook('pull_request', pr('opened', {}, { title: 'MKT-2: Launch email', head: { ref: 'mkt-2' }, body: 'Follows MKT-1' }));
+    expect(r.body.updated.map((u: any) => u.key)).toEqual(['MKT-2']);
+    const t = await task('MKT-1');
+    expect(t.status).toBe('ready');
+    expect(t.deliverables).toEqual([]);
+    expect(t.history.find((e: any) => e.type === 'github').note).toContain('Mentioned in PR #7');
+  });
+});
+
 describe('a merge from your GitHub account is your approval', () => {
   const merged = (login: string) => pr('closed', {}, { merged: true, merged_by: { login } });
   beforeEach(async () => {
