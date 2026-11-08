@@ -111,7 +111,7 @@ const STATUS_HINT = {
   parked: 'A person put it off on purpose. Agents leave it alone until someone brings it back.',
 };
 const PROPOSAL_HINT = 'An agent suggested this task. Accept moves it to Ready, where anyone, person or agent, can pick it up; nobody starts until then. Decline says no and keeps it in the record. Later puts the card aside.';
-const hint = (text, label) => html`<button type="button" class="hint" data-tip="${text}" aria-label="${label}">?</button>`;
+const hint = (text, label) => html`<button type="button" class="qhint" data-tip="${text}" aria-label="${label}">?</button>`;
 const projectOf = (key) => projects.find((p) => key?.startsWith(p.key + '-'));
 const firstName = (n) => n?.split(' ')[0] ?? '';
 const callName = (m) => (m ? (m.kind === 'ai' ? m.name : firstName(m.name)) : '');
@@ -200,13 +200,13 @@ document.addEventListener('click', (e) => {
 // One floating tip for every [data-tip] button. Mouse: hover. Keyboard: focus. Touch: tap to open, tap again or anywhere else to close.
 // It floats above the page (position: fixed) so scrolling board columns never clip it.
 const tipEl = document.createElement('div');
-tipEl.className = 'tip'; tipEl.id = 'tip'; tipEl.setAttribute('role', 'tooltip'); tipEl.hidden = true;
+tipEl.className = 'qtip'; tipEl.id = 'qtip'; tipEl.setAttribute('role', 'tooltip'); tipEl.hidden = true;
 document.body.appendChild(tipEl);
 let tipFor = null, tipAt = 0;
 function showTip(el) {
   tipFor = el; tipAt = Date.now();
   tipEl.textContent = el.dataset.tip; tipEl.hidden = false;
-  el.setAttribute('aria-describedby', 'tip'); el.setAttribute('aria-expanded', 'true');
+  el.setAttribute('aria-describedby', 'qtip'); el.setAttribute('aria-expanded', 'true');
   const r = el.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight, vw = innerWidth, vh = innerHeight;
   const left = Math.max(12, Math.min(vw - w - 12, r.left + r.width / 2 - w / 2));
   const top = r.bottom + 8 + h > vh - 12 && r.top - 8 - h > 12 ? r.top - 8 - h : r.bottom + 8;
