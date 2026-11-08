@@ -85,6 +85,18 @@ const notesBlock = (notes, { fold = false } = {}) => (notes?.length ? notes.map(
     : html`<div class="notes">${raw(head)}<div class="prose">${prose(n.body)}</div></div>`;
 }).join('') : '');
 const STATUS = { inbox: 'Proposed', ready: 'Ready', in_progress: 'In progress', blocked: 'Waiting on an answer', review: 'In review', done: 'Done', declined: 'Declined', parked: 'Later' };
+// One sentence on what each state means, shown by the small ? hints (hover or focus on desktop, tap on phone).
+const STATUS_HINT = {
+  inbox: 'Suggested by an agent. A person accepts it, which moves it to Ready, or declines it.',
+  ready: 'Accepted and waiting to be picked up. Nobody is working on it yet. Anyone, person or agent, can claim it, unless it names who should.',
+  in_progress: 'Someone claimed it and is working on it. Only they change it until they hand it off. An agent that goes quiet for 30 minutes loses it back to Ready.',
+  blocked: 'The person or agent working on it asked a question and cannot go on until someone answers it.',
+  review: 'The work is handed in. A person approves it (for a pull request that means merge) or sends it back with notes.',
+  done: 'Approved and finished.',
+  declined: 'A person said no to this proposal.',
+  parked: 'A person put it off on purpose. Agents leave it alone until someone brings it back.',
+};
+const hint = (text, label) => html`<button type="button" class="hint" data-tip="${text}" aria-label="${label}">?</button>`;
 const projectOf = (key) => projects.find((p) => key?.startsWith(p.key + '-'));
 const firstName = (n) => n?.split(' ')[0] ?? '';
 const callName = (m) => (m ? (m.kind === 'ai' ? m.name : firstName(m.name)) : '');
@@ -168,6 +180,42 @@ document.addEventListener('click', (e) => {
   theme.set(b.dataset.themePick);
   for (const x of b.parentElement.children) x.setAttribute('aria-checked', String(x === b));
 });
+
+// ---------- hints ----------
+// One floating tip for every [data-tip] button. Mouse: hover. Keyboard: focus. Touch: tap to open, tap again or anywhere else to close.
+// It floats above the page (position: fixed) so scrolling board columns never clip it.
+const tipEl = document.createElement('div');
+tipEl.className = 'tip'; tipEl.id = 'tip'; tipEl.setAttribute('role', 'tooltip'); tipEl.hidden = true;
+document.body.appendChild(tipEl);
+let tipFor = null, tipAt = 0;
+function showTip(el) {
+  tipFor = el; tipAt = Date.now();
+  tipEl.textContent = el.dataset.tip; tipEl.hidden = false;
+  el.setAttribute('aria-describedby', 'tip'); el.setAttribute('aria-expanded', 'true');
+  const r = el.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight, vw = innerWidth, vh = innerHeight;
+  const left = Math.max(12, Math.min(vw - w - 12, r.left + r.width / 2 - w / 2));
+  const top = r.bottom + 8 + h > vh - 12 && r.top - 8 - h > 12 ? r.top - 8 - h : r.bottom + 8;
+  tipEl.style.left = left + 'px'; tipEl.style.top = top + 'px';
+}
+function hideTip() {
+  if (!tipFor) return;
+  tipFor.removeAttribute('aria-describedby'); tipFor.setAttribute('aria-expanded', 'false');
+  tipFor = null; tipEl.hidden = true;
+}
+document.addEventListener('pointerover', (e) => { const b = e.target.closest?.('[data-tip]'); if (b && e.pointerType === 'mouse' && b !== tipFor) showTip(b); });
+document.addEventListener('pointerout', (e) => { const b = e.target.closest?.('[data-tip]'); if (b && e.pointerType === 'mouse' && !b.contains(e.relatedTarget) && document.activeElement !== b) hideTip(); });
+document.addEventListener('focusin', (e) => { if (e.target.matches?.('[data-tip]')) showTip(e.target); });
+document.addEventListener('focusout', (e) => { if (e.target === tipFor) hideTip(); });
+document.addEventListener('click', (e) => {
+  const b = e.target.closest?.('[data-tip]');
+  if (!b) { hideTip(); return; }
+  e.preventDefault(); e.stopPropagation();
+  if (b === tipFor && Date.now() - tipAt > 400) hideTip(); else showTip(b);
+}, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTip(); });
+addEventListener('scroll', hideTip, true);
+addEventListener('resize', hideTip);
+addEventListener('hashchange', hideTip);
 
 // ---------- sign in and first-run setup ----------
 const WORD = '<span class="wordmark">kunla<i></i></span>';
@@ -767,7 +815,7 @@ async function viewTask(key) {
       <div class="crumbs"><a href="#/tasks">${t.workspace.name}</a>${raw(t.project ? html`<span>/</span><a href="#/tasks/${p.key}">${p.name}</a>` : '')}
         ${raw(t.parent ? html`<span>/</span><a href="#/t/${t.parent.key}">${t.parent.key} ${t.parent.title}</a>` : '')}<span>/</span><span class="mono">${t.key}</span></div>
       <h1>${t.title}</h1>
-      <div class="row"><span class="pill ${t.status === 'review' ? 'lime' : t.status === 'blocked' ? 'warn' : t.status === 'done' ? 'on' : ''}">${STATUS[t.status]}</span>
+      <div class="row"><span class="pill ${t.status === 'review' ? 'lime' : t.status === 'blocked' ? 'warn' : t.status === 'done' ? 'on' : ''}">${STATUS[t.status]}</span>${raw(hint(STATUS_HINT[t.status], `What ${STATUS[t.status]} means`))}
         <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join([...(t.kinds_here || []), ...((t.kinds_here || []).some((x) => x.key === t.kind) ? [] : [{ key: t.kind, label: kindName(t.kind) }])].map((x) => html`<option value="${x.key}" ${t.kind === x.key ? 'selected' : ''}>${x.label}</option>`))}</select></label>
         <div class="people"><span>${raw(who(t.assignee, 'Nobody yet'))}</span>${raw(t.reviewer ? html`<span class="muted">reviewed by</span><span>${raw(who(t.reviewer))}</span>` : '')}
         ${raw(t.created_by ? html`<span class="muted">asked by ${t.created_by.name}</span>` : '')}</div></div>
@@ -890,6 +938,7 @@ const FILTERS = {
   week: ['Done this week', (t) => t.status === 'done' && Date.now() - new Date(t.updated_at) < 7 * DAY],
   all: ['Everything', () => true],
 };
+const FILTER_HINT = 'Open: everything not finished (Proposed, Ready, In progress, Waiting, In review).\nLater: put off on purpose.\nMine: yours to do or review, or asked by you and nobody has it.\nStuck: waiting on an answer, sent back twice, in progress with no news for 2 days, or Ready with nobody for a week.\nDone this week: finished in the last 7 days.';
 const GROUPS = { project: 'Project', person: 'Person', status: 'Status', kind: 'Kind' };
 const STATUS_ORDER = ['blocked', 'review', 'in_progress', 'ready', 'inbox', 'parked', 'done', 'declined'];
 
@@ -908,7 +957,7 @@ async function viewTasks(project) {
     const head = html`<div class="head"><div><h1>${p ? p.name : 'Tasks'}</h1><p class="sub">${p ? '' : 'Every task in the workspace. '}Agents move these themselves; you choose what to look at.</p></div>
         <button class="btn go" data-act="click:new">New task <kbd>⌘K</kbd></button></div>
       <div class="toolbar">
-        <div class="row">${join(Object.entries(FILTERS).map(([k, [label]]) => html`<button class="pill ${tv.filter === k ? 'on' : ''}" data-act="click:filter" data-k="${k}">${label} <span class="mono" style="opacity:.6">${counts[k]}</span></button>`))}</div>
+        <div class="row">${join(Object.entries(FILTERS).map(([k, [label]]) => html`<button class="pill ${tv.filter === k ? 'on' : ''}" data-act="click:filter" data-k="${k}">${label} <span class="mono" style="opacity:.6">${counts[k]}</span></button>`))}${raw(hint(FILTER_HINT, 'What these filters mean'))}</div>
         <div class="row" style="margin-left:auto">
           <input class="search" placeholder="Filter by words, key or person" value="${tv.q}" data-act="input:q" aria-label="Filter">
           <select data-act="change:kindf" aria-label="Kind of work"><option value="">All kinds</option>${join(Object.entries(KIND).filter(([k]) => all.some((t) => t.kind === k)).sort((a, b) => a[1].localeCompare(b[1])).map(([k, l]) => html`<option value="${k}" ${tv.kind === k ? 'selected' : ''}>${l} · ${all.filter((t) => t.kind === k && FILTERS[tv.filter][1](t)).length}</option>`))}</select>
@@ -921,7 +970,7 @@ async function viewTasks(project) {
     let body;
     if (tv.mode === 'board') {
       const cols = [['inbox', 'Proposed'], ['ready', 'Ready'], ['in_progress', 'In progress'], ['blocked', 'Waiting'], ['review', 'In review'], ['done', 'Done']];
-      body = html`<div class="cols">${join(cols.map(([s, label]) => { const list = shown.filter((t) => t.status === s); return html`<section class="col"><h3><span>${label}</span><span>${list.length}</span></h3>
+      body = html`<div class="cols">${join(cols.map(([s, label]) => { const list = shown.filter((t) => t.status === s); return html`<section class="col"><h3><span>${label}</span><span class="n">${list.length}</span>${raw(hint(STATUS_HINT[s], `What ${label} means`))}</h3>
         <div class="list">${raw(list.length ? list.slice(0, 60).map(tcard).join('') + (list.length > 60 ? `<div class="empty-col">${list.length - 60} more. Narrow the filter.</div>` : '') : '<div class="empty-col">None</div>')}</div></section>`; }))}</div>`;
     } else {
       // Top-level rows are tasks whose parent is not shown; sub-tasks nest under their parent.
@@ -934,7 +983,7 @@ async function viewTasks(project) {
         if (tv.group === 'project') { const pr = projects.find((x) => x.key === g); return pr ? html`${raw(pr.focus ? '<span class="focus-dot"></span>' : '')}${pr.name} <span class="key">${pr.key}</span>${raw(pr.ends_at ? ` <span class="muted" style="font-weight:400;font-size:13px">${esc(endsIn(pr.ends_at))}</span>` : '')}` : 'No project'; }
         if (tv.group === 'person') return g || 'Nobody yet';
         if (tv.group === 'kind') return kindName(g);
-        return STATUS[g];
+        return html`${STATUS[g]} ${raw(hint(STATUS_HINT[g], `What ${STATUS[g]} means`))}`;
       };
       body = gkeys.length ? join(gkeys.map((g) => { const rows = tops.filter((t) => groupOf(t) === g); return html`<section class="card group"><h2>${raw(label(g))} <span class="muted mono" style="font-size:12px;font-weight:400">${rows.length}</span></h2>
         <div class="rows">${join(rows.slice(0, 200).map((t) => trow(t) + kids(t.key).map((k) => trow(k, true)).join('')))}${raw(rows.length > 200 ? `<p class="muted pad">${rows.length - 200} more. Narrow the filter.</p>` : '')}</div></section>`; }))
