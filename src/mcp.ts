@@ -13,16 +13,26 @@ const spend = {
   tokens: { type: 'number', description: 'Optional: tokens used for this stretch of work, if you know it. Counts toward a continuous-mode budget.' },
 };
 const links = {
-  type: 'array', description: 'Links to the work: PR, doc, file, message',
+  type: 'array', description: 'Links to the work: PR, doc, artifact, paper, sheet, slides, post, chat, file',
   items: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' } }, required: ['url'] },
 };
+
+const kind = {
+  type: 'string',
+  description: "Kind of work. Not only code. Kunla's defaults: code, writing (articles, posts, docs, emails, slides), research (market research, competitors, data analysis), learning (papers, books, courses), discussion (meetings, brainstorms, chats that reach decisions), outreach (marketing, sales, publishing, events), design, operations (planning, admin, hiring, finance), other. A workspace or project can set its own list: whoami and get_task (kinds_here) show it. Left out, Kunla guesses from the title.",
+};
+const notes = {
+  type: 'string',
+  description: 'The outcome written out, in Markdown, when it is not (only) a link: the decisions and next steps of a discussion, notes on a paper, research findings with sources, what you learned. Counts as a deliverable.',
+};
+const notes_title = { type: 'string', description: 'Optional heading for the notes, e.g. "Decisions", "Paper notes", "Findings"' };
 
 type Tool = { name: string; description: string; inputSchema: object; run: (c: Ctx, a: any) => Promise<unknown>; readOnly?: boolean };
 
 export const TOOLS: Tool[] = [
   {
     name: 'whoami', readOnly: true,
-    description: 'Your Kunla member profile (person or AI), sponsor, and the projects you can see.',
+    description: 'Your Kunla member profile (person or AI), sponsor, the projects you can see, and the kinds of work the workspace and its projects use.',
     inputSchema: { type: 'object', properties: {} },
     run: (c) => core.whoami(c),
   },
@@ -34,13 +44,13 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'list_tasks', readOnly: true,
-    description: 'Search tasks. Filter by project key, status (inbox, ready, in_progress, blocked, review, done; comma separated), assignee ("me" or a name), or text.',
-    inputSchema: { type: 'object', properties: { project: { type: 'string' }, status: { type: 'string' }, assignee: { type: 'string' }, q: { type: 'string' }, limit: { type: 'number' } } },
+    description: 'Search tasks. Filter by project key, status (inbox, ready, in_progress, blocked, review, done; comma separated), kind of work (e.g. research, learning, discussion; comma separated), assignee ("me" or a name), or text.',
+    inputSchema: { type: 'object', properties: { project: { type: 'string' }, status: { type: 'string' }, kind: { type: 'string' }, assignee: { type: 'string' }, q: { type: 'string' }, limit: { type: 'number' } } },
     run: (c, a) => core.listTasks(c, a),
   },
   {
     name: 'get_task', readOnly: true,
-    description: "One task with its brief, acceptance criteria, the project's playbook and 'apply next time' rules, deliverables, reviews, history, and how to cite it (commit trailer, branch, doc source line).",
+    description: "One task with its brief, acceptance criteria, the project's playbook and 'apply next time' rules, deliverables and notes, reviews, history, its kind of work with how_to_finish (what to hand in and what approval means) and kinds_here (the kinds this project uses), and how to cite it (commit trailer, branch, doc source line, message line).",
     inputSchema: { type: 'object', properties: { key }, required: ['key'] },
     run: (c, a) => core.taskDetail(c, a.key),
   },
@@ -74,21 +84,21 @@ export const TOOLS: Tool[] = [
         blocked_question: { type: 'string', description: 'What you need answered to continue' },
         blocked_on: { type: 'string', description: 'Who should answer (name); empty means anyone' },
         title: { type: 'string' }, brief: { type: 'string' }, criteria: { type: 'array', items: { type: 'string' } },
-        priority: { type: 'number', description: '0 urgent to 3 low' }, session, ...spend,
+        priority: { type: 'number', description: '0 urgent to 3 low' }, kind, session, ...spend,
       },
     },
     run: (c, a) => core.updateTask(c, a.key, a),
   },
   {
     name: 'log_work',
-    description: "Record work in one sentence. With a task key it adds to that task. Without one it creates a task with its own key, so work started in a chat still lands in the record. Use status 'review' to send it for review.",
+    description: "Record work in one sentence: any work, not only code (a discussion that reached a decision, a paper read, a draft written, research done, a campaign sent). With a task key it adds to that task. Without one it creates a task with its own key, so work started in a chat still lands in the record. Put the outcome in notes and/or deliverables. Use status 'review' to send it for review.",
     inputSchema: {
       type: 'object', required: ['summary'],
       properties: {
         summary: { type: 'string', description: 'What was done, in one or two sentences' },
         task: { type: 'string', description: 'Task key, if the work belongs to one' },
         project: { type: 'string', description: 'Project key for a new task; leave out for workspace-level work' },
-        title: { type: 'string' }, deliverables: links, session, ...spend,
+        title: { type: 'string' }, kind, deliverables: links, notes, notes_title, session, ...spend,
         status: { type: 'string', enum: ['in_progress', 'review', 'done'], description: "For a new task; default 'done'" },
       },
     },
@@ -96,8 +106,8 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'submit_for_review',
-    description: 'Hand finished work to a reviewer. Needs a short summary and at least one deliverable link.',
-    inputSchema: { type: 'object', required: ['key', 'summary', 'deliverables'], properties: { key, summary: { type: 'string' }, deliverables: links, reviewer: { type: 'string' }, session, ...spend } },
+    description: 'Hand finished work to a reviewer. Needs a short summary and the work: at least one deliverable link, or notes with the outcome written out (or both).',
+    inputSchema: { type: 'object', required: ['key', 'summary'], properties: { key, summary: { type: 'string' }, deliverables: links, notes, notes_title, reviewer: { type: 'string' }, session, ...spend } },
     run: (c, a) => core.submitForReview(c, a.key, a),
   },
   {
@@ -138,7 +148,7 @@ export const TOOLS: Tool[] = [
         project: { type: 'string', description: 'Project key, e.g. MKT; leave out for workspace-level work' }, title: { type: 'string' }, brief: { type: 'string' },
         criteria: { type: 'array', items: { type: 'string' } }, priority: { type: 'number' },
         assignee: { type: 'string' }, reviewer: { type: 'string' }, parent: { type: 'string', description: 'Parent task key; makes this a sub-task' },
-        status: { type: 'string', enum: ['inbox', 'ready'] }, force: { type: 'boolean', description: 'Create even if a similar open task exists' },
+        kind, status: { type: 'string', enum: ['inbox', 'ready'] }, force: { type: 'boolean', description: 'Create even if a similar open task exists' },
       },
     },
     run: async (c, a) => {
@@ -189,16 +199,17 @@ const err = (id: Rpc['id'], code: number, message: string) => ({ jsonrpc: '2.0',
 export const INSTRUCTIONS = `Kunla is the team's record of work, shared by people and AIs.
 Working agreement:
 1. Before starting, call next_task or get_task; follow the brief, the playbook and every rule. next_task respects the team's focus and your lane, so prefer it over picking work yourself.
-2. Cite the task key in everything you produce (commit trailer, PR title, doc source line); get_task gives the exact text.
+2. Cite the task key in everything you produce (commit trailer, PR title, doc source line, message line); get_task gives the exact text.
 3. Record progress with log_work (one sentence). If work has no task yet, log_work creates one.
-4. When done, submit_for_review with at least one deliverable link. If you are stuck, update_task with blocked_question.
+4. When done, submit_for_review with at least one deliverable link or notes with the outcome. get_task's how_to_finish says what to hand in for that kind of work. If you are stuck, update_task with blocked_question.
 5. Split big work into sub-tasks with create_task parent; search before creating so nobody files the same work twice.
 6. Pass session (a link to this chat or agent session) when you claim, log work or submit, so people can open the conversation from the task later.
 7. A parked task was put off by a person on purpose. Do not resume it, claim it, or ask about it unless the user brings it up.
 8. Approved means merge: when a person approves a task whose deliverable is your open PR, squash-merge it once checks pass, unless Kunla already did.
 9. Continuous mode: when next_task returns continuous.go true, work through tasks one by one: claim, do, submit (or ask with blocked_question), then call next_task again. Being blocked on one task is not a reason to stop; stop only when next_task says go false. Report cost_usd or tokens with log_work or submit_for_review when you know them.
 10. When the person who sponsors you decides something about a task in your chat (approve, merge, send back, an answer), call record_decision with their words and a link to the chat, so it counts in Kunla. Never record a decision they didn't make.
-11. One holder per task. Claim before you work, and never work on a task someone else holds: if claim_task says it is taken, skip it and call next_task. If heartbeat or an update says the task is no longer yours, stop and move on. When you stop partway, release_task with a handoff note so the next person or agent can carry on; read handoff on a task before you start it.`;
+11. One holder per task. Claim before you work, and never work on a task someone else holds: if claim_task says it is taken, skip it and call next_task. If heartbeat or an update says the task is no longer yours, stop and move on. When you stop partway, release_task with a handoff note so the next person or agent can carry on; read handoff on a task before you start it.
+12. All work counts, not only code. When a chat reaches an outcome (a decision, a takeaway, a draft, findings, notes on a paper, a campaign sent), log_work it yourself with its kind and the outcome in notes or links, without waiting to be asked. Log once per outcome, not every message; keep adding to the same task key as the conversation goes on. Real next steps become their own tasks. Discussion and learning can be logged as done; send work for review when a person must sign it off.`;
 
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');

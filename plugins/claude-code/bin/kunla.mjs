@@ -93,7 +93,7 @@ function briefText(t, { agreement = true } = {}) {
     `- Docs: ${t.references.doc_source_line}`);
   if (agreement) lines.push('', '## Working agreement',
     '- Log progress with the Kunla log_work tool in one sentence when you finish a meaningful step.',
-    '- When done, call submit_for_review with a summary and at least one deliverable link (PR, doc, file).',
+    '- When done, call submit_for_review with a summary and at least one deliverable link (PR, doc, paper, file) or notes with the outcome.',
     '- If you need a decision from a person, call update_task with blocked_question instead of guessing.');
   return lines.join('\n');
 }
@@ -242,6 +242,12 @@ const hooks = {
 };
 
 // ---------- commands ----------
+/** --notes "text" or --notes @path/to/notes.md */
+function notesArg(v) {
+  if (typeof v !== 'string' || !v.trim()) return undefined;
+  return v.startsWith('@') ? readFileSync(v.slice(1), 'utf8') : v;
+}
+
 function flags(argv) {
   const out = { _: [], link: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -264,9 +270,10 @@ const HELP = `kunla: the team's record of work, from the command line.
   kunla next [--project P]         The best next task for you
   kunla use <KEY>                  Claim a task and pin it to this repo
   kunla show [KEY]                 The brief, rules and history
-  kunla log "<summary>" [--task KEY] [--link URL]... [--review]
-                                   Record work (creates a task if there is none)
-  kunla submit "<summary>" --link URL [--task KEY]
+  kunla log "<summary>" [--task KEY] [--link URL]... [--kind K] [--notes TEXT|@file] [--review]
+                                   Record any work, not only code (creates a task if there is none)
+                                   K: code, writing, research, learning, discussion, outreach, design, operations (or your project's own)
+  kunla submit "<summary>" (--link URL | --notes TEXT|@file) [--task KEY]
   kunla block "<question>" [--task KEY]
   kunla status [PROJECT]           Project progress
   kunla release                    Unpin the current task from this repo
@@ -323,15 +330,17 @@ async function main() {
     case 'log': {
       const summary = f._.join(' ');
       const task = f.task || pinnedTask() || undefined;
-      const t = await tool('log_work', { summary, task, project: f.project || (task ? undefined : repoProject()), deliverables: f.link.map((url) => ({ url })), status: f.review ? 'review' : undefined });
+      const t = await tool('log_work', { summary, task, project: f.project || (task ? undefined : repoProject()), deliverables: f.link.map((url) => ({ url })),
+        kind: typeof f.kind === 'string' ? f.kind : undefined, notes: notesArg(f.notes), status: f.review ? 'review' : undefined });
       console.log(`Logged on ${t.key}: ${t.references.link}`);
       return;
     }
     case 'submit': {
       const key = f.task || (await currentTask());
       if (!key) throw new Error('No current task. Use --task KEY.');
-      if (!f.link.length) throw new Error('Add at least one --link to the work.');
-      await tool('submit_for_review', { key, summary: f._.join(' '), deliverables: f.link.map((url) => ({ url })) });
+      const notes = notesArg(f.notes);
+      if (!f.link.length && !notes) throw new Error('Add at least one --link to the work, or --notes with the outcome.');
+      await tool('submit_for_review', { key, summary: f._.join(' '), deliverables: f.link.map((url) => ({ url })), notes });
       if (pinnedTask() === key) pin(null);
       console.log(`${key} is in review.`);
       return;
