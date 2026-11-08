@@ -124,6 +124,9 @@ describe('approve = merge', () => {
     await setToken();
     await call('POST', '/api/log', ai, { task: 'MKT-1', summary: 'Mentioned elsewhere', deliverables: [{ url: 'https://github.com/acme/app/pull/9', title: 'PR #9: MKT-2: Something else' }] });
     expect((await call('GET', '/api/tasks/MKT-1/pr', human)).body.pr.number).toBe(7);
+    // The other task's PR isn't shown on this task's card either.
+    expect((await task('MKT-1')).deliverables.map((d: any) => d.url)).toEqual(['https://github.com/acme/app/pull/7']);
+    expect((await call('GET', '/api/inbox', human)).body.items.find((i: any) => i.task.key === 'MKT-1').task.deliverables.map((d: any) => d.url)).toEqual(['https://github.com/acme/app/pull/7']);
     gh.pr = { ...gh.pr, state: 'closed', merged: true };
     expect((await call('GET', '/api/tasks/MKT-1/pr', human)).body.state).toBe('merged');
     calls = [];
