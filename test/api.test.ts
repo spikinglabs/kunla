@@ -505,3 +505,14 @@ describe('one MCP address per workspace', () => {
     expect((await call('GET', '/api/members', human)).body.map((m: any) => m.name)).not.toContain("L's claude.ai");
   });
 });
+
+describe('work map grouping', () => {
+  it('tags each bar with its project and kind of work so lanes can be grouped by them', async () => {
+    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Write the launch post', kind: 'writing' });
+    await tool(ai, 'claim_task', { key: 'MKT-1' });
+    const m = (await call('GET', '/api/map?days=1', human)).body;
+    const seg = m.lanes.find((l: any) => l.name === "L's Claude Code").segments[0];
+    expect(seg).toMatchObject({ key: 'MKT-1', project: 'MKT', work: 'writing', kind: 'work' });
+    expect(m.projects.map((p: any) => p.key)).toContain('MKT');
+  });
+});
