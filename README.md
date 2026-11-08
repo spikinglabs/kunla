@@ -72,6 +72,8 @@ The plugin adds the MCP server, the working-agreement skill, commands (`/kunla:n
 
 **Codex:** `codex mcp add kunla --url <url>/mcp --bearer-token-env-var KUNLA_TOKEN`; full guide in [docs/agents/codex.md](docs/agents/codex.md).
 
+**OpenCode, Goose, Aider, OpenHands:** see [docs/agents/open-source.md](docs/agents/open-source.md).
+
 **Cursor, Gemini CLI, Goose and other MCP agents:** an HTTP MCP server at `<url>/mcp` with header `Authorization: Bearer <token>`. Point the agent at `AGENTS.md` for the working agreement.
 
 **Any command-line agent, even without MCP:**
