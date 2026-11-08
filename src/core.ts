@@ -1,6 +1,7 @@
 import { wakeMember, publicCallback, type Wake } from './wake';
 import { taskPr, tokenFor, mergeApproved, ownLinks } from './merge';
 import * as continuous from './continuous';
+import { FORGES, mentions, normalizeRepo, repoOf, type Repo } from './refs';
 import { DEFAULT_DEFS, KindsError, effectiveKinds, inferKind, labelFor, linkType, matchKind, parseKinds, storeKinds, type KindDef } from './kinds';
 
 // Kunla core: the record of work. Everything here is plain SQL over a D1-compatible
@@ -29,6 +30,7 @@ export interface Project {
   require_human_review: number; next_seq: number; created_at: string;
   kind: 'project' | 'workspace'; focus: number; rank: number; ends_at: string | null; space_id: string;
   kinds?: string | null; // kinds of work for tasks here (JSON); NULL inherits (kinds.ts)
+  repo_url?: string | null; repo_forge?: string | null; // code repository, so "PR #12" becomes a link (refs.ts)
 }
 export interface Task {
   id: string; project_id: string; key: string; title: string; brief: string; criteria: string;
@@ -190,9 +192,17 @@ export async function createProject(c: Ctx, input: { key: string; name: string; 
 export async function updateProject(c: Ctx, key: string, input: {
   name?: string; playbook?: string; require_human_review?: boolean; focus?: boolean; rank?: number; ends_at?: string | null;
   kinds?: unknown; // list of kinds of work for this project or workspace; null goes back to inheriting
+  repo_url?: string | null; repo_forge?: string | null; // '' or null clears; forge null means guess from the host
 }) {
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can change project settings.');
   const p = await getProject(c, key);
+  if (input.repo_url !== undefined || input.repo_forge !== undefined) {
+    const url = input.repo_url === undefined ? p.repo_url ?? null : input.repo_url ? normalizeRepo(input.repo_url) : null;
+    if (input.repo_url && !url) throw new KunlaError(400, 'Give the repository as a URL (https://host/group/project) or a git remote (git@host:group/project.git).');
+    const forge = input.repo_forge === undefined ? p.repo_forge ?? null : input.repo_forge || null;
+    if (forge && !FORGES.includes(forge as any)) throw new KunlaError(400, `Code host is one of ${FORGES.join(', ')}, or empty to guess from the address.`);
+    await c.db.prepare('UPDATE projects SET repo_url = ?, repo_forge = ? WHERE id = ?').bind(url, forge, p.id).run();
+  }
   if (input.kinds !== undefined) {
     let defs: KindDef[] | null;
     try { defs = parseKinds(input.kinds); } catch (e) { if (e instanceof KindsError) throw new KunlaError(400, e.message); throw e; }
@@ -222,6 +232,23 @@ export async function getProject(c: Ctx, keyOrId: string): Promise<Project> {
   const p = await c.db.prepare('SELECT * FROM projects WHERE (key = ? OR id = ?) AND space_id = ?').bind(keyOrId.toUpperCase(), keyOrId, c.space).first<Project>();
   if (!p) throw new KunlaError(404, `No project ${keyOrId}.`);
   return p;
+}
+
+/** The code repository for work in a project: its own, else the workspace's. */
+export async function projectRepo(c: Ctx, projectId: string): Promise<Repo | null> {
+  const rows = (await c.db.prepare(`SELECT kind, repo_url, repo_forge FROM projects WHERE space_id = ? AND (id = ? OR kind = 'workspace')`)
+    .bind(c.space, projectId).all<Pick<Project, 'kind' | 'repo_url' | 'repo_forge'>>()).results;
+  const own = rows.find((r) => r.kind === 'project') ?? null;
+  const ws = rows.find((r) => r.kind === 'workspace') ?? null;
+  return repoOf(own?.repo_url, own?.repo_forge) ?? repoOf(ws?.repo_url, ws?.repo_forge);
+}
+
+/** An agent said which repository it works in (its git remote). The first report sets it; people change it on the Projects page. */
+export async function rememberRepo(c: Ctx, projectId: string, remote: unknown) {
+  if (typeof remote !== 'string' || !remote.trim()) return;
+  const url = normalizeRepo(remote);
+  if (!url) return;
+  await c.db.prepare(`UPDATE projects SET repo_url = ? WHERE id = ? AND space_id = ? AND (repo_url IS NULL OR repo_url = '')`).bind(url, projectId, c.space).run();
 }
 
 /** Projects in steering order: focused first, then by rank. The workspace row is not a project. */
@@ -442,7 +469,7 @@ function leaseFor(c: Ctx, m: Member): string | null {
 
 export async function createTask(c: Ctx, input: {
   project?: string; title: string; brief?: string; criteria?: string[]; priority?: number;
-  assignee?: string; reviewer?: string; status?: 'inbox' | 'ready'; parent?: string; due_at?: string; kind?: string;
+  assignee?: string; reviewer?: string; status?: 'inbox' | 'ready'; parent?: string; due_at?: string; kind?: string; repo?: string;
 }) {
   // Middle levels are optional: no project means a workspace-level task. A sub-task always
   // belongs to a task, takes its parent's project, and cannot have sub-tasks of its own.
@@ -461,7 +488,8 @@ export async function createTask(c: Ctx, input: {
   const key = `${p.key}-${seq!.next_seq}`;
   const t = nowIso(c);
   const parent = parentTask?.id ?? null;
-  const kind = kindFor(await kindsFor(c, p.id), input.kind, input.title ?? '', input.brief ?? '', [], parentTask);
+  await rememberRepo(c, p.id, input.repo);
+  const kind = kindFor(await kindsFor(c, p.id), input.kind, input.title ?? '', input.brief ?? '', mentions(input.brief, await projectRepo(c, p.id)).map((m) => m.url), parentTask);
   await c.db.prepare(
     `INSERT INTO tasks (id, project_id, key, title, brief, criteria, status, priority, created_by, assignee_id, reviewer_id, parent_id, due_at, kind, space_id, created_at, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
@@ -565,7 +593,14 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (input.brief !== undefined) fields.brief = input.brief;
   if (input.criteria) fields.criteria = JSON.stringify(input.criteria);
   if (input.priority !== undefined) fields.priority = input.priority;
-  if (input.kind !== undefined && input.kind !== null && input.kind !== '') fields.kind = checkKind(await kindsFor(c, t.project_id), input.kind);
+  let kindNote: string | null = null;
+  if (input.kind !== undefined && input.kind !== null && input.kind !== '') {
+    const defs = await kindsFor(c, t.project_id);
+    fields.kind = checkKind(defs, input.kind);
+    // Say what changed, so the history explains why the kind is different from what the briefing showed before.
+    if (fields.kind !== t.kind) kindNote = `Kind: ${t.kind ? labelFor(t.kind, defs) : 'not set'} → ${labelFor(fields.kind, defs)}`;
+    else delete fields.kind;
+  }
   if (input.assignee !== undefined) fields.assignee_id = input.assignee ? (await getMember(c, input.assignee)).id : null;
   if (input.reviewer !== undefined) fields.reviewer_id = input.reviewer ? (await getMember(c, input.reviewer)).id : null;
   if (input.blocked_question) {
@@ -598,7 +633,7 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (Object.keys(fields).length) await touch(c, t.id, fields);
   const type = input.blocked_question ? 'blocked' : fields.status && fields.status !== t.status ? 'status' : 'note';
   if (input.note || type !== 'note' || Object.keys(fields).length)
-    await event(c, t.id, type, input.note ?? input.blocked_question ?? null, { from: t.status, to: fields.status ?? t.status, ...spend(input), ...(via ? { via } : {}) });
+    await event(c, t.id, type, [input.note ?? input.blocked_question, kindNote].filter(Boolean).join('\n') || null, { from: t.status, to: fields.status ?? t.status, ...(fields.kind ? { kind: fields.kind } : {}), ...spend(input), ...(via ? { via } : {}) });
   if (fields.status === 'done' || fields.status === 'declined') await rollUp(c, t.parent_id);
   if (fields.assignee_id && fields.assignee_id !== t.assignee_id && (fields.status ?? t.status) === 'ready')
     await wakeMember(c, fields.assignee_id, 'assigned', t, input.note ?? null);
@@ -1071,6 +1106,7 @@ export async function taskDetail(c: Ctx, key: string) {
   const ws = p.kind === 'workspace' ? p : await getWorkspace(c);
   const names = await memberNames(c);
   const sharing = await claimInfo(c, t);
+  const repo = await projectRepo(c, t.project_id);
   return {
     ...publicTask(t, names),
     kind,
@@ -1084,6 +1120,8 @@ export async function taskDetail(c: Ctx, key: string) {
     playbook: [ws.playbook, p.kind === 'workspace' ? '' : p.playbook].filter((x) => x?.trim()).join('\n\n'),
     rules: rules.results,
     deliverables: ownLinks(t.key, links),
+    mentions: mentions(t.brief, repo),
+    repo: repo ? `${repo.base}/${repo.path}` : null,
     notes,
     reviews: reviews.results.map((r: any) => ({ ...r, via: r.via ? JSON.parse(r.via) : null })),
     subtasks: subtasks.results,
@@ -1217,12 +1255,18 @@ export async function inbox(c: Ctx) {
     const sub = await c.db.prepare(`SELECT note FROM events WHERE task_id = ? AND type IN ('submitted','work_logged') ORDER BY id DESC LIMIT 1`).bind(t.id).first<{ note: string }>();
     const dels = (await c.db.prepare('SELECT url, title FROM deliverables WHERE task_id = ?').bind(t.id).all<{ url: string; title: string | null }>()).results
       .map((d) => ({ ...d, type: linkType(d.url) }));
-    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url), await kindsFor(c, t.project_id)), summary: sub?.note ?? null, deliverables: ownLinks(t.key, dels), notes: await taskNotes(c.db, t.id) };
+    const repo = await repoFor(t.project_id);
+    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url), await kindsFor(c, t.project_id)), summary: sub?.note ?? null, deliverables: ownLinks(t.key, dels), notes: await taskNotes(c.db, t.id),
+      mentions: mentions(`${t.brief}\n${sub?.note ?? ''}`, repo) };
   };
+  // Briefs and summaries name PRs as "acme/site#12" or "PR #12": hand the links over with the card (refs.ts).
+  const repos = new Map<string, Promise<Repo | null>>();
+  const repoFor = (pid: string) => { if (!repos.has(pid)) repos.set(pid, projectRepo(c, pid)); return repos.get(pid)!; };
+  const withMentions = async (t: Task) => ({ ...publicTask(t, names), mentions: mentions(`${t.brief}\n${t.blocked_question ?? ''}`, await repoFor(t.project_id)) });
   const items = [
     ...(await Promise.all(reviews.map(withSummary))).map((t) => ({ kind: 'review' as const, task: t })),
-    ...questions.map((t) => ({ kind: 'question' as const, task: publicTask(t, names) })),
-    ...proposals.map((t) => ({ kind: 'proposal' as const, task: publicTask(t, names) })),
+    ...(await Promise.all(questions.map(withMentions))).map((t) => ({ kind: 'question' as const, task: t })),
+    ...(await Promise.all(proposals.map(withMentions))).map((t) => ({ kind: 'proposal' as const, task: t })),
     ...flagged.map((t) => ({ kind: 'flagged' as const, task: publicTask(t, names) })),
   ];
   return { count: items.length, items };

@@ -478,6 +478,8 @@ pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: va
 .said, .ask, .note, .prose, .decision h2, .what, .check span { overflow-wrap: anywhere; }
 a.inline-link { display: inline-block; padding: 0 8px; border-radius: 99px; background: var(--canvas); border: 1px solid var(--rule); font-size: .82em; line-height: 1.6; text-decoration: none; white-space: nowrap; vertical-align: .08em; }
 a.inline-link:hover { border-color: var(--ink-2); }
+/* A mention ("acme/site PR #3") keeps reading as part of the sentence and wraps like it (KD-42). */
+a.inline-link.mention { display: inline; padding: 0; border: 0; border-radius: 0; background: none; font-size: inherit; line-height: inherit; white-space: normal; overflow-wrap: anywhere; vertical-align: baseline; color: inherit; text-decoration: underline; text-decoration-color: var(--lime, currentColor); text-decoration-thickness: 2px; text-underline-offset: 3px; }
 .links { min-width: 0; }
 .links .pill { max-width: 100%; min-width: 0; flex-wrap: nowrap; }
 .pill-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

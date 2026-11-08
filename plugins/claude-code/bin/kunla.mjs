@@ -48,9 +48,12 @@ function sessionRef() {
   return undefined;
 }
 const WITH_SESSION = new Set(['claim_task', 'log_work', 'submit_for_review', 'update_task']);
+// The repo's remote goes along too, so Kunla links "PR #12" to the right GitHub, GitLab or other host.
+const WITH_REPO = new Set([...WITH_SESSION, 'create_task']);
 const tool = async (name, args = {}) => {
   const session = WITH_SESSION.has(name) && !args.session ? sessionRef() : undefined;
-  const r = await api('POST', `/api/tools/${name}`, session ? { ...args, session } : args);
+  const repo = WITH_REPO.has(name) && !args.repo ? git('remote', 'get-url', 'origin') || undefined : undefined;
+  const r = await api('POST', `/api/tools/${name}`, { ...args, ...(session ? { session } : {}), ...(repo ? { repo } : {}) });
   for (const line of r.reminders || []) console.error(`kunla: ${line}`);
   return r.result;
 };

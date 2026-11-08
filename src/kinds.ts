@@ -174,7 +174,12 @@ export function linkType(url: string): string {
     if (/\/discussions\/\d+/.test(p)) return 'chat';
     return 'repo';
   }
-  if (h === 'gitlab.com' && /\/merge_requests\/\d+/.test(p)) return 'pr';
+  // Any code host: GitLab (gitlab.com or self-managed), GitHub Enterprise, Gitea/Forgejo, Bitbucket.
+  if (/\/(-\/)?merge_requests\/\d+/.test(p) || /\/pull-requests\/\d+/.test(p)) return 'pr';
+  if (/(^|[.-])(github|gitlab|gitea|forgejo|bitbucket)([.-]|$)/.test(h) || h === 'codeberg.org') {
+    if (/\/pulls?\/\d+/.test(p)) return 'pr';
+    if (/\/(-\/)?issues\/\d+/.test(p)) return 'issue';
+  }
   if (h === 'huggingface.co' && p.startsWith('/papers')) return 'paper';
   if (PAPER_HOSTS.test(h)) return 'paper';
   if (h === 'docs.google.com') {
