@@ -25,6 +25,7 @@ const notes = {
   type: 'string',
   description: 'The outcome written out, in Markdown, when it is not (only) a link: the decisions and next steps of a discussion, notes on a paper, research findings with sources, what you learned. Counts as a deliverable.',
 };
+const repo = { type: 'string', description: "The git remote of the repository you work in (output of git remote get-url origin), if any. Kunla remembers it on the project so mentions like PR #12 or acme/site!12 link to the right GitHub, GitHub Enterprise, GitLab, Gitea or Bitbucket host." };
 const notes_title = { type: 'string', description: 'Optional heading for the notes, e.g. "Decisions", "Paper notes", "Findings"' };
 
 type Tool = { name: string; description: string; inputSchema: object; run: (c: Ctx, a: any) => Promise<unknown>; readOnly?: boolean };
@@ -145,7 +146,7 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: 'object', required: ['title'],
       properties: {
-        project: { type: 'string', description: 'Project key, e.g. MKT; leave out for workspace-level work' }, title: { type: 'string' }, brief: { type: 'string' },
+        project: { type: 'string', description: 'Project key, e.g. MKT; leave out for workspace-level work' }, title: { type: 'string' }, brief: { type: 'string', description: 'What to do and why. Write pull requests and issues as full URLs or owner/repo#N (e.g. acme/site#12; acme/site!12 for a GitLab merge request) so they show as links on the task.' },
         criteria: { type: 'array', items: { type: 'string' } }, priority: { type: 'number' },
         assignee: { type: 'string' }, reviewer: { type: 'string' }, parent: { type: 'string', description: 'Parent task key; makes this a sub-task' },
         kind, status: { type: 'string', enum: ['inbox', 'ready'] }, force: { type: 'boolean', description: 'Create even if a similar open task exists' },
@@ -209,7 +210,23 @@ Working agreement:
 9. Continuous mode: when next_task returns continuous.go true, work through tasks one by one: claim, do, submit (or ask with blocked_question), then call next_task again. Being blocked on one task is not a reason to stop; stop only when next_task says go false. Report cost_usd or tokens with log_work or submit_for_review when you know them.
 10. When the person who sponsors you decides something about a task in your chat (approve, merge, send back, an answer), call record_decision with their words and a link to the chat, so it counts in Kunla. Never record a decision they didn't make.
 11. One holder per task. Claim before you work, and never work on a task someone else holds: if claim_task says it is taken, skip it and call next_task. If heartbeat or an update says the task is no longer yours, stop and move on. When you stop partway, release_task with a handoff note so the next person or agent can carry on; read handoff on a task before you start it.
-12. All work counts, not only code. When a chat reaches an outcome (a decision, a takeaway, a draft, findings, notes on a paper, a campaign sent), log_work it yourself with its kind and the outcome in notes or links, without waiting to be asked. Log once per outcome, not every message; keep adding to the same task key as the conversation goes on. Real next steps become their own tasks. Discussion and learning can be logged as done; send work for review when a person must sign it off.`;
+12. All work counts, not only code. When a chat reaches an outcome (a decision, a takeaway, a draft, findings, notes on a paper, a campaign sent), log_work it yourself with its kind and the outcome in notes or links, without waiting to be asked. Log once per outcome, not every message; keep adding to the same task key as the conversation goes on. Real next steps become their own tasks. Discussion and learning can be logged as done; send work for review when a person must sign it off.
+13. Write pull requests and issues as full URLs or owner/repo#N (owner/repo!N for a GitLab merge request) so they show as links, and pass repo (your git remote) when you work in a git repo, so short forms like PR #12 link to the right code host.`;
+
+// Agents working in a git repo pass repo (their remote); the task's project remembers it (KD-42).
+for (const t of TOOLS.filter((x) => ['create_task', 'claim_task', 'log_work', 'submit_for_review', 'update_task'].includes(x.name))) {
+  (t.inputSchema as any).properties.repo = repo;
+  const run = t.run;
+  t.run = async (c, a) => {
+    const result: any = await run(c, a);
+    const k = a?.key ?? a?.task ?? result?.key;
+    if (a?.repo && typeof k === 'string') {
+      const task = await core.getTask(c, k).catch(() => null);
+      if (task) await core.rememberRepo(c, task.project_id, a.repo);
+    }
+    return result;
+  };
+}
 
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');
