@@ -32,8 +32,22 @@ const linkLabel = (u) => {
     return x.hostname.replace(/^www\./, '');
   } catch { return 'link'; }
 };
-const prose = (s) => raw(String(s ?? '').split(/(https?:\/\/[^\s<>"']+)/g).map((part, i) => {
-  if (i % 2 === 0) return esc(part);
+// Mentions the server found in the text ("acme/site#12", "PR #12", "group/app!7"), each with its link
+// on the project's code host (src/refs.ts, KD-42). They read as text but go to the PR, MR or issue.
+const mentionLinks = (text, ms = []) => {
+  const list = ms.filter((m) => m.text && !/^https?:/.test(m.text));
+  if (!list.length) return esc(text);
+  const re = new RegExp(list.map((m) => m.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length).join('|'), 'g');
+  let out = ''; let at = 0;
+  for (const m of text.matchAll(re)) {
+    const hit = list.find((x) => x.text === m[0]);
+    out += esc(text.slice(at, m.index)) + html`<a class="inline-link mention" href="${hit.url}" target="_blank" rel="noopener" title="${hit.url}">${m[0]} ↗</a>`;
+    at = m.index + m[0].length;
+  }
+  return out + esc(text.slice(at));
+};
+const prose = (s, ms) => raw(String(s ?? '').split(/(https?:\/\/[^\s<>"']+)/g).map((part, i) => {
+  if (i % 2 === 0) return mentionLinks(part, ms);
   const m = part.match(/^(.*?)([.,;:!?)\]]*)$/);
   return html`<a class="inline-link" href="${m[1]}" target="_blank" rel="noopener" title="${m[1]}">${linkLabel(m[1])} ↗</a>` + esc(m[2]);
 }).join(''));
@@ -96,6 +110,7 @@ const STATUS_HINT = {
   declined: 'A person said no to this proposal.',
   parked: 'A person put it off on purpose. Agents leave it alone until someone brings it back.',
 };
+const PROPOSAL_HINT = 'An agent suggested this task. Accept moves it to Ready, where anyone, person or agent, can pick it up; nobody starts until then. Decline says no and keeps it in the record. Later puts the card aside.';
 const hint = (text, label) => html`<button type="button" class="hint" data-tip="${text}" aria-label="${label}">?</button>`;
 const projectOf = (key) => projects.find((p) => key?.startsWith(p.key + '-'));
 const firstName = (n) => n?.split(' ')[0] ?? '';
@@ -369,7 +384,7 @@ function decisionCard(item, { solo = false } = {}) {
     return html`<form class="decision ${solo ? '' : 'card'}" data-key="${t.key}" data-act="submit:approve">
       ${raw(head(solo ? 'Waiting on your review' : 'Review'))}${raw(title)}
       <div class="byline">${raw(who(worker, t.deliverables?.some((d) => /^https:\/\/github\.com\//.test(d.url)) ? 'GitHub' : 'Someone'))}<span>sent this ${agoLong(t.updated_at)}${round}</span></div>
-      ${raw(t.summary ? html`<p class="said">${prose(t.summary)}</p>` : '')}
+      ${raw(t.summary ? html`<p class="said">${prose(t.summary, t.mentions)}</p>` : '')}
       ${raw(t.deliverables?.length ? html`<div class="links">${join(t.deliverables.map(linkPill))}</div>` : '')}
       ${raw(notesBlock(t.notes, { fold: true }))}
       ${raw(t.criteria?.length ? html`<div><div class="label" style="margin-bottom:6px">Tick what's met</div><div class="checks">${join(t.criteria.map((c, i) => html`<label class="check"><input type="checkbox" name="c${i}" data-crit="${c}"><span>${c}</span></label>`))}</div></div>` : '')}
@@ -391,7 +406,7 @@ function decisionCard(item, { solo = false } = {}) {
     return html`<form class="decision ${solo ? '' : 'card'}" data-key="${t.key}" data-act="submit:answer">
       ${raw(head('Question'))}${raw(title)}
       <div class="byline">${raw(who(worker, 'An agent'))}<span>is stuck and asked ${agoLong(t.updated_at)}</span></div>
-      <p class="ask">“${prose(t.blocked_question)}”</p>
+      <p class="ask">“${prose(t.blocked_question, t.mentions)}”</p>
       <div class="field"><label for="a-${t.key}">Your answer</label><textarea id="a-${t.key}" name="answer" rows="3" required placeholder="${callName(worker) || 'It'} continues as soon as you send this."></textarea></div>
       <div class="acts"><button class="btn go">Send answer <kbd>⌘↵</kbd></button><span class="spacer"></span>
         <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></form>`;
@@ -400,9 +415,10 @@ function decisionCard(item, { solo = false } = {}) {
     return html`<div class="decision ${solo ? '' : 'card'}" data-key="${t.key}">
       ${raw(head('Proposal'))}${raw(title)}
       <div class="byline">${raw(who(t.created_by, 'Someone'))}<span>suggested this ${agoLong(t.created_at)}</span></div>
-      ${raw(t.brief ? html`<p class="said">${prose(t.brief)}</p>` : '')}
-      <div class="acts"><button class="btn go" data-act="click:accept">Make it ready <kbd>A</kbd></button>
-        <button class="btn" data-act="click:decline">Decline</button><span class="spacer"></span>
+      ${raw(t.brief ? html`<p class="said">${prose(t.brief, t.mentions)}</p>` : '')}
+      ${raw(t.mentions?.length ? html`<div class="links">${join(t.mentions.map(linkPill))}</div>` : '')}
+      <div class="acts"><button class="btn go" data-act="click:accept">Accept <kbd>A</kbd></button>
+        <button class="btn" data-act="click:decline">Decline</button>${raw(hint(PROPOSAL_HINT, 'What Accept and Decline do'))}<span class="spacer"></span>
         <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></div>`;
   }
   return html`<div class="decision ${solo ? '' : 'card'}" data-key="${t.key}">
@@ -449,7 +465,7 @@ function decisionHandlers(after, later) {
       }
     },
     answer: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/answer`, { answer: formData(el).answer }); toast(`Answer sent. ${k} is moving again.`); await after(); },
-    accept: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: true }); toast(`${k} is ready for anyone to pick up.`); await after(); },
+    accept: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: true }); toast(`Accepted. ${k} is Ready for anyone to pick up.`); await after(); },
     decline: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: false }); toast(`${k} declined.`); await after(); },
     later: (el) => showLater(keyOf(el), after, later),
   };
@@ -774,11 +790,11 @@ const EVENT = {
   created: (e) => e.data?.status === 'inbox' ? 'proposed it' : 'wrote the brief', claimed: () => 'picked it up', work_logged: () => 'logged work',
   submitted: () => 'sent it for review', approved: (e) => (e.data?.via ? 'approved it in a chat' : 'approved it'), changes_requested: (e) => (e.data?.via ? 'sent it back in a chat' : 'sent it back'),
   decision_undone: () => 'undid a decision recorded from a chat', rule_added: () => 'taught the team a rule',
-  blocked: () => 'asked a question', answered: (e) => (e.data?.via ? 'answered in a chat' : 'answered'), accepted: () => 'made it ready', declined: () => 'declined it',
+  blocked: () => 'asked a question', answered: (e) => (e.data?.via ? 'answered in a chat' : 'answered'), accepted: () => 'accepted it, so it is Ready', declined: () => 'declined it',
   parked: (e) => (e.data?.until ? `put it off until ${new Date(e.data.until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}` : 'put it off for someday'),
   unparked: () => 'brought it back',
   released: (e) => (e.data?.to ? 'handed it on' : 'let it go, back to Ready'), taken_over: () => 'took it over',
-  lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `${e.data?.via ? 'said in a chat to move it' : 'moved it'} to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: () => 'commented',
+  lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `${e.data?.via ? 'said in a chat to move it' : 'moved it'} to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: (e) => (e.data?.kind ? 'changed the kind of work' : 'commented'),
   merged: () => 'merged the PR', merge_waiting: () => 'will merge the PR when checks pass', merge_blocked: () => 'could not merge the PR yet',
   woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
   github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
@@ -829,7 +845,7 @@ async function viewTask(key) {
       ${raw(t.status === 'parked' ? html`<div class="card pad parked-note"><div class="grow"><b>Put off ${t.snoozed_until ? 'until ' + new Date(t.snoozed_until).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' }) : 'for someday'}.</b>
         <span class="muted">It is out of the briefing and agents leave it alone. When it comes back it returns to ${STATUS[t.returns_to] || 'Ready'}.</span></div><button class="btn go" data-act="click:unpark">Bring it back</button></div>`
         : !decision && OPEN.has(t.status) ? '<div class="row" style="margin-top:12px"><button class="btn quiet sm" data-act="click:later">Later…</button></div>' : '')}
-      ${raw(t.brief ? html`<div class="sec"><h3>Brief</h3><p class="prose">${prose(t.brief)}</p></div>` : '')}
+      ${raw(t.brief ? html`<div class="sec"><h3>Brief</h3><p class="prose">${prose(t.brief, t.mentions)}</p>${raw(t.mentions?.length && t.status !== 'inbox' ? html`<div class="links" aria-label="Mentioned in the brief">${join(t.mentions.map(linkPill))}</div>` : '')}</div>` : '')}
       ${raw(!t.parent ? html`<div class="sec"><h3>Sub-tasks${subs.length ? ` · ${subDone} of ${subs.length} done` : ''}</h3>
         ${raw(subs.length ? html`<div class="bar" style="margin:0 0 12px">${raw(subs.length ? `<span class="b-done" style="width:${(subDone / subs.length) * 100}%"></span>` : '')}</div>
           <div class="subs">${join(subs.map((x) => html`<a href="#/t/${x.key}" class="subrow ${['done', 'declined'].includes(x.status) ? 'fin' : ''}"><span class="key">${x.key}</span><span class="t grow">${x.title}</span><span class="muted" style="font-size:13px">${x.assignee ?? ''}</span><span class="pill">${STATUS[x.status]}</span></a>`))}</div>` : '')}
@@ -1424,6 +1440,12 @@ async function viewProjects() {
     return b && d.hand_in === b.hand_in ? d.label : `${d.label}: ${d.hand_in}`;
   }).join('\n');
   const wsKinds = kindsInfo?.workspace;
+  // The code repository, so "PR #12" or "acme/site!7" in a brief links to the right host (KD-42).
+  const FORGE = { '': 'Code host: guess from the address', github: 'GitHub or GitHub Enterprise', gitlab: 'GitLab (gitlab.com or self-managed)', gitea: 'Gitea or Forgejo', bitbucket: 'Bitbucket' };
+  const repoField = (id, x, help) => html`<div class="field"><label for="${id}">Code repository</label>
+    <input id="${id}" name="repo_url" value="${x?.repo_url ?? ''}" placeholder="https://gitlab.acme.com/team/app or git@github.com:acme/site.git" autocomplete="off" spellcheck="false">
+    <select name="repo_forge" aria-label="Code host" style="margin-top:6px">${join(Object.entries(FORGE).map(([k, l]) => html`<option value="${k}" ${(x?.repo_forge ?? '') === k ? 'selected' : ''}>${l}</option>`))}</select>
+    <p class="muted hint-s">${help} Agents that work in a git repo fill this in from its remote when it is empty.</p></div>`;
   const kindsField = (id, own, inherited, from) => html`<div class="field kinds-field"><label for="${id}">Kinds of work</label>
     <p class="muted hint-s">One per line. Use a name from the list below to keep Kunla's guidance, or add your own as <code>Name: what to hand in</code>. ${from}</p>
     <textarea id="${id}" name="kinds" rows="5" placeholder="${kindLines(inherited)}">${ownLines(own)}</textarea>
@@ -1447,9 +1469,10 @@ async function viewProjects() {
         <label class="check focus-check"><input type="checkbox" class="switch" name="focus" ${p.focus ? 'checked' : ''}><span><b>Focus</b> <span class="muted">offered first to everyone</span></span></label>
         <label class="row" style="gap:8px;margin-left:auto"><span class="label">Ends</span><input type="date" name="ends_at" value="${dateVal(p.ends_at)}" style="width:auto"><span class="muted" style="font-size:13px">${p.ends_at ? endsIn(p.ends_at) : 'ongoing'}</span></label>
       </div>
-      <details><summary class="label" style="cursor:pointer">Playbook, review setting, kinds of work and ${plural(rs.length, 'rule')}</summary>
+      <details><summary class="label" style="cursor:pointer">Playbook, review setting, code repository, kinds of work and ${plural(rs.length, 'rule')}</summary>
       <div class="pb" style="margin-top:12px"><div class="field"><label for="pb-${p.key}">Playbook</label><textarea id="pb-${p.key}" name="playbook" placeholder="Voice, links, tools to use, things to avoid. Markdown.">${p.playbook}</textarea>
           <label class="check" style="margin-top:6px"><input type="checkbox" name="require_human_review" ${p.require_human_review ? 'checked' : ''}><span>Work must be approved by a person, not another agent</span></label></div>
+        ${raw(repoField(`repo-${p.key}`, p, `Short mentions like PR #12 in ${p.key} briefs link here.${ws?.repo_url ? ' Empty uses the workspace’s.' : ''}`))}
         ${raw(kindsField(`kd-${p.key}`, kindsInfo?.projects.find((x) => x.key === p.key)?.own, wsKinds?.kinds, 'Leave it empty to use the workspace’s kinds (shown faintly).'))}
         <div><div class="label" style="margin-bottom:6px">Rules from reviews</div>${raw(ruleRows(rs))}</div></div></details>
       <div class="row"><button class="btn ink sm">Save</button><a class="btn quiet sm" href="#/tasks/${p.key}">Open tasks</a></div></form>`; }))}
@@ -1457,6 +1480,7 @@ async function viewProjects() {
       <input name="name" value="${me.workspace.name}" aria-label="Workspace name" class="title-in">
       <p class="muted" style="font-size:14px">The top of the hierarchy. Tasks with no project live here, and this playbook and these rules go with every task in every project.</p>
       <div class="pb"><div class="field"><label for="pb-ws">Playbook for everything</label><textarea id="pb-ws" name="playbook" placeholder="How this workspace works: who we are, the voice, the tools.">${ws?.playbook ?? ''}</textarea>
+        ${raw(repoField('repo-ws', ws, 'Used by projects that don’t name their own.'))}
         ${raw(kindsField('kd-ws', wsKinds?.own, kindsInfo?.defaults, 'Leave it empty to use Kunla’s kinds (shown faintly). Each project can set its own.'))}</div>
         <div><div class="label" style="margin-bottom:6px">Rules for everyone</div>${raw(ruleRows(rules.filter((r) => r.project === me.workspace.key)))}</div></div>
       <div class="row"><button class="btn ink sm">Save</button><a class="btn quiet sm" href="#/tasks/${me.workspace.key}">Tasks with no project</a></div></form></div>`;
@@ -1466,10 +1490,10 @@ async function viewProjects() {
     newp: () => { const f = $('newp'); f.hidden = !f.hidden; if (!f.hidden) f.querySelector('input').focus(); },
     save: async (f) => {
       const d = formData(f);
-      await api('PATCH', `/api/projects/${f.dataset.key}`, { name: d.name, ...(d.playbook !== undefined ? { playbook: d.playbook } : {}), ...(d.kinds !== undefined ? { kinds: kindsValue(d.kinds) } : {}), require_human_review: !!d.require_human_review, focus: !!d.focus, ends_at: d.ends_at || null });
+      await api('PATCH', `/api/projects/${f.dataset.key}`, { name: d.name, ...(d.playbook !== undefined ? { playbook: d.playbook } : {}), ...(d.kinds !== undefined ? { kinds: kindsValue(d.kinds) } : {}), require_human_review: !!d.require_human_review, focus: !!d.focus, ends_at: d.ends_at || null, ...(d.repo_url !== undefined ? { repo_url: d.repo_url.trim() || null, repo_forge: d.repo_forge || null } : {}) });
       await refresh(); toast('Saved. Agents get it with their next task.'); viewProjects();
     },
-    savews: async (f) => { const d = formData(f); await api('PATCH', `/api/projects/${me.workspace.key}`, { name: d.name, playbook: d.playbook, kinds: kindsValue(d.kinds) }); await refresh(); toast('Saved for the whole workspace.'); viewProjects(); },
+    savews: async (f) => { const d = formData(f); await api('PATCH', `/api/projects/${me.workspace.key}`, { name: d.name, playbook: d.playbook, kinds: kindsValue(d.kinds), repo_url: (d.repo_url || '').trim() || null, repo_forge: d.repo_forge || null }); await refresh(); toast('Saved for the whole workspace.'); viewProjects(); },
     create: async (f) => { await api('POST', '/api/projects', formData(f)); await refresh(); viewProjects(); },
     rule: async (el) => { await api('PATCH', `/api/rules/${el.dataset.id}`, { active: el.checked }); toast(el.checked ? 'Rule on. Agents get it from now.' : 'Rule off.'); },
     up: async (el) => {
