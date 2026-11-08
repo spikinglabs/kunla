@@ -2,6 +2,13 @@
 import * as core from './core';
 import type { Ctx } from './core';
 import * as views from './views';
+import * as continuous from './continuous';
+
+/** The part of the connect-time instructions that is about this agent: continuous mode, when it is on. */
+async function continuousNote(c: Ctx) {
+  const mine = await core.myContinuous(c).catch(() => null);
+  return mine ? continuous.instructionsFor(mine.st, mine.who) : '';
+}
 
 const SUPPORTED = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 export const SERVER_INFO = { name: 'kunla', version: '0.1.0' };
@@ -207,7 +214,7 @@ Working agreement:
 6. Pass session (a link to this chat or agent session) when you claim, log work or submit, so people can open the conversation from the task later.
 7. A parked task was put off by a person on purpose. Do not resume it, claim it, or ask about it unless the user brings it up.
 8. Approved means merge: when a person approves a task whose deliverable is your open PR, squash-merge it once checks pass, unless Kunla already did.
-9. Continuous mode: when next_task returns continuous.go true, work through tasks one by one: claim, do, submit (or ask with blocked_question), then call next_task again. Being blocked on one task is not a reason to stop; stop only when next_task says go false. Report cost_usd or tokens with log_work or submit_for_review when you know them.
+9. Continuous mode: your sponsor can turn it on; whoami, next_task and a line under every reply then say so. When next_task returns continuous.go true, work through tasks one by one: claim, do, submit (or ask with blocked_question), then call next_task again. Being blocked on one task is not a reason to stop; stop only when next_task says go false. Report cost_usd or tokens with log_work or submit_for_review when you know them.
 10. When the person who sponsors you decides something about a task in your chat (approve, merge, send back, an answer), call record_decision with their words and a link to the chat, so it counts in Kunla. Never record a decision they didn't make.
 11. One holder per task. Claim before you work, and never work on a task someone else holds: if claim_task says it is taken, skip it and call next_task. If heartbeat or an update says the task is no longer yours, stop and move on. When you stop partway, release_task with a handoff note so the next person or agent can carry on; read handoff on a task before you start it.
 12. All work counts, not only code. When a chat reaches an outcome (a decision, a takeaway, a draft, findings, notes on a paper, a campaign sent), log_work it yourself with its kind and the outcome in notes or links, without waiting to be asked. Log once per outcome, not every message; keep adding to the same task key as the conversation goes on. Real next steps become their own tasks. Discussion and learning can be logged as done; send work for review when a person must sign it off.
@@ -238,7 +245,7 @@ export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
         protocolVersion: SUPPORTED.includes(asked) ? asked : SUPPORTED[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: INSTRUCTIONS,
+        instructions: INSTRUCTIONS + await continuousNote(c),
       });
     }
     case 'ping': return ok(msg.id, {});
@@ -257,6 +264,11 @@ export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
         const nudges = await core.reminders(c);
         const content = [{ type: 'text', text: JSON.stringify(result, null, 2) }];
         if (nudges.length) content.push({ type: 'text', text: 'Reminder: ' + nudges.join(' ') });
+        // A continuous agent hears it under every reply (next_task and whoami already say it in full).
+        if (!['next_task', 'whoami'].includes(tool.name)) {
+          const mine = await core.myContinuous(c);
+          if (mine) content.push({ type: 'text', text: continuous.replyLine(mine.st) });
+        }
         return ok(msg.id, { content, isError: false });
       } catch (e) {
         if (e instanceof core.KunlaError) return ok(msg.id, { content: [{ type: 'text', text: e.message }], isError: true });

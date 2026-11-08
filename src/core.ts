@@ -704,6 +704,47 @@ export async function takeOverTask(c: Ctx, key: string, input: { note?: string; 
 }
 
 /**
+ * Hand several Ready tasks to one member at once (KD-43): a person ticks tasks on the Tasks page and
+ * picks who does them. Assigned work comes before open work in next_task, so an agent works through
+ * the batch first. Only Ready tasks move; anything else is skipped with the reason. An agent is woken
+ * once for the whole batch, and its sponsor can turn continuous mode on in the same step.
+ */
+export async function assignMany(c: Ctx, input: { keys?: string[]; to?: string; continuous?: boolean; note?: string }) {
+  if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people hand out work in a batch. Use next_task.');
+  const keys = [...new Set((input.keys ?? []).map((k) => String(k).toUpperCase()))];
+  if (!keys.length) throw new KunlaError(400, 'Pick at least one task.');
+  if (keys.length > 200) throw new KunlaError(400, 'Hand over at most 200 tasks at once.');
+  if (!input.to) throw new KunlaError(400, 'Say who should do them.');
+  const to = await getMember(c, input.to);
+  if ((to as any).removed_at) throw new KunlaError(400, `${to.name} has left the team.`);
+  // Turn continuous mode on first, so a refusal (not their sponsor) changes nothing.
+  let cont = null;
+  if (input.continuous && to.kind === 'ai') {
+    const was = continuous.parseSettings(to.continuous);
+    const fresh = !was || [was.max_tasks_per_day, was.max_in_review, was.max_cost_per_day, was.max_tokens_per_day].every((x) => x === null);
+    cont = (await setContinuous(c, to.id, { ...(fresh ? continuous.DEFAULTS : {}), on: true })).continuous;
+  }
+  const assigned: Task[] = [];
+  const skipped: { key: string; reason: string }[] = [];
+  const note = input.note?.trim() || null;
+  for (const key of keys) {
+    const t = await c.db.prepare('SELECT * FROM tasks WHERE key = ? AND space_id = ?').bind(key, c.space).first<Task>();
+    if (!t) { skipped.push({ key, reason: 'no such task' }); continue; }
+    if (t.status !== 'ready') { skipped.push({ key, reason: t.status === 'inbox' ? 'still a proposal; accept it first' : `it is ${t.status.replace('_', ' ')}, not Ready` }); continue; }
+    if (t.assignee_id === to.id) { skipped.push({ key, reason: `already with ${to.name}` }); continue; }
+    await touch(c, t.id, { assignee_id: to.id, lease_expires_at: null });
+    await event(c, t.id, 'assigned', note, { from: t.assignee_id, to: to.id, batch: keys.length });
+    assigned.push(t);
+  }
+  if (assigned.length) {
+    const list = assigned.map((t) => t.key).join(', ');
+    const msg = [note, assigned.length > 1 ? `${assigned.length} tasks were handed to you: ${list}. Take them one by one with next_task (assigned work comes first).` : null].filter(Boolean).join('\n') || null;
+    await wakeMember(c, to.id, 'assigned', await getTask(c, assigned[0].id), msg);
+  }
+  return { to: { id: to.id, name: to.name, kind: to.kind }, assigned: assigned.map((t) => t.key), skipped, continuous: cont };
+}
+
+/**
  * Who holds a task, since when, when they were last heard from, and whether the claim looks stale;
  * plus the latest handoff note. Agents read this before working; the task page shows it.
  */
@@ -1228,7 +1269,7 @@ export async function nextTask(c: Ctx, project?: string) {
          (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')))) LIMIT 5`).bind(c.space, c.me.id).all<{ key: string }>()).results;
     reason = waiting.length ? 'waiting_on_people' : 'nothing_ready';
   }
-  const message = continuous.stopMessage(reason, cs.settings, cs.usage);
+  const message = continuous.stopMessageFor(reason, cs.settings, cs.usage, { platform: c.me.platform, hasWake: !!c.me.callback });
   const before = continuous.parseRunState(c.me.run_state);
   await continuous.setRunState(c, c.me.id, 'stopped', reason, message);
   if (before?.state !== 'stopped' || before.reason !== reason) await event(c, null, 'continuous_stopped', message, { reason, usage: cs.usage });
@@ -1344,7 +1385,18 @@ export async function whoami(c: Ctx) {
       ...(k.projects.some((p) => p.own) ? { projects: Object.fromEntries(k.projects.filter((p) => p.own).map((p) => [p.key, p.kinds.map((d) => d.key)])) } : {}),
     })),
     board: c.baseUrl,
+    // Agents learn continuous mode here (and in every MCP reply), so nobody has to tell them.
+    ...(c.me.kind === 'ai' ? { continuous: continuous.forAgent(await continuous.status(c, c.me), { platform: c.me.platform, hasWake: !!c.me.callback, sponsor: sponsor?.name }) } : {}),
   };
+}
+
+/** Continuous status for the calling agent with what it needs to word it (sponsor, platform, wake-up). */
+export async function myContinuous(c: Ctx) {
+  if (c.me.kind !== 'ai' || !continuous.parseSettings(c.me.continuous)?.on) return null;
+  const st = await continuous.status(c, c.me);
+  if (!st) return null;
+  const sponsor = c.me.sponsor_id ? await getMember(c, c.me.sponsor_id) : null;
+  return { st, who: { platform: c.me.platform, hasWake: !!c.me.callback, sponsor: sponsor?.name ?? null } };
 }
 
 /** Per-member track record, so autonomy can be earned from evidence. */

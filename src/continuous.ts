@@ -89,6 +89,15 @@ const MESSAGES: Record<StopReason, (s: ContinuousSettings, u: Usage) => string> 
 
 export const stopMessage = (r: StopReason, s: ContinuousSettings, u: Usage) => MESSAGES[r](s, u);
 
+/** The stop message for this agent: one that can't be woken is told so, instead of being promised a wake-up. */
+export function stopMessageFor(r: StopReason, s: ContinuousSettings, u: Usage, who: { platform?: string | null; hasWake?: boolean }) {
+  const m = stopMessage(r, s, u);
+  if (who.hasWake || !WAKEABLE.includes(r)) return m;
+  return m.replace(/ ?Kunla wakes you[^.]*\./, '').replace(/; $/, '.').replace(/;$/, '.') + ' ' + (who.platform === 'claude-ai'
+    ? 'Tell your sponsor; they can ask you again once there is new work.'
+    : 'Kunla cannot start you again (no wake-up URL), so tell the person running you; they can start a new run later.');
+}
+
 /** The limit that stops the agent from starting new work, if any. */
 export function limitHit(s: ContinuousSettings, u: Usage, at: Date): StopReason | null {
   if (s.until && new Date(s.until).getTime() <= at.getTime()) return 'ended';
@@ -163,4 +172,60 @@ export async function newDay(c: Omit<Ctx, 'space' | 'me'>) {
     while (await wakeIdle(ctx, null, { reasons: DAILY, note: 'A new day started, so your daily budget is free again.' })) woken++;
   }
   return woken;
+}
+
+// ---------- telling the agent ----------
+// An agent should never have to discover continuous mode on its own. whoami, the MCP instructions it
+// reads on connect, and a line under every tool reply say that it is on, what is left of today's budget
+// and what to do next, so a sponsor only has to switch it on.
+
+/** Starting limits when a person turns continuous mode on from an offer: a day's work, small enough to review. */
+export const DEFAULTS = { max_tasks_per_day: 10, max_in_review: 5 } as const;
+
+type Status = NonNullable<Awaited<ReturnType<typeof status>>>;
+interface Who { platform?: string | null; hasWake?: boolean; sponsor?: string | null }
+
+/** How the agent gets started again after it stops, by platform. Plain words, read by the agent. */
+export function wakeStory(platform: string | null | undefined, hasWake: boolean): string {
+  if (hasWake) return 'Kunla calls your wake-up URL when new work is ready or a person decides something, so a new run starts by itself.';
+  if (platform === 'claude-ai') return 'A chat only runs when your sponsor writes to it, so Kunla cannot start you. When they ask you to work, keep going through tasks in this conversation until next_task says stop.';
+  return 'You have no wake-up URL, so Kunla cannot start you again after you stop. Keep going for as long as this session runs; your sponsor can add a wake-up URL in Kunla (Team, Manage) so new runs start by themselves.';
+}
+
+const left = (max: number | null, used: number) => (max === null ? null : Math.max(0, Math.round((max - used) * 100) / 100));
+
+/** What the agent learns about continuous mode from whoami. */
+export function forAgent(st: Status | null, who: Who) {
+  if (!st) return { on: false, note: `Continuous mode is off: take tasks when you are asked. ${who.sponsor ?? 'Your sponsor'} can turn it on in Kunla; every reply will then tell you.` };
+  const { settings: s, usage: u } = st;
+  return {
+    on: true,
+    go: !st.stop,
+    what_to_do: st.stop ? `Finish what you hold, then stop: ${st.message}`
+      : 'Work through tasks one by one: next_task, claim_task, do it, submit_for_review (or update_task with blocked_question), then next_task again. A question on one task is not a reason to stop. Stop only when next_task returns continuous.go false.',
+    today: { tasks_started: u.tasks_today, cost_usd: u.cost_today, tokens: u.tokens_today, waiting_for_review: u.in_review },
+    left_today: {
+      tasks: left(s.max_tasks_per_day, u.tasks_today), cost_usd: left(s.max_cost_per_day, u.cost_today),
+      tokens: left(s.max_tokens_per_day, u.tokens_today), review_slots: left(s.max_in_review, u.in_review),
+    },
+    ends_at: s.until,
+    report_spend: 'Pass cost_usd and/or tokens with log_work or submit_for_review when you know them; they count toward the limits.',
+    wake_up: wakeStory(who.platform, !!who.hasWake),
+  };
+}
+
+/** One line under every tool reply, so a continuous agent never loses track of the mode it is in. */
+export function replyLine(st: Status): string {
+  const { settings: s, usage: u } = st;
+  const parts = [`${u.tasks_today}${s.max_tasks_per_day !== null ? ` of ${s.max_tasks_per_day}` : ''} tasks started today`];
+  if (s.max_in_review !== null) parts.push(`${u.in_review} of ${s.max_in_review} waiting for review`);
+  if (s.max_cost_per_day !== null) parts.push(`$${u.cost_today} of $${s.max_cost_per_day}`);
+  if (s.max_tokens_per_day !== null) parts.push(`${u.tokens_today} of ${s.max_tokens_per_day} tokens`);
+  const next = st.stop ? `Finish what you hold, then stop: ${st.message}` : 'When this task is submitted or blocked, call next_task and take the next one.';
+  return `Continuous mode is on (${parts.join(', ')}). ${next}`;
+}
+
+/** Added to the MCP instructions an agent reads when it connects, when its sponsor turned continuous mode on. */
+export function instructionsFor(st: Status, who: Who): string {
+  return `\n\nYou are in continuous mode: ${who.sponsor ?? 'your sponsor'} turned it on for you. Start with next_task and keep taking the next task (rule 9) until it says stop. ${replyLine(st)} ${wakeStory(who.platform, !!who.hasWake)}`;
 }

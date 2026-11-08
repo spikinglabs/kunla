@@ -136,6 +136,7 @@ api.get('/tasks', async (c) => c.json(await core.listTasks(c.get('ctx'), c.req.q
 api.post('/tasks', async (c) => c.json(await core.createTask(c.get('ctx'), await c.req.json())));
 api.get('/similar', async (c) => c.json(await core.similarOpenTasks(c.get('ctx'), c.req.query('title') ?? '', c.req.query('project'))));
 api.get('/tasks/:key', async (c) => c.json(await core.taskDetail(c.get('ctx'), c.req.param('key'))));
+api.post('/tasks/assign', async (c) => c.json(await core.assignMany(c.get('ctx'), await c.req.json())));
 api.patch('/tasks/:key', async (c) => c.json(await core.updateTask(c.get('ctx'), c.req.param('key'), await c.req.json())));
 api.post('/tasks/:key/claim', async (c) => c.json(await core.claimTask(c.get('ctx'), c.req.param('key'), (await c.req.json<any>().catch(() => ({})))?.session)));
 api.post('/tasks/:key/release', async (c) => c.json(await core.releaseTask(c.get('ctx'), c.req.param('key'), await c.req.json())));

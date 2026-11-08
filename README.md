@@ -66,7 +66,7 @@ claude plugin marketplace add spikinglabs/kunla
 claude plugin install kunla@kunla
 ```
 
-The plugin adds the MCP server, the working-agreement skill, commands (`/kunla:next`, `/kunla:use MKT-42`, `/kunla:submit`, `/kunla:log`, `/kunla:status`) and hooks. On first session start it installs a `commit-msg` git hook in the repo unless one already exists (set `KUNLA_GIT_HOOK=0` to skip).
+The plugin adds the MCP server, the working-agreement skill, commands (`/kunla:next`, `/kunla:work` (continuous mode), `/kunla:use MKT-42`, `/kunla:submit`, `/kunla:log`, `/kunla:status`) and hooks. On first session start it installs a `commit-msg` git hook in the repo unless one already exists (set `KUNLA_GIT_HOOK=0` to skip).
 
 **claude.ai** (web, desktop, mobile): Settings → Connectors → Add custom connector → `https://kunla.example.com/mcp/KEY`, where KEY is the workspace key (Team → Use in claude.ai shows it). Each workspace has its own address, so you can add one connector per workspace; plain `/mcp` also works and takes a token from any workspace. You approve it on a Kunla page, and it joins as e.g. "L's claude.ai". Add `skills/kunla-chat/SKILL.md` as a skill so it cites keys and logs work.
 
@@ -125,7 +125,13 @@ When you approve an agent's work, send it back, answer its question or hand it a
 
 ## Continuous mode
 
-Turn it on per agent in **Team → Manage → Continuous mode**, and the agent works through ready tasks one by one without anyone handing them out.
+When Ready tasks pile up and nobody holds them, the Briefing and the Tasks page offer to **let one of your agents work through them** (up to 10 new tasks a day, pausing when 5 wait for your review; change both before starting). The same switch is on each agent's Team card and in **Team → Manage → Continuous mode**. The agent then works through Ready tasks one by one without anyone handing them out.
+
+To hand out specific work, tap **Select to hand over** on the Tasks page, tick Ready tasks (or **All Ready here**), pick an agent or person and **Hand over**. One request assigns them all (tasks that aren't Ready are skipped, with the reason), the agent is woken once for the whole batch, and an agent you sponsor can be switched to continuous mode in the same step. Assigned work comes before open work in `next_task`, so it does the batch first.
+
+The agent doesn't need to be told. `whoami` has a `continuous` block (on or off, what to do, what is left today, how it gets started again), the instructions it reads when it connects say it is in continuous mode, and a line under every tool reply repeats it with today's budget. In Claude Code, `/kunla:work` runs the loop; in a claude.ai chat, say "Work through my Kunla tasks".
+
+How it gets started again after it stops depends on the agent: one with a wake-up URL (Claude Code through a GitHub Action, see below) is started by Kunla; a claude.ai chat or a Claude Code session without one keeps going while it runs, and its stop message says that a person has to start it again rather than promising a wake-up.
 
 - `next_task` tells it what to do next with `continuous.go: true` and a reminder to call `next_task` again after submitting. A question on one task (`blocked_question`) is not a reason to stop: it moves on to the next task.
 - It stops (`continuous.go: false`, with a `stop_reason`) only when it is truly stuck or reaches a limit: `nothing_ready`, `waiting_on_people` (everything it could do waits on an answer or on sub-tasks), `tasks_budget`, `cost_budget`, `tokens_budget`, `review_limit` or `ended`.
