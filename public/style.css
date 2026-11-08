@@ -405,6 +405,13 @@ pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: va
 .title-in:hover, .title-in:focus { border-color: var(--rule-2) !important; }
 .proj.focused { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink), var(--shadow); }
 .ws { background: var(--sunk); }
+/* Projects sit inside their workspace (KD-17): indented under it with a rule, like a tree. */
+.in-ws { margin: 4px 0 0 14px; padding-left: 16px; border-left: 2px solid var(--rule); }
+.in-ws-label { margin-bottom: -6px; }
+.ws-crumb { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.ws-crumb .sp-dot { width: 12px; height: 12px; border-radius: 4px; box-shadow: inset -4px -4px 0 -1px var(--lime); }
+.ws-of { font-size: 13px; white-space: nowrap; }
+@media (max-width: 560px) { .in-ws { margin-left: 4px; padding-left: 10px; } .ws-of { display: none; } }
 .focus-check .switch { margin-top: 0; }
 .icon-btn:disabled { opacity: .3; cursor: default; }
 
