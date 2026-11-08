@@ -120,6 +120,18 @@ describe('approve = merge', () => {
     expect(m!.body.commit_message).toContain('Approved in Kunla by L');
   });
 
+  it("never picks another task's PR, and doesn't offer to merge one that is already merged", async () => {
+    await setToken();
+    await call('POST', '/api/log', ai, { task: 'MKT-1', summary: 'Mentioned elsewhere', deliverables: [{ url: 'https://github.com/acme/app/pull/9', title: 'PR #9: MKT-2: Something else' }] });
+    expect((await call('GET', '/api/tasks/MKT-1/pr', human)).body.pr.number).toBe(7);
+    gh.pr = { ...gh.pr, state: 'closed', merged: true };
+    expect((await call('GET', '/api/tasks/MKT-1/pr', human)).body.state).toBe('merged');
+    calls = [];
+    await approve();
+    expect(calls.some((c) => c.method === 'PUT')).toBe(false);
+    expect((await task('MKT-1')).status).toBe('done');
+  });
+
   it('merges only for the workspace the app is installed in', async () => {
     await setToken();
     const ws = (await call('POST', '/api/workspaces', human, { name: 'Community' })).body;

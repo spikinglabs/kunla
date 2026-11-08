@@ -119,9 +119,12 @@ function fillPrStates(root) {
       const r = await api('GET', `/api/tasks/${encodeURIComponent(el.dataset.pr)}/pr`);
       if (!r.pr) return;
       const n = `PR #${r.pr.number}`;
+      // The button names the PR only when approving will actually merge it.
+      const btn = root.querySelector(`[data-prbtn="${CSS.escape(el.dataset.pr)}"]`);
+      if (btn && r.state !== 'merged' && r.state !== 'closed' && !r.error) btn.textContent = `Approve and merge ${n}`;
       el.textContent = r.merge_by === 'agent' ? `Approving asks the agent to merge ${n} once its checks pass.`
         : r.error ? `Kunla couldn't read ${n}: ${r.error}`
-        : r.state === 'merged' ? `${n} is already merged.`
+        : r.state === 'merged' ? `${n} is already merged, so approving just finishes the task.`
         : r.state === 'closed' ? `${n} is closed.`
         : r.conflict ? `${n} has a conflict, so approving sends it back to fix.`
         : r.checks === 'red' ? `${n}: checks are failing, so approving sends it back to fix.`
@@ -309,7 +312,7 @@ function decisionCard(item, { solo = false } = {}) {
       </div>
       ${raw(prNumber(t.deliverables) ? html`<p class="prstate" data-pr="${t.key}"></p>` : '')}
       <div class="acts">
-        <button class="btn go" name="v" value="approved">${prNumber(t.deliverables) ? `Approve and merge PR #${prNumber(t.deliverables)}` : 'Approve'} <kbd>A</kbd></button>
+        <button class="btn go" name="v" value="approved"><span data-prbtn="${t.key}">Approve</span> <kbd>A</kbd></button>
         <button class="btn" type="button" data-act="click:changes">Send back <kbd>C</kbd></button>
         <span class="spacer"></span>
         <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button>
