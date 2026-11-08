@@ -23,26 +23,26 @@ export function readResource(uri: string) {
 }
 
 const CSS = `
-:root{--bg:#fff;--fg:#1d1d1f;--mute:#6b6b70;--line:#e5e5ea;--card:#f7f7f9;--acc:#2f5bea;--ok:#1f8a4c;--warn:#b26a00;--bad:#c4372c;
+:root{--bg:#fffdf8;--fg:#121212;--mute:#77756c;--line:#e0dcd1;--card:#f4f2ec;--acc:#121212;--lime:#b9ff66;--ok:#1f8a4c;--warn:#b26a00;--bad:#c4372c;
   font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:light}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#1c1c1e;--fg:#f2f2f7;--mute:#a1a1a8;--line:#3a3a3c;--card:#2c2c2e;--acc:#7c9cff;--ok:#4cc27b;--warn:#f0a83a;--bad:#ff6b5e;color-scheme:dark}}
-:root[data-theme=dark]{--bg:#1c1c1e;--fg:#f2f2f7;--mute:#a1a1a8;--line:#3a3a3c;--card:#2c2c2e;--acc:#7c9cff;--ok:#4cc27b;--warn:#f0a83a;--bad:#ff6b5e;color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#181816;--fg:#f1efe8;--mute:#8d8a80;--line:#33322e;--card:#222220;--acc:#f1efe8;--ok:#4cc27b;--warn:#f0a83a;--bad:#ff6b5e;color-scheme:dark}}
+:root[data-theme=dark]{--bg:#181816;--fg:#f1efe8;--mute:#8d8a80;--line:#33322e;--card:#222220;--acc:#f1efe8;--ok:#4cc27b;--warn:#f0a83a;--bad:#ff6b5e;color-scheme:dark}
 *{box-sizing:border-box}body{margin:0;padding:14px 16px;background:var(--bg);color:var(--fg)}
-h1{font-size:16px;margin:0 0 2px}h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:16px 0 6px}
+h1{font-size:17px;margin:0 0 2px;letter-spacing:-.01em}h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:16px 0 6px}
 .sub{color:var(--mute);font-size:12px;margin-bottom:10px}
-a,.link{color:var(--acc);text-decoration:none;cursor:pointer;background:none;border:0;padding:0;font:inherit}
+a,.link{color:var(--acc);text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px;cursor:pointer;background:none;border:0;padding:0;font:inherit}
 .bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--line);margin:8px 0 6px}
 .bar span{display:block;height:100%}
 .legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--mute)}
 .legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px}
-.row{display:flex;gap:8px;align-items:baseline;padding:6px 0;border-top:1px solid var(--line)}
-.row:first-child{border-top:0}.key{color:var(--mute);white-space:nowrap}
+.row{display:flex;gap:8px;align-items:baseline;padding:5px 0;border-top:1px solid var(--line);font-size:13px}
+.row:first-child{border-top:0}.key{color:var(--mute);white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;text-decoration:none}
 .grow{flex:1;min-width:0}.pill{font-size:11px;padding:1px 6px;border-radius:9px;background:var(--card);color:var(--mute);white-space:nowrap}
-.card{background:var(--card);border-radius:10px;padding:10px 12px;margin:8px 0}
+.card{background:var(--card);border-radius:14px;padding:10px 12px;margin:8px 0}
 .card .t{font-weight:600}.card .s{color:var(--mute);font-size:13px;margin:4px 0}
 .btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 button.b{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:7px;padding:4px 10px;cursor:pointer}
-button.b.p{background:var(--acc);border-color:var(--acc);color:#fff}button.b:disabled{opacity:.5;cursor:default}
+button.b{border-radius:999px;padding:5px 14px}button.b.p{background:var(--lime);border-color:var(--lime);color:#121212;font-weight:600}button.b:disabled{opacity:.5;cursor:default}
 textarea{width:100%;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:7px;padding:6px;background:var(--bg);color:var(--fg);margin-top:6px}
 .done{color:var(--ok);font-size:13px;margin-top:6px}.err{color:var(--bad);font-size:13px;margin-top:6px}
 .empty{color:var(--mute);padding:8px 0}.foot{margin-top:12px;font-size:12px;color:var(--mute);display:flex;gap:12px}
@@ -76,7 +76,7 @@ const keyLink=(k)=>{const u=taskLink(k);return u?'<a href="#" data-open="'+esc(u
 const foot=(link)=>'<div class="foot"><button class="link" id="refresh" onclick="refresh()">Refresh</button>'+(link?'<a href="#" data-open="'+esc(link)+'">Open in Kunla</a>':'')+'<span id="msg"></span></div>';
 const ago=(iso)=>{const s=(Date.now()-new Date(iso).getTime())/1000;return s<3600?Math.max(1,Math.round(s/60))+'m':s<86400?Math.round(s/3600)+'h':Math.round(s/86400)+'d';};
 
-const COLORS={done:'var(--ok)',review:'var(--acc)',in_progress:'#8e6cf0',blocked:'var(--bad)',ready:'#9aa0a6',inbox:'var(--warn)'};
+const COLORS={done:'var(--lime)',review:'var(--fg)',in_progress:'var(--mute)',blocked:'var(--bad)',ready:'var(--line)',inbox:'var(--warn)'};
 const LABEL={inbox:'Proposed',ready:'Ready',in_progress:'In progress',blocked:'Blocked',review:'Review',done:'Done'};
 const EVENT={claimed:'took',submitted:'sent for review',approved:'approved',changes_requested:'sent back',work_logged:'logged work on',created:'created',answered:'answered',blocked:'asked about',released:'handed off'};
 function progress(){const d=data,c=d.counts||{};const order=['done','review','in_progress','blocked','ready','inbox'];
@@ -93,7 +93,7 @@ function progress(){const d=data,c=d.counts||{};const order=['done','review','in
   document.body.innerHTML=h+foot(d.link);}
 
 const human=()=>data&&data.me&&data.me.kind==='human';
-async function act(i,how){const it=data.items[i],k=it.task.key,box=$('#c'+i),out=$('#o'+i);const text=box?box.value.trim():'';
+async function act(i,how){const it=data.items[i],k=it.task.key,box=$('#c'+i),out=$('#o'+i);if(how==='back'&&box&&box.hidden){box.hidden=false;box.focus();return;}const text=box?box.value.trim():'';
   for(const b of document.querySelectorAll('#i'+i+' button'))b.disabled=true;out.className='done';out.textContent='Working…';
   try{let r;const quote={approve:'Approved',back:'Sent back: '+text,answer:text}[how];const src=taskLink(k);
     if(how==='back'&&!text)throw new Error('Say what needs to change.');if(how==='answer'&&!text)throw new Error('Write an answer first.');
@@ -107,7 +107,7 @@ function inbox(){const d=data,items=d.items||[];
   const KIND={review:'Review',question:'Question',proposal:'Proposal',flagged:'Stuck in review'};
   h+=items.map((it,i)=>{const t=it.task;let b='';
     if(it.kind==='review'){const dl=(t.deliverables||[]).map((x)=>'<a href="#" data-open="'+esc(x.url)+'">'+esc(x.title||x.url)+'</a>').join(' · ');
-      b='<div class="s">'+esc(t.summary||'')+'</div>'+(dl?'<div class="s">'+dl+'</div>':'')+'<textarea id="c'+i+'" rows="2" placeholder="What needs to change? (only for Send back)"></textarea><div class="btns"><button class="b p" onclick="act('+i+',\\'approve\\')">Approve</button><button class="b" onclick="act('+i+',\\'back\\')">Send back</button></div>';}
+      b='<div class="s">'+esc(t.summary||'')+'</div>'+(dl?'<div class="s">'+dl+'</div>':'')+'<textarea id="c'+i+'" rows="2" placeholder="What needs to change?" hidden></textarea><div class="btns"><button class="b p" onclick="act('+i+',\\'approve\\')">Approve</button><button class="b" onclick="act('+i+',\\'back\\')">Send back</button></div>';}
     else if(it.kind==='question'){b='<div class="s">'+esc(t.blocked_question||'')+'</div><textarea id="c'+i+'" rows="2" placeholder="Your answer"></textarea><div class="btns"><button class="b p" onclick="act('+i+',\\'answer\\')">Answer</button></div>';}
     else if(it.kind==='proposal'){b='<div class="s">'+esc(t.brief||'')+'</div>'+(human()?'<div class="btns"><button class="b p" onclick="act('+i+',\\'accept\\')">Accept</button><button class="b" onclick="act('+i+',\\'decline\\')">Decline</button></div>':'<div class="s">Accept or decline it in Kunla.</div>');}
     else b='<div class="s">'+t.review_rounds+' review rounds so far. Worth a look.</div>';
