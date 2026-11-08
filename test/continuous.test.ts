@@ -200,3 +200,30 @@ describe('the agent learns it is in continuous mode by itself', () => {
     expect((await tool(ai, 'next_task')).continuous.message).toContain('Kunla wakes you');
   });
 });
+
+describe('handing several tasks to an agent at once', () => {
+  it('assigns the Ready ones, skips the rest with a reason, wakes the agent once and can turn continuous mode on', async () => {
+    await call('PUT', `/api/members/${aiId}/wake`, human, { url: 'https://hooks.test/wake' });
+    await newTask('A'); await newTask('B'); await newTask('C', { status: 'inbox' }); await newTask('D');
+    await tool(human, 'claim_task', { key: 'MKT-4' });
+    calls = [];
+    const r = await call('POST', '/api/tasks/assign', human, { keys: ['MKT-1', 'mkt-2', 'MKT-3', 'MKT-4', 'MKT-99'], to: aiId, continuous: true });
+    expect(r.status).toBe(200);
+    expect(r.body.assigned).toEqual(['MKT-1', 'MKT-2']);
+    expect(r.body.skipped.map((s: any) => s.key)).toEqual(['MKT-3', 'MKT-4', 'MKT-99']);
+    expect(r.body.continuous).toMatchObject({ on: true, max_tasks_per_day: 10, max_in_review: 5 });
+    expect(calls.filter((x) => x.url === 'https://hooks.test/wake')).toHaveLength(1);
+    expect(calls[0].body.note).toContain('2 tasks were handed to you: MKT-1, MKT-2');
+    const n = await tool(ai, 'next_task');
+    expect(n).toMatchObject({ reason: 'assigned', task: { key: 'MKT-1' }, continuous: { go: true } });
+  });
+
+  it('is for people, and only a sponsor can switch continuous mode on with it', async () => {
+    await newTask('A');
+    expect((await call('POST', '/api/tasks/assign', ai, { keys: ['MKT-1'], to: aiId })).status).toBe(403);
+    const other = (await call('POST', '/api/members', human, { name: 'Sam', kind: 'human' })).body.token;
+    expect((await call('POST', '/api/tasks/assign', other, { keys: ['MKT-1'], to: aiId, continuous: true })).status).toBe(403);
+    const plain = await call('POST', '/api/tasks/assign', other, { keys: ['MKT-1'], to: aiId });
+    expect(plain.body.assigned).toEqual(['MKT-1']);
+  });
+});

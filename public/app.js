@@ -796,7 +796,7 @@ const EVENT = {
   released: (e) => (e.data?.to ? 'handed it on' : 'let it go, back to Ready'), taken_over: () => 'took it over',
   lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `${e.data?.via ? 'said in a chat to move it' : 'moved it'} to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: (e) => (e.data?.kind ? 'changed the kind of work' : 'commented'),
   merged: () => 'merged the PR', merge_waiting: () => 'will merge the PR when checks pass', merge_blocked: () => 'could not merge the PR yet',
-  woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
+  assigned: () => 'handed it over', woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
   github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
 };
 // Under a decision recorded from a chat: who recorded it, the person's words, a link to the chat, and Undo.
@@ -989,7 +989,8 @@ async function viewTasks(project) {
         </div></div>
       <div class="row" style="margin:-4px 0 18px">${raw(!project ? '' : html`<a class="pill" href="#/tasks">← All tasks</a>`)}
         ${join(views.map((v, i) => html`<span class="pill saved"><a href="${v.hash}" data-act="click:view" data-i="${i}">${v.name}</a><button data-act="click:unsave" data-i="${i}" aria-label="Forget ${v.name}">×</button></span>`))}
-        <button class="pill" data-act="click:save" style="border-style:dashed">+ Save this view</button></div>
+        <button class="pill" data-act="click:save" style="border-style:dashed">+ Save this view</button>
+        ${raw(me.kind === 'human' ? html`<button class="pill ${sel.on ? 'on' : ''}" data-act="click:selectMode">${sel.on ? 'Done selecting' : 'Select to hand over'}</button>` : '')}</div>
       ${raw(continuousNudge(readyFree))}`;
     let body;
     if (tv.mode === 'board') {
@@ -1013,10 +1014,29 @@ async function viewTasks(project) {
         <div class="rows">${join(rows.slice(0, 200).map((t) => trow(t) + kids(t.key).map((k) => trow(k, true)).join('')))}${raw(rows.length > 200 ? `<p class="muted pad">${rows.length - 200} more. Narrow the filter.</p>` : '')}</div></section>`; }))
         : raw(`<div class="card clear"><h2>Nothing here</h2><p class="muted">${tv.filter === 'stuck' ? 'Nothing is stuck. Good.' : 'Try another filter.'}</p></div>`);
     }
-    $app.innerHTML = head + `<div class="tlist">${body.__raw ?? body}</div>`;
+    $app.innerHTML = head + `<div class="tlist ${sel.on ? 'selecting' : ''}">${body.__raw ?? body}</div>` + (sel.on ? selBar(shown) : '');
     bind($app, {
       new: () => openPalette(p && project !== me.workspace.key ? `#${p.key} ` : ''),
       ...nudgeHandlers(readyFree, draw),
+      selectMode: async () => { sel.on = !sel.on; sel.keys.clear(); if (sel.on && !members.length) members = await api('GET', '/api/members').catch(() => []); draw(); },
+      selAll: () => { shown.filter((t) => t.status === 'ready').forEach((t) => sel.keys.add(t.key)); draw(); },
+      selNone: () => { sel.keys.clear(); draw(); },
+      selTo: () => draw.keepTo(),
+      handOver: async (el) => {
+        const to = $('sel-to')?.value, contRow = $('sel-cont-row'), cont = !!(contRow && !contRow.hidden && $('sel-cont')?.checked);
+        if (!to) return toast('Pick who should do them.');
+        el.disabled = true;
+        try {
+          const r = await api('POST', '/api/tasks/assign', { keys: [...sel.keys], to, continuous: cont });
+          const skipped = r.skipped.length ? ` Skipped ${r.skipped.map((x) => `${x.key} (${x.reason})`).join(', ')}.` : '';
+          const ai = r.to.kind === 'ai';
+          toast(`${plural(r.assigned.length, 'task')} handed to ${r.to.name}${ai ? (r.continuous?.on ? ', now in continuous mode' : '; it takes them before other work') : ''}.${skipped}`);
+          sel.keys.clear(); sel.on = false; sel.to = to;
+          all.splice(0, all.length, ...(await api('GET', `/api/tasks?limit=1000${project ? '&project=' + project : ''}`)));
+          if (ai) members = await api('GET', '/api/members').catch(() => members);
+          draw();
+        } finally { el.disabled = false; }
+      },
       filter: (el) => { tv.filter = el.dataset.k; saveTv(); draw(); },
       mode: (el) => { tv.mode = el.dataset.m; saveTv(); draw(); },
       group: (el) => { tv.group = el.value; saveTv(); draw(); },
@@ -1033,14 +1053,51 @@ async function viewTasks(project) {
       unsave: (el) => { const list = savedViews(); list.splice(Number(el.dataset.i), 1); try { localStorage.setItem(VIEWS_KEY, JSON.stringify(list)); } catch {} draw(); },
     });
   };
+  draw.keepTo = () => { sel.to = $('sel-to')?.value; const m = members.find((x) => x.id === sel.to); const c = $('sel-cont-row'); if (c) c.hidden = !(m?.kind === 'ai' && canManage(m) && !contOn(m)); };
+  // In select mode a tap ticks a Ready task instead of opening it.
+  $app.onclick = (e) => {
+    if (!sel.on || !location.hash.startsWith('#/tasks')) return;
+    const a = e.target.closest?.('a[data-key]');
+    if (!a || !$app.contains(a)) return;
+    e.preventDefault();
+    if (!a.classList.contains('pickable')) return toast('Only Ready tasks can be handed over.');
+    const k = a.dataset.key;
+    if (sel.keys.has(k)) sel.keys.delete(k); else sel.keys.add(k);
+    draw();
+  };
   draw();
 }
+
+// Batch hand-over (KD-43): in select mode, Ready tasks can be ticked and handed to one member at once.
+const sel = { on: false, keys: new Set(), to: null };
+const pickCls = (t) => (sel.on ? (t.status === 'ready' ? 'pickable' : 'unpickable') + (sel.keys.has(t.key) ? ' picked' : '') : '');
+const pickMark = (t) => (sel.on && t.status === 'ready' ? '<span class="pickbox" aria-hidden="true"></span>' : '');
+
+/** The bar under a selection: who gets them, and continuous mode for an agent you sponsor. */
+function selBar(shown) {
+  const n = sel.keys.size;
+  const agents = members.filter((m) => m.kind === 'ai'), humans = members.filter((m) => m.kind !== 'ai');
+  const pick = members.find((m) => m.id === sel.to) || bestAgent(agents.filter(canManage)) || agents[0] || humans[0];
+  const showCont = pick && pick.kind === 'ai' && canManage(pick) && !contOn(pick);
+  const ready = shown.filter((t) => t.status === 'ready').length;
+  const opt = (m) => html`<option value="${m.id}" ${pick && m.id === pick.id ? 'selected' : ''}>${m.name}${m.kind === 'ai' && contOn(m) ? ' · continuous' : ''}</option>`;
+  return html`<div class="selbar card" role="region" aria-label="Hand over selected tasks">
+    <div class="row" style="gap:12px"><b>${n ? plural(n, 'task') + ' selected' : 'Tap Ready tasks to select them'}</b>
+      ${raw(ready ? html`<button class="linkish" data-act="click:selAll">All Ready here (${ready})</button>` : '')}${raw(n ? '<button class="linkish" data-act="click:selNone">Clear</button>' : '')}</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <label for="sel-to" class="muted" style="font-size:14px">Hand to</label>
+      <select id="sel-to" data-act="change:selTo">${raw(agents.length ? html`<optgroup label="Agents">${join(agents.map(opt))}</optgroup>` : '')}${raw(humans.length ? html`<optgroup label="People">${join(humans.map(opt))}</optgroup>` : '')}</select>
+      <label id="sel-cont-row" class="row" style="gap:6px;font-size:14px" ${showCont ? '' : 'hidden'}><input type="checkbox" id="sel-cont" checked> and let it work through them (continuous mode, up to ${CONT_DEFAULTS.max_tasks_per_day} a day)</label>
+      <button class="btn go sm" data-act="click:handOver" ${n ? '' : 'disabled'}>Hand over</button>
+    </div></div>`;
+}
+
 function tcard(t) {
-  return html`<a class="card tcard" href="#/t/${t.key}"><span class="key">${t.key}${t.parent ? ' · under ' + t.parent : ''}</span><span class="t">${raw(kindChip(t.kind))}${t.title}</span>
+  return html`<a class="card tcard ${pickCls(t)}" href="#/t/${t.key}" data-key="${t.key}">${raw(pickMark(t))}<span class="key">${t.key}${t.parent ? ' · under ' + t.parent : ''}</span><span class="t">${raw(kindChip(t.kind))}${t.title}</span>
     <span class="f">${raw(who(t.assignee, t.status === 'ready' ? 'Anyone' : '—'))}<span class="key">${t.subtasks ? `${t.subtasks.done}/${t.subtasks.total} · ` : ''}${ago(t.updated_at)}</span></span></a>`;
 }
 function trow(t, child = false) {
-  return html`<a class="trow ${child ? 'child' : ''}" href="#/t/${t.key}"><span class="st-dot s-${t.status}" title="${STATUS[t.status]}"></span><span class="key">${t.key}</span>
+  return html`<a class="trow ${child ? 'child' : ''} ${pickCls(t)}" href="#/t/${t.key}" data-key="${t.key}"><span class="st-dot s-${t.status}" title="${STATUS[t.status]}"></span><span class="key">${t.key}</span>
     <span class="t">${raw(tv.group === 'kind' ? '' : kindChip(t.kind))}${t.title}${raw(t.subtasks ? ` <span class="subcount">${t.subtasks.done}/${t.subtasks.total}</span>` : '')}</span>
     <span class="stx">${STATUS[t.status]}</span><span class="w">${raw(who(t.assignee, t.status === 'ready' ? 'Anyone' : ''))}</span><span class="key">${ago(t.updated_at)}</span></a>`;
 }
