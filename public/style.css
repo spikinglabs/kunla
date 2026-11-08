@@ -123,9 +123,11 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.45; }
 .dots { display: flex; gap: 6px; }
 .dots button { width: 8px; height: 8px; border-radius: 50%; border: 0; padding: 0; background: var(--rule-2); cursor: pointer; }
 .dots button.on { background: var(--ink); width: 22px; border-radius: 99px; }
-.deck { position: relative; isolation: isolate; }
+/* One scroll-snap track holds every card (KD-46): swiping is native scrolling, one card per flick. */
+.deck { display: flex; gap: 12px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; align-items: flex-start; margin: -6px; padding: 6px; scroll-padding: 0 6px; box-sizing: content-box; }
+.deck::-webkit-scrollbar { display: none; }
+.deck > .slide { flex: 0 0 100%; scroll-snap-align: start; scroll-snap-stop: always; min-width: 0; }
 .decision { padding: 26px; display: flex; flex-direction: column; gap: 18px; position: relative; }
-.deck.more::before { content: ''; position: absolute; inset: 8px -8px -8px 8px; border-radius: var(--r); border: 1px solid var(--rule); background: var(--sunk); z-index: -1; }
 .decision h2 { font-size: 26px; line-height: 1.12; letter-spacing: -.03em; font-weight: 600; }
 .decision h2 a { text-decoration: none; }
 .decision h2 a:hover { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
@@ -460,7 +462,8 @@ pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: va
   .tabbar .n { position: absolute; top: 1px; right: 8%; font: 600 9.5px/15px var(--mono); min-width: 15px; border-radius: 99px; background: var(--lime); color: var(--on-lime); }
   .tabbar a.on .n { background: var(--on-lime); color: var(--lime); }
   .decision { padding: 20px; }
-  .deck.more::before { inset: 6px -4px -6px 4px; }
+  /* A sliver of the next card shows, so the deck reads as swipeable. */
+  .deck > .slide { flex-basis: calc(100% - 22px); }
   .decision h2 { font-size: 22px; }
   .head h1 { font-size: 30px; }
   .task h1 { font-size: 27px; }
@@ -521,7 +524,7 @@ a.inline-link.mention { display: inline; padding: 0; border: 0; border-radius: 0
 .links { min-width: 0; }
 .links .pill { max-width: 100%; min-width: 0; flex-wrap: nowrap; }
 .pill-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deck { touch-action: pan-y pinch-zoom; }
+.deck { touch-action: pan-x pan-y pinch-zoom; }
 /* Phones: the pill sits above the tab bar, where it never covers a card title. */
 @media (max-width: 760px) {
   .paused { top: auto; bottom: calc(80px + env(safe-area-inset-bottom)); height: 44px; font-size: 14px; }
