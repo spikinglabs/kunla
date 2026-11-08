@@ -2,7 +2,6 @@
 import * as core from './core';
 import type { Ctx } from './core';
 import * as views from './views';
-import { KINDS } from './kinds';
 
 const SUPPORTED = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 export const SERVER_INFO = { name: 'kunla', version: '0.1.0' };
@@ -19,8 +18,8 @@ const links = {
 };
 
 const kind = {
-  type: 'string', enum: [...KINDS],
-  description: 'Kind of work. Not only code: writing (articles, posts, docs), research (market research, investigations), reading (papers, books), learning, discussion (meetings, brainstorms, chats that reach decisions), marketing, sales, data, design. Left out, Kunla guesses from the title.',
+  type: 'string',
+  description: "Kind of work. Not only code. Kunla's defaults: code, writing (articles, posts, docs, emails, slides), research (market research, competitors, data analysis), learning (papers, books, courses), discussion (meetings, brainstorms, chats that reach decisions), outreach (marketing, sales, publishing, events), design, operations (planning, admin, hiring, finance), other. A workspace or project can set its own list: whoami and get_task (kinds_here) show it. Left out, Kunla guesses from the title.",
 };
 const notes = {
   type: 'string',
@@ -33,7 +32,7 @@ type Tool = { name: string; description: string; inputSchema: object; run: (c: C
 export const TOOLS: Tool[] = [
   {
     name: 'whoami', readOnly: true,
-    description: 'Your Kunla member profile (person or AI), sponsor, and the projects you can see.',
+    description: 'Your Kunla member profile (person or AI), sponsor, the projects you can see, and the kinds of work the workspace and its projects use.',
     inputSchema: { type: 'object', properties: {} },
     run: (c) => core.whoami(c),
   },
@@ -45,13 +44,13 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'list_tasks', readOnly: true,
-    description: 'Search tasks. Filter by project key, status (inbox, ready, in_progress, blocked, review, done; comma separated), kind (code, writing, research, reading, learning, discussion, marketing, ...; comma separated), assignee ("me" or a name), or text.',
+    description: 'Search tasks. Filter by project key, status (inbox, ready, in_progress, blocked, review, done; comma separated), kind of work (e.g. research, learning, discussion; comma separated), assignee ("me" or a name), or text.',
     inputSchema: { type: 'object', properties: { project: { type: 'string' }, status: { type: 'string' }, kind: { type: 'string' }, assignee: { type: 'string' }, q: { type: 'string' }, limit: { type: 'number' } } },
     run: (c, a) => core.listTasks(c, a),
   },
   {
     name: 'get_task', readOnly: true,
-    description: "One task with its brief, acceptance criteria, the project's playbook and 'apply next time' rules, deliverables and notes, reviews, history, its kind of work with how_to_finish (what to hand in and what approval means), and how to cite it (commit trailer, branch, doc source line, message line).",
+    description: "One task with its brief, acceptance criteria, the project's playbook and 'apply next time' rules, deliverables and notes, reviews, history, its kind of work with how_to_finish (what to hand in and what approval means) and kinds_here (the kinds this project uses), and how to cite it (commit trailer, branch, doc source line, message line).",
     inputSchema: { type: 'object', properties: { key }, required: ['key'] },
     run: (c, a) => core.taskDetail(c, a.key),
   },

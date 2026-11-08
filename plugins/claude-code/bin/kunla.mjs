@@ -272,7 +272,7 @@ const HELP = `kunla: the team's record of work, from the command line.
   kunla show [KEY]                 The brief, rules and history
   kunla log "<summary>" [--task KEY] [--link URL]... [--kind K] [--notes TEXT|@file] [--review]
                                    Record any work, not only code (creates a task if there is none)
-                                   K: code, writing, research, reading, learning, discussion, marketing, sales, data, design
+                                   K: code, writing, research, learning, discussion, outreach, design, operations (or your project's own)
   kunla submit "<summary>" (--link URL | --notes TEXT|@file) [--task KEY]
   kunla block "<question>" [--task KEY]
   kunla status [PROJECT]           Project progress

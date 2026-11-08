@@ -529,3 +529,6 @@ details.notes summary::-webkit-details-marker { display: none; }
 details.notes .nprev { display: block; color: var(--ink-2); font-size: 14.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
 details.notes[open] .nprev { display: none; }
 .finish p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; }
+.kinds-field { margin-top: 12px; }
+.kinds-field .hint-s { font-size: 13px; margin: 2px 0 6px; line-height: 1.45; }
+.kinds-field textarea::placeholder { color: var(--muted); opacity: .6; }

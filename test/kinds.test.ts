@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import app from '../src/index';
 import { makeD1 } from './d1-shim';
-import { inferKind, linkType, normalizeKind } from '../src/kinds';
+import { inferKind, linkType, normalizeKind, parseKinds } from '../src/kinds';
 
 // KD-37: Kunla records all kinds of work, not only code.
 let env: any;
@@ -30,16 +30,19 @@ beforeEach(async () => {
 
 describe('kinds of work', () => {
   it('guesses the kind from words and links, and labels links', () => {
-    expect(inferKind('Read the Toolformer paper')).toBe('reading');
+    expect(inferKind('Read the Toolformer paper')).toBe('learning');
     expect(inferKind('Discuss pricing with Jon')).toBe('discussion');
     expect(inferKind('Market research: AI task queues')).toBe('research');
-    expect(inferKind('Draft launch blog article')).toBe('marketing');
+    expect(inferKind('Draft launch blog article')).toBe('outreach');
+    expect(inferKind('Prospect list for DACH sales')).toBe('outreach');
+    expect(inferKind('Weekly KPI dashboard')).toBe('research');
+    expect(inferKind('Plan the offsite')).toBe('operations');
     expect(inferKind('Write an article on hybrid teams')).toBe('writing');
     expect(inferKind('Learn how Durable Objects work')).toBe('learning');
     expect(inferKind('Fix webhook retries')).toBe('code');
     expect(inferKind('Something', '', ['https://github.com/a/b/pull/3'])).toBe('code');
-    expect(inferKind('Something', '', ['https://arxiv.org/abs/2302.04761'])).toBe('reading');
-    expect(inferKind('Plan the offsite')).toBe('other');
+    expect(inferKind('Something', '', ['https://arxiv.org/abs/2302.04761'])).toBe('learning');
+    expect(inferKind('Water the plants')).toBe('other');
     expect(linkType('https://github.com/a/b/pull/3')).toBe('pr');
     expect(linkType('https://docs.google.com/spreadsheets/d/x')).toBe('sheet');
     expect(linkType('https://claude.ai/artifact/abc')).toBe('doc');
@@ -47,6 +50,8 @@ describe('kinds of work', () => {
     expect(linkType('https://www.linkedin.com/posts/x')).toBe('post');
     expect(linkType('https://example.com/report.pdf')).toBe('file');
     expect(normalizeKind('Article')).toBe('writing');
+    expect(normalizeKind('reading')).toBe('learning');
+    expect(normalizeKind('marketing')).toBe('outreach');
     expect(normalizeKind('banana')).toBeNull();
   });
 
@@ -55,17 +60,18 @@ describe('kinds of work', () => {
     expect(a.kind).toBe('research');
     const b = (await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Read the Toolformer paper' })).body;
     const t = await task(b.key);
-    expect(t.kind).toBe('reading');
-    expect(t.how_to_finish.hand_in).toMatch(/notes/);
+    expect(t.kind).toBe('learning');
+    expect(t.how_to_finish.hand_in).toMatch(/Notes/);
+    expect(t.kinds_here.map((k: any) => k.key)).toContain('outreach');
     expect((await call('POST', '/api/tasks', human, { title: 'x', kind: 'banana' })).status).toBe(400);
     await call('PATCH', `/api/tasks/${b.key}`, human, { kind: 'learning' });
     expect((await task(b.key)).kind).toBe('learning');
   });
 
   it('a sub-task with no clear kind takes its parent’s', async () => {
-    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Q1 campaign', kind: 'marketing' }); // MKT-1
-    const s = (await call('POST', '/api/tasks', human, { parent: 'MKT-1', title: 'Pick the dates' })).body;
-    expect(s.kind).toBe('marketing');
+    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Q1 campaign', kind: 'marketing' }); // MKT-1, marketing is outreach
+    const s = (await call('POST', '/api/tasks', human, { parent: 'MKT-1', title: 'Pick the colours' })).body;
+    expect(s.kind).toBe('outreach');
   });
 
   it('logs a discussion from a chat with notes and no link, straight to done', async () => {
@@ -122,7 +128,60 @@ describe('kinds of work', () => {
     await env.DB.prepare(`INSERT INTO tasks (id, project_id, key, title, status, space_id, created_at, updated_at)
       SELECT 'old', id, 'MKT-9', 'Read the scaling laws paper', 'ready', space_id, ?, ? FROM projects WHERE key = 'MKT'`).bind(now, now).run();
     env.DB.migrate();
-    expect((await task('MKT-9')).kind).toBe('reading');
-    expect((await call('GET', '/api/tasks?kind=reading', human)).body.map((x: any) => x.key)).toEqual(['MKT-9']);
+    expect((await task('MKT-9')).kind).toBe('learning');
+    expect((await call('GET', '/api/tasks?kind=learning', human)).body.map((x: any) => x.key)).toEqual(['MKT-9']);
+  });
+});
+
+describe('kinds per workspace and project', () => {
+  it('reads a kinds setting from lines, keeping built-ins and adding the team’s own', () => {
+    const d = parseKinds(['Research', 'Customer calls: notes with the next step and its date', '- Learning'])!;
+    expect(d.map((x) => x.key)).toEqual(['research', 'customer-calls', 'learning']);
+    expect(d[0].builtin).toBe(true);
+    expect(d[1]).toMatchObject({ label: 'Customer calls', hand_in: 'notes with the next step and its date', builtin: false });
+    expect(parseKinds(null)).toBeNull();
+    expect(() => parseKinds('not json and ' + 'x'.repeat(40))).toThrow();
+  });
+
+  it('a project overrides the workspace, which overrides the defaults', async () => {
+    await call('POST', '/api/projects', human, { key: 'SALES', name: 'Sales' });
+    // Workspace: a lean list.
+    let r = await call('PATCH', '/api/projects/WS', human, { kinds: ['Writing', 'Research', 'Discussion'] });
+    expect(r.status).toBe(200);
+    // Project: its own list, including two kinds of its own.
+    r = await call('PATCH', '/api/projects/SALES', human, { kinds: ['Prospecting: a list of accounts with why each fits', 'Customer calls: notes with the next step', 'Discussion'] });
+    expect(r.status).toBe(200);
+    const k = (await call('GET', '/api/kinds', human)).body;
+    expect(k.workspace.kinds.map((x: any) => x.key)).toEqual(['writing', 'research', 'discussion', 'other']);
+    const sales = k.projects.find((p: any) => p.key === 'SALES');
+    expect(sales.kinds.map((x: any) => x.key)).toEqual(['prospecting', 'customer-calls', 'discussion', 'other']);
+    expect(k.projects.find((p: any) => p.key === 'MKT').own).toBeNull(); // inherits the workspace
+
+    // Guesses stay inside the list that applies.
+    const a = (await call('POST', '/api/tasks', human, { project: 'SALES', title: 'Customer call with Acme' })).body;
+    expect(a.kind).toBe('customer-calls');
+    const b = (await call('POST', '/api/tasks', human, { project: 'SALES', title: 'Find 20 fintech prospects' })).body;
+    expect(b.kind).toBe('prospecting');
+    const c2 = (await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Fix webhook retries' })).body;
+    expect(c2.kind).toBe('other'); // no Code in this workspace's list
+    // A kind that isn't in the list is refused, with the list in the message.
+    const bad = await call('POST', '/api/tasks', human, { project: 'SALES', title: 'x', kind: 'code' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error ?? JSON.stringify(bad.body)).toMatch(/prospecting/);
+    // get_task tells agents which kinds apply and what to hand in.
+    const t = (await tool(ai, 'get_task', { key: a.key })).data;
+    expect(t.kinds_here.map((x: any) => x.label)).toEqual(['Prospecting', 'Customer calls', 'Discussion', 'Other']);
+    expect(t.how_to_finish.hand_in).toBe('notes with the next step');
+    expect(t.kind_label).toBe('Customer calls');
+    // whoami lists them too.
+    const me = (await tool(ai, 'whoami')).data;
+    expect(me.kinds_of_work.projects.SALES).toContain('prospecting');
+    // Filter by a team's own kind.
+    expect((await call('GET', '/api/tasks?kind=customer-calls', human)).body.map((x: any) => x.key)).toEqual([a.key]);
+    // Back to inheriting.
+    await call('PATCH', '/api/projects/SALES', human, { kinds: null });
+    expect((await call('GET', '/api/kinds', human)).body.projects.find((p: any) => p.key === 'SALES').own).toBeNull();
+    // Agents can't change the list.
+    expect((await call('PATCH', '/api/projects/SALES', ai, { kinds: ['Code'] })).status).toBe(403);
   });
 });

@@ -170,6 +170,7 @@ api.delete('/members/:id', async (c) => c.json(await core.removeMember(c.get('ct
 api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ctx'), await c.req.json())));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
 api.get('/projects', async (c) => c.json(await core.listProjects(c.get('ctx'))));
+api.get('/kinds', async (c) => c.json(await core.listKinds(c.get('ctx'))));
 api.get('/projects/:key', async (c) => c.json(await core.getProject(c.get('ctx'), c.req.param('key'))));
 api.post('/projects', async (c) => c.json(await core.createProject(c.get('ctx'), await c.req.json())));
 api.patch('/projects/:key', async (c) => c.json(await core.updateProject(c.get('ctx'), c.req.param('key'), await c.req.json())));

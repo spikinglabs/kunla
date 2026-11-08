@@ -65,8 +65,15 @@ const who = (m, fallback = 'Nobody yet', cls = 'sm') => m ? html`<span class="wh
 const PLATFORM = { 'claude-code': 'Claude Code', 'claude-ai': 'claude.ai', codex: 'Codex', chat: 'Chat app', other: 'MCP agent' };
 const kindLine = (m) => m.kind === 'ai' ? `Agent${m.platform ? ' · ' + (PLATFORM[m.platform] || m.platform) : ''}${m.sponsor ? ' · sponsored by ' + m.sponsor : ''}` : 'Person';
 // Kinds of work (KD-37): not only code. The server guesses a kind when nobody set one.
-const KIND = { code: 'Code', writing: 'Writing', research: 'Research', reading: 'Reading', learning: 'Learning', discussion: 'Discussion', marketing: 'Marketing', sales: 'Sales', data: 'Data', design: 'Design', other: 'Other' };
-const kindChip = (k) => (k && k !== 'other' && KIND[k] ? html`<span class="kind k-${k}">${KIND[k]}</span>` : '');
+// Labels by key: Kunla's defaults plus every kind the workspace and its projects define (Projects page).
+const KIND = { code: 'Code', writing: 'Writing', research: 'Research', learning: 'Learning', discussion: 'Discussion', outreach: 'Outreach', design: 'Design', operations: 'Operations', other: 'Other' };
+let kindsInfo = null;
+async function loadKinds() {
+  try { kindsInfo = await api('GET', '/api/kinds'); } catch { return; }
+  for (const d of [...kindsInfo.workspace.kinds, ...kindsInfo.projects.flatMap((p) => p.kinds)]) KIND[d.key] = d.label;
+}
+const kindName = (k) => KIND[k] || String(k || '').replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase());
+const kindChip = (k) => (k && k !== 'other' ? html`<span class="kind k-${k}">${kindName(k)}</span>` : '');
 const LINK_TYPE = { pr: 'PR', issue: 'Issue', commit: 'Commit', repo: 'Repo', doc: 'Doc', sheet: 'Sheet', slides: 'Slides', form: 'Form', paper: 'Paper', chat: 'Chat', post: 'Post', video: 'Video', design: 'Design', file: 'File' };
 const linkPill = (d) => { let host = d.url; try { host = new URL(d.url).hostname.replace(/^www\./, ''); } catch {}
   return html`<a class="pill" href="${d.url}" target="_blank" rel="noopener" title="${d.title || d.url}">${raw(LINK_TYPE[d.type] ? html`<span class="ltype">${LINK_TYPE[d.type]}</span>` : '')}<span class="pill-t">${d.title || host}</span> ↗</a>`; };
@@ -303,7 +310,7 @@ function decisionCard(item, { solo = false } = {}) {
   const t = item.task;
   const p = projectOf(t.key);
   const worker = t.assignee;
-  const head = (label) => html`<div class="row" style="justify-content:space-between"><span class="eyebrow">${label} · ${t.key}${p ? ' · ' + p.name : ''}${raw(t.kind && t.kind !== 'other' ? ' · ' + esc(KIND[t.kind] || '') : '')}</span>
+  const head = (label) => html`<div class="row" style="justify-content:space-between"><span class="eyebrow">${label} · ${t.key}${p ? ' · ' + p.name : ''}${raw(t.kind && t.kind !== 'other' ? ' · ' + esc(kindName(t.kind)) : '')}</span>
     ${raw(solo ? '' : html`<a class="btn quiet sm" href="#/t/${t.key}">Open</a>`)}</div>`;
   const title = solo ? '' : html`<h2><a href="#/t/${t.key}">${t.title}</a></h2>`;
   if (item.kind === 'review') {
@@ -758,7 +765,7 @@ async function viewTask(key) {
         ${raw(t.parent ? html`<span>/</span><a href="#/t/${t.parent.key}">${t.parent.key} ${t.parent.title}</a>` : '')}<span>/</span><span class="mono">${t.key}</span></div>
       <h1>${t.title}</h1>
       <div class="row"><span class="pill ${t.status === 'review' ? 'lime' : t.status === 'blocked' ? 'warn' : t.status === 'done' ? 'on' : ''}">${STATUS[t.status]}</span>
-        <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join(Object.entries(KIND).map(([k, l]) => html`<option value="${k}" ${t.kind === k ? 'selected' : ''}>${l}</option>`))}</select></label>
+        <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join([...(t.kinds_here || []), ...((t.kinds_here || []).some((x) => x.key === t.kind) ? [] : [{ key: t.kind, label: kindName(t.kind) }])].map((x) => html`<option value="${x.key}" ${t.kind === x.key ? 'selected' : ''}>${x.label}</option>`))}</select></label>
         <div class="people"><span>${raw(who(t.assignee, 'Nobody yet'))}</span>${raw(t.reviewer ? html`<span class="muted">reviewed by</span><span>${raw(who(t.reviewer))}</span>` : '')}
         ${raw(t.created_by ? html`<span class="muted">asked by ${t.created_by.name}</span>` : '')}</div></div>
       ${raw(decision ? html`<div class="card" style="margin-top:24px">${raw(decision)}</div>` : '')}
@@ -799,7 +806,7 @@ async function viewTask(key) {
   bind($app, {
     ...decisionHandlers(reload),
     later: () => showLater(t.key, reload),
-    kind: async (el) => { await api('PATCH', `/api/tasks/${t.key}`, { kind: el.value }); toast(`${t.key} is ${KIND[el.value].toLowerCase()} work now.`); reload(); },
+    kind: async (el) => { await api('PATCH', `/api/tasks/${t.key}`, { kind: el.value }); toast(`${t.key} is ${kindName(el.value).toLowerCase()} work now.`); reload(); },
     unpark: async () => { const r = await api('POST', `/api/tasks/${t.key}/unpark`); toast(`${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     takeit: async () => { await api('POST', `/api/tasks/${t.key}/claim`); toast(`${t.key} is yours. Agents will skip it.`); reload(); },
     release: () => showHandoff(t, 'release', reload),
@@ -901,7 +908,7 @@ async function viewTasks(project) {
         <div class="row">${join(Object.entries(FILTERS).map(([k, [label]]) => html`<button class="pill ${tv.filter === k ? 'on' : ''}" data-act="click:filter" data-k="${k}">${label} <span class="mono" style="opacity:.6">${counts[k]}</span></button>`))}</div>
         <div class="row" style="margin-left:auto">
           <input class="search" placeholder="Filter by words, key or person" value="${tv.q}" data-act="input:q" aria-label="Filter">
-          <select data-act="change:kindf" aria-label="Kind of work"><option value="">All kinds</option>${join(Object.entries(KIND).filter(([k]) => all.some((t) => t.kind === k)).map(([k, l]) => html`<option value="${k}" ${tv.kind === k ? 'selected' : ''}>${l} · ${all.filter((t) => t.kind === k && FILTERS[tv.filter][1](t)).length}</option>`))}</select>
+          <select data-act="change:kindf" aria-label="Kind of work"><option value="">All kinds</option>${join(Object.entries(KIND).filter(([k]) => all.some((t) => t.kind === k)).sort((a, b) => a[1].localeCompare(b[1])).map(([k, l]) => html`<option value="${k}" ${tv.kind === k ? 'selected' : ''}>${l} · ${all.filter((t) => t.kind === k && FILTERS[tv.filter][1](t)).length}</option>`))}</select>
           ${raw(tv.mode === 'list' ? html`<select data-act="change:group" aria-label="Group by">${join(Object.entries(GROUPS).map(([k, l]) => html`<option value="${k}" ${tv.group === k ? 'selected' : ''}>Group by ${l.toLowerCase()}</option>`))}</select>` : '')}
           <div class="seg-toggle"><button class="${tv.mode === 'list' ? 'on' : ''}" data-act="click:mode" data-m="list">List</button><button class="${tv.mode === 'board' ? 'on' : ''}" data-act="click:mode" data-m="board">Board</button></div>
         </div></div>
@@ -918,12 +925,12 @@ async function viewTasks(project) {
       const tops = shown.filter((t) => !t.parent || !keys.has(t.parent));
       const kids = (k) => shown.filter((t) => t.parent === k);
       const groupOf = (t) => tv.group === 'project' ? (t.project ?? '') : tv.group === 'person' ? (t.assignee?.name ?? '') : tv.group === 'kind' ? (t.kind || 'other') : t.status;
-      const order = tv.group === 'project' ? [...projects.map((x) => x.key), ''] : tv.group === 'status' ? STATUS_ORDER : tv.group === 'kind' ? Object.keys(KIND) : null;
+      const order = tv.group === 'project' ? [...projects.map((x) => x.key), ''] : tv.group === 'status' ? STATUS_ORDER : tv.group === 'kind' ? Object.keys(KIND).filter((k) => k !== 'other').concat('other') : null;
       const gkeys = [...new Set(tops.map(groupOf))].sort((a, b) => order ? order.indexOf(a) - order.indexOf(b) : (a || '~').localeCompare(b || '~'));
       const label = (g) => {
         if (tv.group === 'project') { const pr = projects.find((x) => x.key === g); return pr ? html`${raw(pr.focus ? '<span class="focus-dot"></span>' : '')}${pr.name} <span class="key">${pr.key}</span>${raw(pr.ends_at ? ` <span class="muted" style="font-weight:400;font-size:13px">${esc(endsIn(pr.ends_at))}</span>` : '')}` : 'No project'; }
         if (tv.group === 'person') return g || 'Nobody yet';
-        if (tv.group === 'kind') return KIND[g] || 'Other';
+        if (tv.group === 'kind') return kindName(g);
         return STATUS[g];
       };
       body = gkeys.length ? join(gkeys.map((g) => { const rows = tops.filter((t) => groupOf(t) === g); return html`<section class="card group"><h2>${raw(label(g))} <span class="muted mono" style="font-size:12px;font-weight:400">${rows.length}</span></h2>
@@ -1262,7 +1269,18 @@ function showClaudeAi() {
 // ---------- projects: the workspace, its projects, focus, playbooks, rules ----------
 async function viewProjects() {
   renderShell('projects');
-  const [rules, ws] = await Promise.all([api('GET', '/api/rules'), api('GET', `/api/projects/${me.workspace.key}`)]);
+  const [rules, ws] = await Promise.all([api('GET', '/api/rules'), api('GET', `/api/projects/${me.workspace.key}`), loadKinds()]);
+  // Kinds of work, one per line: built-ins by name ("Research"); your own as "Name: what to hand in".
+  const kindLines = (list) => (list || []).map((d) => (d.builtin && !d.custom_hand_in ? d.label : `${d.label}: ${d.hand_in}`)).join('\n');
+  const ownLines = (own) => (own || []).map((d) => {
+    const b = kindsInfo?.defaults.find((x) => x.key === d.key);
+    return b && d.hand_in === b.hand_in ? d.label : `${d.label}: ${d.hand_in}`;
+  }).join('\n');
+  const wsKinds = kindsInfo?.workspace;
+  const kindsField = (id, own, inherited, from) => html`<div class="field kinds-field"><label for="${id}">Kinds of work</label>
+    <p class="muted hint-s">One per line. Use a name from the list below to keep Kunla's guidance, or add your own as <code>Name: what to hand in</code>. ${from}</p>
+    <textarea id="${id}" name="kinds" rows="5" placeholder="${kindLines(inherited)}">${ownLines(own)}</textarea>
+    <p class="muted hint-s">Kunla's: ${(kindsInfo?.defaults || []).map((d) => d.label).join(', ')}.</p></div>`;
   const ruleRows = (rs) => rs.length ? rs.map((r) => html`<div class="rule-row"><input type="checkbox" class="switch" data-act="change:rule" data-id="${r.id}" ${r.active ? 'checked' : ''} aria-label="Rule on"><div class="grow"><div>${r.text}</div>
       <div class="m">${r.created_by}, ${agoLong(r.created_at)}${r.source_task ? ' · from ' + r.source_task : ''} · sent with ${plural(r.sent_with, 'task')}</div></div></div>`).join('')
     : '<p class="muted" style="font-size:14px">None yet. When you send work back, tick “Teach the team” and the correction lands here.</p>';
@@ -1282,26 +1300,29 @@ async function viewProjects() {
         <label class="check focus-check"><input type="checkbox" class="switch" name="focus" ${p.focus ? 'checked' : ''}><span><b>Focus</b> <span class="muted">offered first to everyone</span></span></label>
         <label class="row" style="gap:8px;margin-left:auto"><span class="label">Ends</span><input type="date" name="ends_at" value="${dateVal(p.ends_at)}" style="width:auto"><span class="muted" style="font-size:13px">${p.ends_at ? endsIn(p.ends_at) : 'ongoing'}</span></label>
       </div>
-      <details><summary class="label" style="cursor:pointer">Playbook, review setting and ${plural(rs.length, 'rule')}</summary>
+      <details><summary class="label" style="cursor:pointer">Playbook, review setting, kinds of work and ${plural(rs.length, 'rule')}</summary>
       <div class="pb" style="margin-top:12px"><div class="field"><label for="pb-${p.key}">Playbook</label><textarea id="pb-${p.key}" name="playbook" placeholder="Voice, links, tools to use, things to avoid. Markdown.">${p.playbook}</textarea>
           <label class="check" style="margin-top:6px"><input type="checkbox" name="require_human_review" ${p.require_human_review ? 'checked' : ''}><span>Work must be approved by a person, not another agent</span></label></div>
+        ${raw(kindsField(`kd-${p.key}`, kindsInfo?.projects.find((x) => x.key === p.key)?.own, wsKinds?.kinds, 'Leave it empty to use the workspace’s kinds (shown faintly).'))}
         <div><div class="label" style="margin-bottom:6px">Rules from reviews</div>${raw(ruleRows(rs))}</div></div></details>
       <div class="row"><button class="btn ink sm">Save</button><a class="btn quiet sm" href="#/tasks/${p.key}">Open tasks</a></div></form>`; }))}
     <form class="card pad stack ws" data-act="submit:savews"><div class="row"><span class="eyebrow">Workspace</span><span class="pill mono">${me.workspace.key}</span></div>
       <input name="name" value="${me.workspace.name}" aria-label="Workspace name" class="title-in">
       <p class="muted" style="font-size:14px">The top of the hierarchy. Tasks with no project live here, and this playbook and these rules go with every task in every project.</p>
-      <div class="pb"><div class="field"><label for="pb-ws">Playbook for everything</label><textarea id="pb-ws" name="playbook" placeholder="How this workspace works: who we are, the voice, the tools.">${ws?.playbook ?? ''}</textarea></div>
+      <div class="pb"><div class="field"><label for="pb-ws">Playbook for everything</label><textarea id="pb-ws" name="playbook" placeholder="How this workspace works: who we are, the voice, the tools.">${ws?.playbook ?? ''}</textarea>
+        ${raw(kindsField('kd-ws', wsKinds?.own, kindsInfo?.defaults, 'Leave it empty to use Kunla’s kinds (shown faintly). Each project can set its own.'))}</div>
         <div><div class="label" style="margin-bottom:6px">Rules for everyone</div>${raw(ruleRows(rules.filter((r) => r.project === me.workspace.key)))}</div></div>
       <div class="row"><button class="btn ink sm">Save</button><a class="btn quiet sm" href="#/tasks/${me.workspace.key}">Tasks with no project</a></div></form></div>`;
-  const refresh = async () => { [projects, me] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/me')]); };
+  const refresh = async () => { [projects, me] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/me'), loadKinds()]); };
+  const kindsValue = (text) => { const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean); return lines.length ? lines : null; };
   bind($app, {
     newp: () => { const f = $('newp'); f.hidden = !f.hidden; if (!f.hidden) f.querySelector('input').focus(); },
     save: async (f) => {
       const d = formData(f);
-      await api('PATCH', `/api/projects/${f.dataset.key}`, { name: d.name, ...(d.playbook !== undefined ? { playbook: d.playbook } : {}), require_human_review: !!d.require_human_review, focus: !!d.focus, ends_at: d.ends_at || null });
+      await api('PATCH', `/api/projects/${f.dataset.key}`, { name: d.name, ...(d.playbook !== undefined ? { playbook: d.playbook } : {}), ...(d.kinds !== undefined ? { kinds: kindsValue(d.kinds) } : {}), require_human_review: !!d.require_human_review, focus: !!d.focus, ends_at: d.ends_at || null });
       await refresh(); toast('Saved. Agents get it with their next task.'); viewProjects();
     },
-    savews: async (f) => { const d = formData(f); await api('PATCH', `/api/projects/${me.workspace.key}`, { name: d.name, playbook: d.playbook }); await refresh(); renderShell('projects'); toast('Saved for the whole workspace.'); },
+    savews: async (f) => { const d = formData(f); await api('PATCH', `/api/projects/${me.workspace.key}`, { name: d.name, playbook: d.playbook, kinds: kindsValue(d.kinds) }); await refresh(); toast('Saved for the whole workspace.'); viewProjects(); },
     create: async (f) => { await api('POST', '/api/projects', formData(f)); await refresh(); viewProjects(); },
     rule: async (el) => { await api('PATCH', `/api/rules/${el.dataset.id}`, { active: el.checked }); toast(el.checked ? 'Rule on. Agents get it from now.' : 'Rule off.'); },
     up: async (el) => {
@@ -1428,7 +1449,7 @@ async function route() {
   if (!token) return viewGate().catch((e) => toast(e.message));
   if (!me) {
     try {
-      [me, projects, members] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/projects'), api('GET', '/api/members')]);
+      [me, projects, members] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/projects'), api('GET', '/api/members'), loadKinds()]);
     } catch { return; }
     $('gate').hidden = true;
     $('shell').hidden = false;

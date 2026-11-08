@@ -1,7 +1,7 @@
 import { wakeMember, publicCallback, type Wake } from './wake';
 import { taskPr, tokenFor, mergeApproved } from './merge';
 import * as continuous from './continuous';
-import { GUIDE, KINDS, KIND_LABEL, inferKind, linkType, normalizeKind, type WorkKind } from './kinds';
+import { DEFAULT_DEFS, KindsError, effectiveKinds, inferKind, labelFor, linkType, matchKind, parseKinds, storeKinds, type KindDef } from './kinds';
 
 // Kunla core: the record of work. Everything here is plain SQL over a D1-compatible
 // database, so the same code runs on Cloudflare D1, a SQLite file, or (later) Postgres.
@@ -28,6 +28,7 @@ export interface Project {
   id: string; key: string; name: string; playbook: string;
   require_human_review: number; next_seq: number; created_at: string;
   kind: 'project' | 'workspace'; focus: number; rank: number; ends_at: string | null; space_id: string;
+  kinds?: string | null; // kinds of work for tasks here (JSON); NULL inherits (kinds.ts)
 }
 export interface Task {
   id: string; project_id: string; key: string; title: string; brief: string; criteria: string;
@@ -188,9 +189,15 @@ export async function createProject(c: Ctx, input: { key: string; name: string; 
 
 export async function updateProject(c: Ctx, key: string, input: {
   name?: string; playbook?: string; require_human_review?: boolean; focus?: boolean; rank?: number; ends_at?: string | null;
+  kinds?: unknown; // list of kinds of work for this project or workspace; null goes back to inheriting
 }) {
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can change project settings.');
   const p = await getProject(c, key);
+  if (input.kinds !== undefined) {
+    let defs: KindDef[] | null;
+    try { defs = parseKinds(input.kinds); } catch (e) { if (e instanceof KindsError) throw new KunlaError(400, e.message); throw e; }
+    await c.db.prepare('UPDATE projects SET kinds = ? WHERE id = ?').bind(storeKinds(defs), p.id).run();
+  }
   const ends = input.ends_at === undefined ? p.ends_at : input.ends_at ? new Date(input.ends_at).toISOString() : null;
   await c.db.prepare('UPDATE projects SET name = ?, playbook = ?, require_human_review = ?, focus = ?, rank = ?, ends_at = ? WHERE id = ?').bind(
     input.name ?? p.name, input.playbook ?? p.playbook,
@@ -454,7 +461,7 @@ export async function createTask(c: Ctx, input: {
   const key = `${p.key}-${seq!.next_seq}`;
   const t = nowIso(c);
   const parent = parentTask?.id ?? null;
-  const kind = kindFor(input.kind, input.title ?? '', input.brief ?? '', [], parentTask);
+  const kind = kindFor(await kindsFor(c, p.id), input.kind, input.title ?? '', input.brief ?? '', [], parentTask);
   await c.db.prepare(
     `INSERT INTO tasks (id, project_id, key, title, brief, criteria, status, priority, created_by, assignee_id, reviewer_id, parent_id, due_at, kind, space_id, created_at, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
@@ -558,7 +565,7 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (input.brief !== undefined) fields.brief = input.brief;
   if (input.criteria) fields.criteria = JSON.stringify(input.criteria);
   if (input.priority !== undefined) fields.priority = input.priority;
-  if (input.kind !== undefined && input.kind !== null && input.kind !== '') fields.kind = checkKind(input.kind);
+  if (input.kind !== undefined && input.kind !== null && input.kind !== '') fields.kind = checkKind(await kindsFor(c, t.project_id), input.kind);
   if (input.assignee !== undefined) fields.assignee_id = input.assignee ? (await getMember(c, input.assignee)).id : null;
   if (input.reviewer !== undefined) fields.reviewer_id = input.reviewer ? (await getMember(c, input.reviewer)).id : null;
   if (input.blocked_question) {
@@ -719,23 +726,50 @@ export async function addNotes(c: Ctx, taskId: string, body?: string | null, tit
   return nid;
 }
 
-function checkKind(k: unknown): WorkKind {
-  const n = normalizeKind(k);
-  if (!n) throw new KunlaError(400, `Unknown kind ${String(k).slice(0, 40)}. Use one of: ${KINDS.join(', ')}.`);
-  return n;
+/** The kinds of work that apply in a project (or the workspace): its own list, else the workspace's, else Kunla's. */
+export async function kindsFor(c: Ctx, projectId: string): Promise<KindDef[]> {
+  const p = await c.db.prepare('SELECT id, kind, kinds FROM projects WHERE id = ? AND space_id = ?').bind(projectId, c.space).first<Project>();
+  const ws = p?.kind === 'workspace' ? p : await c.db.prepare(`SELECT kinds FROM projects WHERE id = ? AND kind = 'workspace'`).bind(c.space).first<Project>();
+  return effectiveKinds(p?.kind === 'workspace' ? null : p?.kinds, ws?.kinds);
+}
+
+/** Every project's (and the workspace's) kinds, by project id. One query, for lists. */
+async function kindsByProject(c: Ctx): Promise<Map<string, KindDef[]>> {
+  const rows = (await c.db.prepare('SELECT id, kind, kinds FROM projects WHERE space_id = ?').bind(c.space).all<Project>()).results;
+  const ws = rows.find((r) => r.kind === 'workspace');
+  return new Map(rows.map((r) => [r.id, effectiveKinds(r.kind === 'workspace' ? null : r.kinds, ws?.kinds)]));
+}
+
+/** The kinds of work in this workspace: its own list and each project's, with what applies where. */
+export async function listKinds(c: Ctx) {
+  const rows = (await c.db.prepare(`SELECT id, key, name, kind, kinds FROM projects WHERE space_id = ? ORDER BY kind DESC, focus DESC, rank, created_at`).bind(c.space).all<Project>()).results;
+  const ws = rows.find((r) => r.kind === 'workspace');
+  const pub = (d: KindDef) => ({ key: d.key, label: d.label, about: d.about, hand_in: d.hand_in, approval: d.approval, builtin: d.builtin, ...(d.builtin ? {} : { words: d.words }) });
+  const own = (s?: string | null) => { try { return s ? parseKinds(s)?.map(pub) ?? null : null; } catch { return null; } };
+  return {
+    defaults: DEFAULT_DEFS.map(pub),
+    workspace: { key: ws?.key, own: own(ws?.kinds), kinds: effectiveKinds(null, ws?.kinds).map(pub) },
+    projects: rows.filter((r) => r.kind === 'project').map((r) => ({ key: r.key, name: r.name, own: own(r.kinds), kinds: effectiveKinds(r.kinds, ws?.kinds).map(pub) })),
+  };
+}
+
+function checkKind(defs: KindDef[], k: unknown): string {
+  const d = matchKind(defs, k);
+  if (!d) throw new KunlaError(400, `Unknown kind ${String(k).slice(0, 40)}. Here the kinds are: ${defs.map((x) => x.key).join(', ')}.`);
+  return d.key;
 }
 
 /** The kind a new task gets: what the caller said, else its parent's, else a guess from the words and links. */
-function kindFor(given: unknown, title: string, brief: string, urls: string[], parent?: Task | null): WorkKind {
-  if (given !== undefined && given !== null && given !== '') return checkKind(given);
-  const guess = inferKind(title, brief, urls);
-  if (guess === 'other' && parent) return (normalizeKind(parent.kind) ?? inferKind(parent.title, parent.brief));
+function kindFor(defs: KindDef[], given: unknown, title: string, brief: string, urls: string[], parent?: Task | null): string {
+  if (given !== undefined && given !== null && given !== '') return checkKind(defs, given);
+  const guess = inferKind(title, brief, urls, defs);
+  if (guess === 'other' && parent) return (parent.kind && defs.some((d) => d.key === parent.kind)) ? parent.kind : inferKind(parent.title, parent.brief, [], defs);
   return guess;
 }
 
 /** A task's kind, guessing for older tasks that were stored without one. */
-export function taskKind(t: Pick<Task, 'title' | 'brief'> & { kind?: string | null }, urls: string[] = []): WorkKind {
-  return normalizeKind(t.kind) ?? inferKind(t.title, t.brief, urls);
+export function taskKind(t: Pick<Task, 'title' | 'brief'> & { kind?: string | null }, urls: string[] = [], defs: KindDef[] = DEFAULT_DEFS): string {
+  return t.kind || inferKind(t.title, t.brief, urls, defs);
 }
 
 /**
@@ -758,14 +792,14 @@ export async function logWork(c: Ctx, input: {
     await event(c, t.id, 'work_logged', summary, { deliverables: input.deliverables ?? [], ...(noteId ? { note_id: noteId } : {}), ...spend(input) });
     const f: Partial<Task> = {};
     if (t.assignee_id === c.me.id && t.status === 'in_progress') f.lease_expires_at = leaseFor(c, c.me);
-    if (input.kind) f.kind = checkKind(input.kind);
+    if (input.kind) f.kind = checkKind(await kindsFor(c, t.project_id), input.kind);
     if (Object.keys(f).length) await touch(c, t.id, f);
     if (input.status === 'review') return submitForReview(c, t.key, { summary, deliverables: input.deliverables ?? [] });
     return getTask(c, t.id);
   }
   const status = input.status ?? 'done';
-  const kind = kindFor(input.kind, input.title ?? summary, summary, urls);
   const p = input.project?.trim() ? await getProject(c, input.project) : await getWorkspace(c);
+  const kind = kindFor(await kindsFor(c, p.id), input.kind, input.title ?? summary, summary, urls);
   const seq = await c.db.prepare('UPDATE projects SET next_seq = next_seq + 1 WHERE id = ? RETURNING next_seq').bind(p.id).first<{ next_seq: number }>();
   const key = `${p.key}-${seq!.next_seq}`;
   const t = nowIso(c);
@@ -1030,7 +1064,9 @@ export async function taskDetail(c: Ctx, key: string) {
     taskNotes(c.db, t.id),
   ]);
   const links = (deliverables.results as { url: string; title: string | null; created_at: string }[]).map((d) => ({ ...d, type: linkType(d.url) }));
-  const kind = taskKind(t, links.map((d) => d.url));
+  const defs = await kindsFor(c, t.project_id);
+  const kind = taskKind(t, links.map((d) => d.url), defs);
+  const def = defs.find((d) => d.key === kind);
   const parent = t.parent_id ? await c.db.prepare('SELECT key, title, status FROM tasks WHERE id = ?').bind(t.parent_id).first() : null;
   const ws = p.kind === 'workspace' ? p : await getWorkspace(c);
   const names = await memberNames(c);
@@ -1038,8 +1074,9 @@ export async function taskDetail(c: Ctx, key: string) {
   return {
     ...publicTask(t, names),
     kind,
-    kind_label: KIND_LABEL[kind],
-    how_to_finish: GUIDE[kind],
+    kind_label: labelFor(kind, defs),
+    how_to_finish: def ? { about: def.about, hand_in: def.hand_in, approval: def.approval } : { hand_in: 'A link to the work, or notes that show the outcome.', approval: 'Approving marks it done.' },
+    kinds_here: defs.map((d) => ({ key: d.key, label: d.label })),
     ...sharing,
     project: p.kind === 'workspace' ? null : { key: p.key, name: p.name, require_human_review: !!p.require_human_review, focus: !!p.focus, ends_at: p.ends_at },
     workspace: { key: ws.key, name: ws.name },
@@ -1068,13 +1105,13 @@ async function memberNames(c: Ctx) {
   return map;
 }
 
-function publicTask(t: Task & { project_key?: string | null; project_kind?: string; parent_key?: string | null; sub_total?: number; sub_done?: number }, names: Map<string, Member>) {
+function publicTask(t: Task & { project_key?: string | null; project_kind?: string; parent_key?: string | null; sub_total?: number; sub_done?: number }, names: Map<string, Member>, kinds?: Map<string, KindDef[]>) {
   const who = (mid: string | null) => (mid && names.get(mid) ? { id: mid, name: names.get(mid)!.name, kind: names.get(mid)!.kind } : null);
   return {
     key: t.key,
     ...(t.project_kind !== undefined ? { project: t.project_kind === 'workspace' ? null : t.project_key } : {}),
     ...(t.parent_key !== undefined ? { parent: t.parent_key } : {}),
-    ...(t.sub_total ? { subtasks: { total: t.sub_total, done: t.sub_done ?? 0 } } : {}), title: t.title, kind: taskKind(t), brief: t.brief, criteria: parseList(t.criteria), status: t.status,
+    ...(t.sub_total ? { subtasks: { total: t.sub_total, done: t.sub_done ?? 0 } } : {}), title: t.title, kind: taskKind(t, [], kinds?.get(t.project_id)), brief: t.brief, criteria: parseList(t.criteria), status: t.status,
     priority: t.priority, origin: t.origin, assignee: who(t.assignee_id), reviewer: who(t.reviewer_id),
     created_by: who(t.created_by), lease_expires_at: t.lease_expires_at, blocked_question: t.blocked_question,
     blocked_on: who(t.blocked_on_id), review_rounds: t.review_rounds, due_at: t.due_at,
@@ -1093,8 +1130,16 @@ export async function listTasks(c: Ctx, f: { project?: string; status?: string; 
   if (f.q) { where.push('(t.title LIKE ? OR t.brief LIKE ? OR t.key = ?)'); args.push(`%${f.q}%`, `%${f.q}%`, f.q.toUpperCase()); }
   if (f.updated_since) { where.push('t.updated_at > ?'); args.push(f.updated_since); }
   // Older tasks have no stored kind; they are guessed below, so let them through here.
-  const kinds = f.kind ? f.kind.split(',').map((k) => checkKind(k)) : null;
-  if (kinds) { where.push(`(t.kind IS NULL OR t.kind IN (${kinds.map(() => '?').join(',')}))`); args.push(...kinds); }
+  // Kinds can differ per project, so the filter takes keys or names as given; older tasks have no
+  // stored kind and are guessed below, so let them through here.
+  const byProject = await kindsByProject(c);
+  const kinds = f.kind ? f.kind.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean) : null;
+  if (kinds) {
+    const all = [...byProject.values()].flat();
+    const keys = [...new Set(kinds.flatMap((k) => all.filter((d) => matchKind([d], k)).map((d) => d.key)).concat(kinds))];
+    kinds.splice(0, kinds.length, ...keys);
+    where.push(`(t.kind IS NULL OR t.kind IN (${kinds.map(() => '?').join(',')}))`); args.push(...kinds);
+  }
   const rows = (await c.db.prepare(
     `SELECT t.*, p.key AS project_key, p.kind AS project_kind, pt.key AS parent_key,
        (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id) AS sub_total,
@@ -1103,7 +1148,7 @@ export async function listTasks(c: Ctx, f: { project?: string; status?: string; 
      WHERE ${where.join(' AND ')}
      ORDER BY t.priority, t.updated_at DESC LIMIT ?`).bind(...args, Math.min(f.limit ?? 200, 1000)).all<Task>()).results;
   const names = await memberNames(c);
-  const out = rows.map((t) => publicTask(t, names));
+  const out = rows.map((t) => publicTask(t, names, byProject));
   return kinds ? out.filter((t) => kinds.includes(t.kind)) : out;
 }
 
@@ -1172,7 +1217,7 @@ export async function inbox(c: Ctx) {
     const sub = await c.db.prepare(`SELECT note FROM events WHERE task_id = ? AND type IN ('submitted','work_logged') ORDER BY id DESC LIMIT 1`).bind(t.id).first<{ note: string }>();
     const dels = (await c.db.prepare('SELECT url, title FROM deliverables WHERE task_id = ?').bind(t.id).all<{ url: string; title: string | null }>()).results
       .map((d) => ({ ...d, type: linkType(d.url) }));
-    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url)), summary: sub?.note ?? null, deliverables: dels, notes: await taskNotes(c.db, t.id) };
+    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url), await kindsFor(c, t.project_id)), summary: sub?.note ?? null, deliverables: dels, notes: await taskNotes(c.db, t.id) };
   };
   const items = [
     ...(await Promise.all(reviews.map(withSummary))).map((t) => ({ kind: 'review' as const, task: t })),
@@ -1250,6 +1295,10 @@ export async function whoami(c: Ctx) {
     workspace: await getWorkspace(c).then((w) => ({ id: w.id, key: w.key, name: w.name })),
     lane: parseList(c.me.scope),
     projects: projects.map((p) => ({ key: p.key, name: p.name, focus: !!p.focus, ends_at: p.ends_at })),
+    kinds_of_work: await listKinds(c).then((k) => ({
+      workspace: k.workspace.kinds.map((d) => d.key),
+      ...(k.projects.some((p) => p.own) ? { projects: Object.fromEntries(k.projects.filter((p) => p.own).map((p) => [p.key, p.kinds.map((d) => d.key)])) } : {}),
+    })),
     board: c.baseUrl,
   };
 }
