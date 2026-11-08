@@ -1,6 +1,6 @@
 // Read models for the web app and in-chat views: the briefing, the live pulse, the work map
 // and rules with their reach. All derived from the event record; nobody writes a status update.
-import { sweepLeases, listMembers } from './core';
+import { sweepLeases, listMembers, taskKind } from './core';
 import type { Ctx, Member, Task } from './core';
 
 const now = (c: Ctx) => (c.now ? c.now() : new Date());
@@ -69,11 +69,13 @@ export async function pulse(c: Ctx) {
   });
 }
 
-type Seg = { key: string; title: string; start: string; end: string | null; kind: 'work' | 'wait' | 'decide'; label: string; live?: boolean };
+// project and work are what the app can group lanes by besides the person (project key, kind of work).
+type Seg = { key: string; title: string; start: string; end: string | null; kind: 'work' | 'wait' | 'decide'; label: string; live?: boolean; project?: string; work?: string };
 
 /**
  * The work map: one lane per member over the last days. Solid segments are work, dashed are
- * work waiting on someone, short blocks on people's lanes are their decisions.
+ * work waiting on someone, short blocks on people's lanes are their decisions. Each segment also
+ * carries its project and kind of work, so the app can regroup the same bars by those instead.
  */
 export async function workMap(c: Ctx, days = 5) {
   await sweepLeases(c);
@@ -87,7 +89,15 @@ export async function workMap(c: Ctx, days = 5) {
   const tasks = new Map((await c.db.prepare(`SELECT * FROM tasks WHERE space_id = ? AND id IN (SELECT task_id FROM events WHERE space_id = ? AND created_at > ? UNION SELECT id FROM tasks WHERE space_id = ? AND status IN ('in_progress','blocked','review'))`)
     .bind(c.space, c.space, start.toISOString(), c.space).all<Task>()).results.map((t) => [t.id, t]));
   const lanes = new Map<string, Seg[]>(members.map((m) => [m.id, []]));
-  const push = (mid: string | null | undefined, s: Seg) => { if (mid && lanes.has(mid)) lanes.get(mid)!.push(s); };
+  const projects = (await c.db.prepare(`SELECT id, key, name, kind FROM projects WHERE space_id = ? ORDER BY kind DESC, focus DESC, rank, created_at`)
+    .bind(c.space).all<{ id: string; key: string; name: string; kind: string }>()).results;
+  const projKey = new Map(projects.map((p) => [p.id, p.key]));
+  const tagOf = new Map<string, { project?: string; work: string }>();
+  const tag = (key: string) => {
+    if (!tagOf.has(key)) { const t = [...tasks.values()].find((x) => x.key === key); tagOf.set(key, { project: t ? projKey.get(t.project_id) : undefined, work: t ? taskKind(t) : 'other' }); }
+    return tagOf.get(key)!;
+  };
+  const push = (mid: string | null | undefined, s: Seg) => { if (mid && lanes.has(mid)) lanes.get(mid)!.push(Object.assign(s, tag(s.key))); };
   const byTask = new Map<string, Ev[]>();
   for (const e of evs) { if (!byTask.has(e.task_id)) byTask.set(e.task_id, []); byTask.get(e.task_id)!.push(e); }
   const names = new Map(members.map((m) => [m.id, m.name]));
@@ -135,6 +145,7 @@ export async function workMap(c: Ctx, days = 5) {
   return {
     start: start.toISOString(), end: end.toISOString(),
     lanes: members.map((m: Member) => ({ id: m.id, name: m.name, kind: m.kind, platform: m.platform, segments: lanes.get(m.id)!.filter(clip) })),
+    projects: projects.map((p) => ({ key: p.key, name: p.name, workspace: p.kind === 'workspace' })),
     waits,
   };
 }

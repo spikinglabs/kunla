@@ -660,6 +660,15 @@ const MAP_ZOOMS = [1, 1.5, 2, 3, 4, 6, 8];
 let mapDays = null; // null until the first visit picks a range that fits recent activity
 let mapZoom = 1;
 let mapData = null;
+// What each lane is: a person or agent (default), a project, or a kind of work. Remembered on this device.
+const MAP_GROUPS = [['who', 'Person or agent'], ['project', 'Project'], ['work', 'Kind of work']];
+let mapGroup = 'who';
+try { const g = localStorage.getItem('kunla.mapGroup'); if (MAP_GROUPS.some(([k]) => k === g)) mapGroup = g; } catch {}
+const MAP_SUB = {
+  who: 'Who worked on what, person or agent.',
+  project: 'What moved in each project, and who moved it.',
+  work: 'What kinds of work got done, and who did them.',
+};
 
 // The smallest range that still shows the latest handful of work, so the first view isn't a few slivers next to "now".
 async function fitMapRange() {
@@ -679,7 +688,8 @@ async function viewMap() {
   const E = new Date(m.end).getTime();
   const longest = Math.max(1, ...m.waits.map((w) => E - new Date(w.since).getTime()));
   $app.innerHTML = html`<div class="head"><div><h1>Work map</h1>
-      <p class="sub">Who worked on what, person or agent. Solid is work, dashed is work waiting on someone, lime is a decision. Nobody filled this in; it comes from the record.</p></div></div>
+      <p class="sub">${MAP_SUB[mapGroup]} Solid is work, dashed is work waiting on someone, lime is a decision. Nobody filled this in; it comes from the record.</p></div></div>
+    <div class="map-group row" role="group" aria-label="Group lanes by"><span class="label">Lanes by</span>${join(MAP_GROUPS.map(([k, label]) => html`<button class="pill ${k === mapGroup ? 'on' : ''}" data-act="click:group" data-g="${k}" aria-pressed="${k === mapGroup}">${label}</button>`))}</div>
     <div class="map-tools"><div class="row map-ranges">${join(MAP_RANGES.map(([label, d]) => html`<button class="pill ${d === mapDays ? 'on' : ''}" data-act="click:days" data-n="${d}">${label}</button>`))}</div>
       <div class="zoom" role="group" aria-label="Zoom"><button class="btn sm" data-act="click:zoomOut" aria-label="Zoom out">−</button><span id="zoomv">${mapZoom}×</span><button class="btn sm" data-act="click:zoomIn" aria-label="Zoom in">+</button></div></div>
     <div class="card"><div class="map" id="map"></div></div>
@@ -692,11 +702,24 @@ async function viewMap() {
   const setZoom = (z) => { const keep = mapAnchor(); mapZoom = z; drawMap(keep); };
   bind($app, {
     days: (el) => { mapDays = Number(el.dataset.n); viewMap(); },
+    group: (el) => { mapGroup = el.dataset.g; try { localStorage.setItem('kunla.mapGroup', mapGroup); } catch {} viewMap(); },
     zoomIn: () => setZoom(MAP_ZOOMS.find((z) => z > mapZoom) ?? mapZoom),
     zoomOut: () => setZoom([...MAP_ZOOMS].reverse().find((z) => z < mapZoom) ?? mapZoom),
   });
   drawMap();
   pinchZoom($('map'));
+}
+
+// The same bars, regrouped into lanes by person or agent, project, or kind of work.
+function mapLanes(m) {
+  if (mapGroup === 'who') return m.lanes.filter((l) => l.segments.length || members.find((mm) => mm.id === l.id)?.active);
+  const all = m.lanes.flatMap((l) => l.segments.map((s) => ({ ...s, who: l.name })));
+  const badge = (text, cls) => html`<span class="av lane-badge ${cls}">${text}</span>`;
+  const lane = (id, name, sub, b) => ({ id, name, sub, badge: b, segments: all.filter((s) => (s[mapGroup] || '') === id) });
+  const out = mapGroup === 'project'
+    ? [...(m.projects || []).map((p) => lane(p.key, p.name, p.workspace ? 'Not in a project' : p.key, badge(p.key.slice(0, 3), 'proj'))), lane('', 'Unknown project', '', badge('?', 'proj'))]
+    : [...new Set([...Object.keys(KIND), ...all.map((s) => s.work || '')])].map((k) => lane(k, k ? kindName(k) : 'Unsorted', 'Kind of work', badge(initials(k ? kindName(k) : '?'), `kindb k-${k}`)));
+  return out.filter((l) => l.segments.length);
 }
 
 const mapLabelW = () => (innerWidth < 700 ? 112 : 200);
@@ -744,20 +767,35 @@ function drawMap(anchor = null) {
   }).join('') + (() => { const b = new Date(d0); b.setHours(7, 0, 0, 0); const r = x(b.getTime()); return r > 0 ? `<i class="night" style="left:0;width:${Math.min(100, r)}%"></i>` : ''; })();
   const grid = ticks.map((d) => `<i class="grid-line ${d.getHours() === 0 ? 'day' : ''}" style="left:${x(d.getTime())}%"></i>`).join('');
   const nowX = x(E);
-  const lanes = m.lanes.filter((l) => l.segments.length || members.find((mm) => mm.id === l.id)?.active);
-  const seg = (s) => {
+  const lanes = mapLanes(m);
+  const byWho = mapGroup === 'who';
+  // Bars that overlap in time go on separate rows of their lane, so none hides another. Decisions are short marks and stay on the first row.
+  const stack = (segs) => {
+    const ends = [];
+    return segs.slice().sort((a, b) => a.start.localeCompare(b.start)).map((s) => {
+      if (s.kind === 'decide') return { s, row: 0 };
+      const a = x(s.start); const b = x(s.end ?? m.end);
+      let row = ends.findIndex((e) => e <= a);
+      if (row < 0) { row = ends.length; ends.push(b); } else ends[row] = b;
+      return { s, row };
+    });
+  };
+  const seg = ({ s, row }) => {
     const l = Math.max(0, x(s.start));
     const r = Math.min(nowX, x(s.end ?? m.end));
     const w = Math.max(0, r - l);
-    const text = s.kind === 'decide' ? '' : s.kind === 'wait' ? s.label.replace(`${s.key} `, '') : s.title;
-    return html`<a class="seg ${s.kind} ${s.live ? 'live' : ''}" href="#/t/${s.key}" style="left:${l}%;width:${w}%" title="${s.label} · ${when(s.start)}–${s.end ? clock(s.end) : 'now'}" aria-label="${s.label}"><span>${text}</span></a>`;
+    const body = s.kind === 'decide' ? '' : s.kind === 'wait' ? s.label.replace(`${s.key} `, '') : s.title;
+    const text = !byWho && s.kind !== 'decide' ? `${s.who}: ${body}` : body;
+    const label = byWho ? s.label : `${s.who}: ${s.label}`;
+    return html`<a class="seg ${s.kind} ${s.live ? 'live' : ''}" href="#/t/${s.key}" style="left:${l}%;width:${w}%;--row:${row}" title="${label} · ${when(s.start)}–${s.end ? clock(s.end) : 'now'}" aria-label="${label}"><span>${text}</span></a>`;
   };
   box.innerHTML = html`<div class="map-in" style="--label:${lw}px;width:${lw + tw}px">
     <div class="map-days"><div class="who"></div><div class="track">${join(ticks.map((d) => { const l = x(d.getTime()); return l >= 0 && l < 97 ? html`<span class="d ${d.getHours() === 0 ? 'day' : ''}" style="left:${l}%">${tickLabel(d)}</span>` : ''; }))}<i class="now" style="left:${nowX}%"></i></div></div>
     ${raw(lanes.length ? '' : '<p class="muted" style="padding:16px 0">No work recorded in this range. Try a longer one.</p>')}
-    ${join(lanes.map((l) => html`<div class="lane"><div class="who">${raw(av(l, '', l.segments.some((s) => s.live)))}<span class="grow"><span class="name">${l.name}</span>
-      <small>${l.kind === 'ai' ? PLATFORM[l.platform] || 'Agent' : 'Person'}</small></span></div>
-      <div class="track">${raw(nights)}${raw(grid)}${join(l.segments.map(seg))}<i class="now bare" style="left:${nowX}%"></i></div></div>`))}
+    ${join(lanes.map((l) => { const segs = stack(l.segments); const rows = Math.max(1, ...segs.map((g) => g.row + 1));
+      return html`<div class="lane" style="--rows:${rows}"><div class="who">${raw(l.badge ?? av(l, '', l.segments.some((s) => s.live)))}<span class="grow"><span class="name">${l.name}</span>
+      <small>${l.sub ?? (l.kind === 'ai' ? PLATFORM[l.platform] || 'Agent' : 'Person')}</small></span></div>
+      <div class="track">${raw(nights)}${raw(grid)}${join(segs.map(seg))}<i class="now bare" style="left:${nowX}%"></i></div></div>`; }))}
   </div>`;
   const zv = $('zoomv'); if (zv) zv.textContent = `${Math.round(mapZoom * 10) / 10}×`;
   restoreAnchor(anchor);
