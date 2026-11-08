@@ -530,43 +530,46 @@ function subline(brief, pulse) {
   return out.join(' ');
 }
 
-// Horizontal swipe on a card deck. Vertical scrolling stays with the browser (touch-action: pan-y),
-// and a swipe that starts in a text field or while text is selected is ignored.
-function swipeDeck(el, go) {
-  let x0 = 0, y0 = 0, t0 = 0, dx = 0, mode = null;
-  const card = () => el.firstElementChild;
-  el.addEventListener('touchstart', (e) => {
-    mode = null; dx = 0;
-    if (e.touches.length !== 1 || e.target.closest('textarea, input, select, [contenteditable]') || String(getSelection())) { mode = 'off'; return; }
-    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
-  }, { passive: true });
-  el.addEventListener('touchmove', (e) => {
-    if (mode === 'off' || e.touches.length !== 1) return;
-    const mx = e.touches[0].clientX - x0, my = e.touches[0].clientY - y0;
-    if (!mode) {
-      if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
-      mode = Math.abs(mx) > Math.abs(my) * 1.3 ? 'x' : 'off';
-      if (mode === 'off') return;
-    }
-    dx = mx;
-    const c = card(); if (c) { c.style.transition = 'none'; c.style.transform = `translateX(${dx}px) rotate(${dx / 60}deg)`; }
-  }, { passive: true });
-  const end = () => {
-    if (mode !== 'x') { mode = null; return; }
-    mode = null;
-    const c = card(); if (!c) return;
-    const fast = Math.abs(dx) / Math.max(1, Date.now() - t0) > 0.5;
-    if (Math.abs(dx) > Math.min(90, el.clientWidth * 0.25) || (fast && Math.abs(dx) > 30)) {
-      const dir = dx < 0 ? 1 : -1;
-      c.style.transition = 'transform .16s ease-out, opacity .16s ease-out';
-      c.style.transform = `translateX(${-dir * el.clientWidth}px) rotate(${-dir * 6}deg)`; c.style.opacity = '0';
-      setTimeout(() => go(dir), 150);
-    } else {
-      c.style.transition = 'transform .2s ease'; c.style.transform = '';
-    }
+// The briefing deck is one horizontal scroll-snap track holding every card (KD-46). The browser moves
+// the cards under the finger on its compositor thread, so a swipe is as quick as any native carousel,
+// and changing card never refetches or re-renders the page: only the counter, dots and height update.
+function deckTrack(track, { onChange }) {
+  const cards = [...track.children];
+  let i = -1, want = null; // want: the card a dot, key or button is scrolling to, so j j moves two cards
+  const at = () => (track.scrollLeft >= track.scrollWidth - track.clientWidth - 1 ? cards.length - 1
+    : Math.max(0, Math.min(cards.length - 1, Math.round(track.scrollLeft / Math.max(1, cards[0].offsetWidth + gap())))));
+  const gap = () => parseFloat(getComputedStyle(track).columnGap) || 0;
+  // The track is as tall as the card in view; between two cards it blends their heights,
+  // so a short card never leaves a gap under it and a tall one never gets cut off.
+  const fit = () => {
+    const step = cards[0].offsetWidth + gap();
+    const end = track.scrollLeft >= track.scrollWidth - track.clientWidth - 1;
+    const f = end ? cards.length - 1 : track.scrollLeft / Math.max(1, step);
+    const a = cards[Math.max(0, Math.min(cards.length - 1, Math.floor(f)))], b = cards[Math.max(0, Math.min(cards.length - 1, Math.ceil(f)))];
+    const t = f - Math.floor(f);
+    track.style.height = `${Math.ceil(a.offsetHeight + (b.offsetHeight - a.offsetHeight) * t)}px`;
   };
-  el.addEventListener('touchend', end);
-  el.addEventListener('touchcancel', end);
+  let raf = 0;
+  const tick = () => {
+    raf = 0; fit();
+    const n = at();
+    if (n === want) want = null;
+    if (n !== i) { i = n; cards.forEach((c, k) => { c.inert = k !== n; }); onChange(n); }
+  };
+  track.addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(tick); }, { passive: true });
+  if (window.ResizeObserver) { const ro = new ResizeObserver(() => { if (!raf) raf = requestAnimationFrame(tick); }); cards.forEach((c) => ro.observe(c)); }
+  return {
+    go: (n, smooth = true) => {
+      n = (n + cards.length) % cards.length;
+      want = n;
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      track.scrollTo({ left: n * (cards[0].offsetWidth + gap()), behavior: smooth && !reduce ? 'smooth' : 'instant' });
+      if (!smooth || reduce) tick();
+    },
+    target: () => want ?? (i < 0 ? 0 : i),
+    card: () => cards[i < 0 ? 0 : i],
+    start: (n) => { track.scrollLeft = n * (cards[0].offsetWidth + gap()); tick(); },
+  };
 }
 
 async function viewBriefing() {
@@ -583,7 +586,6 @@ async function viewBriefing() {
   decisionCount = inbox.count; renderShell('');
   const items = inbox.items;
   if (deck.i >= items.length) deck.i = 0;
-  const cur = items[deck.i];
   const active = rules.filter((r) => r.active);
   const reach = active.reduce((s, r) => s + (r.sent_with || 0), 0);
   const order = { working: 0, blocked: 1, waiting: 2, idle: 3 };
@@ -599,7 +601,7 @@ async function viewBriefing() {
       <section>
         ${raw(items.length ? html`<div class="deck-top"><span class="eyebrow">${deck.i + 1} of ${items.length}</span>
           <div class="dots">${join(items.map((it, i) => html`<button class="${i === deck.i ? 'on' : ''}" data-act="click:go" data-i="${i}" aria-label="Decision ${i + 1}: ${it.task.key}"></button>`))}</div></div>
-          <div class="deck ${items.length > 1 ? 'more' : ''}">${raw(decisionCard(cur))}</div>`
+          <div class="deck" tabindex="-1" aria-roledescription="carousel">${join(items.map((it, i) => html`<div class="slide" aria-roledescription="slide" aria-label="${i + 1} of ${items.length}">${raw(decisionCard(it))}</div>`))}</div>`
         : html`<div class="card clear"><div class="big"><svg width="26" height="26" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
           <h2>All clear</h2><p class="muted">Nothing waits on you. Agents keep the record up to date on their own.</p>
           <button class="btn ink" data-act="click:palette">Delegate something <kbd>⌘K</kbd></button></div>`)}
@@ -621,26 +623,34 @@ async function viewBriefing() {
           <div class="prog">${join(stats.map((s) => progress(s)))}</div></div>
       </aside>
     </div>`;
+  // Swipe left or right on the card for the next or previous decision: native scrolling does it.
+  const deckEl = $app.querySelector('.deck');
+  const eye = $app.querySelector('.deck-top .eyebrow');
+  const dots = [...$app.querySelectorAll('.deck-top .dots button')];
+  const track = deckEl ? deckTrack(deckEl, { onChange: (n) => {
+    deck.i = n;
+    if (eye) eye.textContent = `${n + 1} of ${items.length}`;
+    dots.forEach((d, k) => d.classList.toggle('on', k === n));
+  } }) : null;
+  track?.start(deck.i);
   bind($app, {
-    ...decisionHandlers(viewBriefing, () => { deck.i = (deck.i + 1) % items.length; viewBriefing(); }),
-    go: (el) => { deck.i = Number(el.dataset.i); viewBriefing(); },
+    ...decisionHandlers(viewBriefing, () => track?.go(track.target() + 1)),
+    go: (el) => track?.go(Number(el.dataset.i)),
     palette: () => openPalette(),
     ...nudgeHandlers(readyFree, viewBriefing),
   });
   keyHandler = (e) => {
-    if (typing() || e.metaKey || e.ctrlKey || e.altKey || !$('palette').hidden || !$('sheet').hidden || !cur) return;
+    if (typing() || e.metaKey || e.ctrlKey || e.altKey || !$('palette').hidden || !$('sheet').hidden || !track) return;
     const k = e.key.toLowerCase();
-    const card = $app.querySelector('.decision');
+    const card = track.card().querySelector('.decision');
+    const cur = items[deck.i];
     if (k === 'a') { e.preventDefault(); card.querySelector('.btn.go')?.click(); }
     else if (k === 'c' || k === 'r') { e.preventDefault(); card.querySelector('[data-act="click:changes"]')?.click(); }
     else if (k === 'l') { e.preventDefault(); card.querySelector('[data-act="click:later"]')?.click(); }
-    else if (k === 'j') { e.preventDefault(); deck.i = (deck.i + 1) % items.length; viewBriefing(); }
-    else if (k === 'k') { e.preventDefault(); deck.i = (deck.i - 1 + items.length) % items.length; viewBriefing(); }
+    else if (k === 'j') { e.preventDefault(); track.go(track.target() + 1); }
+    else if (k === 'k') { e.preventDefault(); track.go(track.target() - 1); }
     else if (k === 'enter' && cur) location.hash = `#/t/${cur.task.key}`;
   };
-  // Swipe left or right on the card for the next or previous decision.
-  const deckEl = $app.querySelector('.deck');
-  if (deckEl && items.length > 1) swipeDeck(deckEl, (dir) => { deck.i = (deck.i + dir + items.length) % items.length; viewBriefing(); });
   // ⌘↵ sends an answer from the textarea.
   $app.querySelectorAll('textarea[name=answer]').forEach((ta) => ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ta.form.requestSubmit(); }));
   // What waits on you in your other workspaces, asked directly from each one.
