@@ -3,6 +3,7 @@ import * as core from './core';
 import type { Ctx } from './core';
 import * as views from './views';
 import * as continuous from './continuous';
+import * as apps from './apps';
 
 /** The part of the connect-time instructions that is about this agent: continuous mode, when it is on. */
 async function continuousNote(c: Ctx) {
@@ -35,7 +36,7 @@ const notes = {
 const repo = { type: 'string', description: "The git remote of the repository you work in (output of git remote get-url origin), if any. Kunla remembers it on the project so mentions like PR #12 or acme/site!12 link to the right GitHub, GitHub Enterprise, GitLab, Gitea or Bitbucket host." };
 const notes_title = { type: 'string', description: 'Optional heading for the notes, e.g. "Decisions", "Paper notes", "Findings"' };
 
-type Tool = { name: string; description: string; inputSchema: object; run: (c: Ctx, a: any) => Promise<unknown>; readOnly?: boolean };
+type Tool = { name: string; description: string; inputSchema: object; run: (c: Ctx, a: any) => Promise<unknown>; readOnly?: boolean; ui?: string };
 
 export const TOOLS: Tool[] = [
   {
@@ -168,7 +169,7 @@ export const TOOLS: Tool[] = [
     },
   },
   {
-    name: 'decision_inbox', readOnly: true,
+    name: 'decision_inbox', readOnly: true, ui: apps.INBOX_URI,
     description: 'What is waiting on a person: reviews, questions from blocked tasks, proposals, and tasks flagged after repeated review rounds.',
     inputSchema: { type: 'object', properties: {} },
     run: (c) => core.inbox(c),
@@ -192,7 +193,7 @@ export const TOOLS: Tool[] = [
     run: (c) => views.pulse(c),
   },
   {
-    name: 'project_status', readOnly: true,
+    name: 'project_status', readOnly: true, ui: apps.PROGRESS_URI,
     description: 'Project progress: counts by status, who (person or AI) is on what, blockers, recent activity, and the share of updates recorded by agents.',
     inputSchema: { type: 'object', properties: { project: { type: 'string' } } },
     run: (c, a) => core.projectStatus(c, a.project),
@@ -243,7 +244,7 @@ export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
       const asked = msg.params?.protocolVersion;
       return ok(msg.id, {
         protocolVersion: SUPPORTED.includes(asked) ? asked : SUPPORTED[0],
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: false }, resources: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions: INSTRUCTIONS + await continuousNote(c),
       });
@@ -254,8 +255,16 @@ export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
         tools: TOOLS.map((t) => ({
           name: t.name, description: t.description, inputSchema: t.inputSchema,
           annotations: { readOnlyHint: !!t.readOnly, destructiveHint: false, openWorldHint: false },
+          // Clients with MCP Apps (claude.ai) render this view; others ignore it and show the text (KD-10).
+          ...(t.ui ? { _meta: { ui: { resourceUri: t.ui } } } : {}),
         })),
       });
+    case 'resources/list': return ok(msg.id, { resources: apps.RESOURCES });
+    case 'resources/templates/list': return ok(msg.id, { resourceTemplates: [] });
+    case 'resources/read': {
+      const r = apps.readResource(msg.params?.uri);
+      return r ? ok(msg.id, { contents: [r] }) : err(msg.id, -32002, `Resource not found: ${msg.params?.uri}`);
+    }
     case 'tools/call': {
       const tool = TOOLS.find((t) => t.name === msg.params?.name);
       if (!tool) return err(msg.id, -32602, `Unknown tool ${msg.params?.name}`);
@@ -269,7 +278,10 @@ export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
           const mine = await core.myContinuous(c);
           if (mine) content.push({ type: 'text', text: continuous.replyLine(mine.st) });
         }
-        return ok(msg.id, { content, isError: false });
+        // A tool with a view also hands it the data as structuredContent, plus who is looking and where the board is.
+        const structured = tool.ui && result && typeof result === 'object'
+          ? { structuredContent: { ...(result as object), me: { name: c.me.name, kind: c.me.kind }, board: c.baseUrl } } : {};
+        return ok(msg.id, { content, ...structured, isError: false });
       } catch (e) {
         if (e instanceof core.KunlaError) return ok(msg.id, { content: [{ type: 'text', text: e.message }], isError: true });
         throw e;
