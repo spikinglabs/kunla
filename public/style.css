@@ -405,6 +405,32 @@ pre.code { font-size: 12.5px; padding: 14px; border-radius: 12px; background: va
 .title-in:hover, .title-in:focus { border-color: var(--rule-2) !important; }
 .proj.focused { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink), var(--shadow); }
 .ws { background: var(--sunk); }
+/* Projects page (KD-17): one box per workspace, the workspace as its header, projects as rows. */
+.wsbox { padding: 0; overflow: hidden; }
+.wsbox-head { padding: 18px 20px 14px; background: var(--sunk); border-bottom: 1px solid var(--rule); display: flex; flex-direction: column; gap: 4px; }
+.wsbox-title { display: flex; align-items: center; gap: 10px; }
+.wsbox-title .sp-dot { width: 22px; height: 22px; }
+.wsbox-title .title-in { font-size: 20px; }
+.wsbox-meta { font-size: 13px; padding-left: 40px; }
+.wsbox-meta a { color: inherit; }
+.wsbox-empty { padding: 18px 20px; font-size: 14px; margin: 0; }
+.prow { padding: 12px 20px; border-top: 1px solid var(--rule); display: flex; flex-direction: column; gap: 2px; }
+.prow:first-child { border-top: 0; }
+.prow.focused { box-shadow: inset 3px 0 0 var(--lime); }
+.prow-main { display: flex; align-items: center; gap: 10px; }
+.prow-main .title-in { font-size: 16px; min-width: 0; }
+.prow-when { font-size: 13px; white-space: nowrap; }
+.prow-focus { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.prow-focus .switch { margin: 0; }
+.fold > summary { font-size: 13px; color: var(--muted); cursor: pointer; list-style: none; padding: 2px 0; }
+.fold > summary::before { content: '▸ '; }
+.fold[open] > summary::before { content: '▾ '; }
+.wsbox-head .fold { padding-left: 40px; }
+@media (max-width: 560px) {
+  .wsbox-head, .prow { padding-left: 14px; padding-right: 14px; }
+  .prow-main { flex-wrap: wrap; } .prow-main .title-in { flex: 1 1 60%; }
+  .wsbox-meta, .wsbox-head .fold { padding-left: 0; }
+}
 .focus-check .switch { margin-top: 0; }
 .icon-btn:disabled { opacity: .3; cursor: default; }
 

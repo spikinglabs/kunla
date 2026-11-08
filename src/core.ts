@@ -183,10 +183,36 @@ export async function createWorkspace(c: Ctx, input: { name: string; key?: strin
 }
 
 export async function createProject(c: Ctx, input: { key: string; name: string; playbook?: string }) {
-  if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can create projects.');
+  if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can create projects. Agents propose one with the create_project tool; a person accepts it from the decision inbox.');
   const pid = await insertProject(c.db, c.space, input.key, input.name);
   if (input.playbook) await c.db.prepare('UPDATE projects SET playbook = ? WHERE id = ?').bind(input.playbook, pid).run();
   return getProject(c, input.key);
+}
+
+/**
+ * An agent proposes a new project (KD-16). People create projects straight away; an agent's
+ * proposal lands in the decision inbox as a workspace-level task, and accepting it there creates
+ * the project (see triage). The proposed key is checked now so the person isn't handed a dud.
+ */
+export async function proposeProject(c: Ctx, input: { key: string; name: string; why?: string; playbook?: string }) {
+  if (c.me.kind === 'human') return { created: true, project: await createProject(c, input) };
+  const k = checkKey(input.key);
+  await assertKeyFree(c.db, k);
+  const name = required(input.name, 'project name').trim().slice(0, 120);
+  const open = (await c.db.prepare(`SELECT t.key, e.data FROM tasks t JOIN events e ON e.task_id = t.id AND e.type = 'project_proposed'
+     WHERE t.space_id = ? AND t.status = 'inbox'`).bind(c.space).all<{ key: string; data: string }>()).results
+    .find((r) => JSON.parse(r.data || '{}').project?.key === k);
+  if (open) throw new KunlaError(409, `${open.key} already proposes a project with key ${k}; it is waiting in the decision inbox.`);
+  const brief = [input.why?.trim(), input.playbook?.trim() ? `Proposed playbook:\n${input.playbook.trim()}` : '', `Accepting creates project ${name} (${k}) in this workspace.`].filter(Boolean).join('\n\n');
+  const task = await createTask(c, { title: `New project: ${name} (${k})`, brief, status: 'inbox', kind: 'operations' });
+  await event(c, task.id, 'project_proposed', `Proposed project ${name} (${k})`, { project: { key: k, name, playbook: input.playbook?.trim() || null } });
+  return { created: false, proposal: task, message: `Proposed. ${task.key} is in the decision inbox; when a person accepts it, project ${k} is created.` };
+}
+
+/** The project a proposal task asks for, if it is one (KD-16). */
+async function proposedProject(c: Ctx, taskId: string) {
+  const e = await c.db.prepare(`SELECT data FROM events WHERE task_id = ? AND type = 'project_proposed' ORDER BY id DESC LIMIT 1`).bind(taskId).first<{ data: string }>();
+  return e ? (JSON.parse(e.data || '{}').project as { key: string; name: string; playbook: string | null } | undefined) ?? null : null;
 }
 
 export async function updateProject(c: Ctx, key: string, input: {
@@ -1028,6 +1054,14 @@ export async function triage(c: Ctx, key: string, input: { accept: boolean; note
   const t = await getTask(c, key);
   if (t.status !== 'inbox') throw new KunlaError(409, `${t.key} is not in the Inbox.`);
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people triage proposals.');
+  const wanted = input.accept ? await proposedProject(c, t.id) : null;
+  if (wanted) {
+    // A proposed project: accepting creates it, and the proposal is done rather than Ready work.
+    const p = await createProject(c, { key: wanted.key, name: wanted.name, playbook: wanted.playbook ?? undefined });
+    await touch(c, t.id, { status: 'done' });
+    await event(c, t.id, 'accepted', input.note ?? `Project ${p.name} (${p.key}) created.`, { project: p.key });
+    return { ...(await getTask(c, t.id)), project_created: { key: p.key, name: p.name } };
+  }
   await touch(c, t.id, { status: input.accept ? 'ready' : 'declined' });
   await event(c, t.id, input.accept ? 'accepted' : 'declined', input.note ?? null);
   const after = await getTask(c, t.id);

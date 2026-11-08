@@ -321,7 +321,7 @@ async function openSpaces() {
   box.hidden = false;
   box.innerHTML = html`<div class="pal spaces" role="dialog" aria-label="Workspaces"><div class="pad stack" style="gap:6px"><span class="eyebrow">Workspaces</span>
       <p class="muted" style="font-size:13.5px">Each one keeps its own people, agents and data. Only this browser knows you belong to all of them.</p></div>
-    <div class="opts" id="sp-list"><div class="opt on"><span class="ic">${initials(me.workspace?.name)}</span><div class="grow"><div class="t">${me.workspace?.name}</div><small>${me.workspace?.key} · this one · ${plural(decisionCount, 'decision')}</small></div></div></div>
+    <div class="opts" id="sp-list"><div class="opt on"><span class="ic">${initials(me.workspace?.name)}</span><div class="grow"><div class="t">${me.workspace?.name}</div><small>${me.workspace?.key} · this one · ${plural(projects.length, 'project')} · ${plural(decisionCount, 'decision')}</small></div></div></div>
     ${raw(me.roles?.includes('admin') ? html`<form class="pad stack" data-act="submit:create" style="border-top:1px solid var(--rule)"><div class="label">New workspace</div>
       <div class="row" style="flex-wrap:nowrap"><input name="name" required maxlength="80" placeholder="Community, My startup, Work…" aria-label="Workspace name"><input name="key" maxlength="10" placeholder="Key" aria-label="Task key prefix (optional)" style="max-width:84px;font-family:var(--mono);text-transform:uppercase"></div>
       <span class="muted" style="font-size:12px">Fully separate: nothing here is visible there. You join it as its admin; the key is picked for you if you leave it empty.</span>
@@ -466,7 +466,13 @@ function decisionHandlers(after, later) {
       }
     },
     answer: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/answer`, { answer: formData(el).answer }); toast(`Answer sent. ${k} is moving again.`); await after(); },
-    accept: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: true }); toast(`Accepted. ${k} is Ready for anyone to pick up.`); await after(); },
+    accept: async (el) => {
+      const k = keyOf(el); const r = await api('POST', `/api/tasks/${k}/triage`, { accept: true });
+      // A proposed project (KD-16) becomes a real project, not Ready work.
+      if (r?.project_created) { projects = await api('GET', '/api/projects'); toast(`Project ${r.project_created.name} (${r.project_created.key}) created.`); }
+      else toast(`Accepted. ${k} is Ready for anyone to pick up.`);
+      await after();
+    },
     decline: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: false }); toast(`${k} declined.`); await after(); },
     later: (el) => showLater(keyOf(el), after, later),
   };
@@ -1261,6 +1267,8 @@ function showToken(r, kind, platform) {
   const setup = kind === 'human' ? '<p>Send it to them privately. They paste it on the sign-in page.</p>'
     : platform === 'claude-code' ? copyBlock('In your terminal', `export KUNLA_URL=${origin}\nexport KUNLA_TOKEN=${r.token}\nclaude plugin marketplace add spikinglabs/kunla\nclaude plugin install kunla@kunla`)
       + '<p class="muted" style="font-size:13.5px">From then on it picks up work with <code>/kunla:next</code>, cites the task in every commit, and records progress without being asked.</p>'
+    : platform === 'codex' ? copyBlock('In your terminal', `export KUNLA_TOKEN=${r.token}\ncodex mcp add kunla --url ${mcpUrl()} --bearer-token-env-var KUNLA_TOKEN`)
+      + '<p class="muted" style="font-size:13.5px">Codex reads <code>AGENTS.md</code> for the working agreement. Then ask it: “Take the next Kunla task and do it.” <a href="https://github.com/spikinglabs/kunla/blob/main/docs/agents/codex.md" target="_blank" rel="noopener">Full guide</a></p>'
     : copyBlock('MCP server', `URL     ${mcpUrl()}\nHeader  Authorization: Bearer ${r.token}`);
   openSheet(html`<div class="sheet-body stack"><div>${raw(head)}</div>${raw(copyBlock('Token', r.token, { secret: true }))}${raw(setup)}
     <div class="row"><button class="btn ink" data-act="click:close">I've saved it</button></div></div>`, {}, { sticky: true });
@@ -1550,36 +1558,51 @@ async function viewProjects() {
       <div class="m">${r.created_by}, ${agoLong(r.created_at)}${r.source_task ? ' · from ' + r.source_task : ''} · sent with ${plural(r.sent_with, 'task')}</div></div></div>`).join('')
     : '<p class="muted" style="font-size:14px">None yet. When you send work back, tick “Teach the team” and the correction lands here.</p>';
   const dateVal = (iso) => (iso ? iso.slice(0, 10) : '');
-  $app.innerHTML = html`<div class="head"><div><h1>Projects</h1><p class="sub">Projects are optional. A task can live straight in the workspace. Focused projects are offered to agents first; a project can be ongoing or end on a date.</p></div>
+  // The workspace is the container and its projects are rows inside it (KD-17): one box, the
+  // workspace as its header, so nobody reads the two as siblings. Settings fold away.
+  const wsName = me.workspace.name;
+  const wsRules = rules.filter((r) => r.project === me.workspace.key);
+  $app.innerHTML = html`<div class="head"><div><h1>Projects</h1><p class="sub">Projects are optional; a task can live straight in the workspace. Focused projects are offered to agents first.</p></div>
       <button class="btn go" data-act="click:newp">New project</button></div>
-    <form class="card pad stack hidden-form" data-act="submit:create" id="newp" hidden><h2 style="font-size:18px;font-weight:600">New project</h2>
+    <form class="card pad stack hidden-form" data-act="submit:create" id="newp" hidden><h2 style="font-size:18px;font-weight:600">New project in ${wsName}</h2>
       <div class="row" style="align-items:flex-end">
         <div class="field" style="flex:2;min-width:180px"><label for="np-n">Name</label><input id="np-n" name="name" required placeholder="DACH launch"></div>
         <div class="field" style="flex:1;min-width:110px"><label for="np-k">Key</label><input id="np-k" name="key" required placeholder="DACH" maxlength="10" style="font-family:var(--mono);text-transform:uppercase"></div>
         <button class="btn go">Create</button></div></form>
-    <div class="stack" style="gap:16px;margin-top:8px">
-    ${join(projects.map((p, i) => { const rs = rules.filter((r) => r.project === p.key); return html`<form class="card pad stack proj ${p.focus ? 'focused' : ''}" data-act="submit:save" data-key="${p.key}">
-      <div class="row" style="flex-wrap:nowrap"><span class="pill on mono">${p.key}</span><input name="name" value="${p.name}" aria-label="Project name" class="title-in">
-        <button type="button" class="icon-btn" data-act="click:up" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button></div>
-      <div class="row">
-        <label class="check focus-check"><input type="checkbox" class="switch" name="focus" ${p.focus ? 'checked' : ''}><span><b>Focus</b> <span class="muted">offered first to everyone</span></span></label>
-        <label class="row" style="gap:8px;margin-left:auto"><span class="label">Ends</span><input type="date" name="ends_at" value="${dateVal(p.ends_at)}" style="width:auto"><span class="muted" style="font-size:13px">${p.ends_at ? endsIn(p.ends_at) : 'ongoing'}</span></label>
+    <section class="card wsbox">
+      <form class="wsbox-head" data-act="submit:savews">
+        <div class="wsbox-title"><span class="sp-dot"></span><input name="name" value="${wsName}" aria-label="Workspace name" class="title-in"><span class="pill mono">${me.workspace.key}</span></div>
+        <div class="wsbox-meta muted">Workspace · ${plural(projects.length, 'project')} · <a href="#/tasks/${me.workspace.key}">tasks with no project</a></div>
+        <details class="fold"><summary>Settings for everything in ${wsName}</summary>
+          <div class="pb stack" style="margin-top:12px"><div class="field"><label for="pb-ws">Playbook for everything</label><textarea id="pb-ws" name="playbook" placeholder="How this workspace works: who we are, the voice, the tools.">${ws?.playbook ?? ''}</textarea></div>
+            ${raw(repoField('repo-ws', ws, 'Used by projects that don’t name their own.'))}
+            ${raw(kindsField('kd-ws', wsKinds?.own, kindsInfo?.defaults, 'Leave it empty to use Kunla’s kinds (shown faintly). Each project can set its own.'))}
+            <div><div class="label" style="margin-bottom:6px">Rules for everyone</div>${raw(ruleRows(wsRules))}</div>
+            <div class="row"><button class="btn ink sm">Save</button></div></div></details>
+      </form>
+      <div class="wsbox-list">
+      ${raw(projects.length ? '' : html`<p class="muted wsbox-empty">No projects yet. Tasks live straight in ${wsName} until you need one.</p>`)}
+      ${join(projects.map((p, i) => { const rs = rules.filter((r) => r.project === p.key); return html`<form class="prow proj ${p.focus ? 'focused' : ''}" data-act="submit:save" data-key="${p.key}">
+        <div class="prow-main">
+          <span class="pill on mono">${p.key}</span>
+          <input name="name" value="${p.name}" aria-label="Project name" class="title-in">
+          <span class="prow-when muted">${p.ends_at ? endsIn(p.ends_at) : 'ongoing'}</span>
+          <label class="prow-focus" title="Focused projects are offered to agents first"><input type="checkbox" class="switch" name="focus" ${p.focus ? 'checked' : ''}><span>Focus</span></label>
+          <a class="btn quiet sm" href="#/tasks/${p.key}">Tasks</a>
+          <button type="button" class="icon-btn" data-act="click:up" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
+        </div>
+        <details class="fold"><summary>Settings${rs.length ? ` · ${plural(rs.length, 'rule')}` : ''}</summary>
+          <div class="pb stack" style="margin-top:12px">
+            <label class="row" style="gap:8px"><span class="label">Ends</span><input type="date" name="ends_at" value="${dateVal(p.ends_at)}" style="width:auto"><span class="muted" style="font-size:13px">empty = ongoing</span></label>
+            <div class="field"><label for="pb-${p.key}">Playbook</label><textarea id="pb-${p.key}" name="playbook" placeholder="Voice, links, tools to use, things to avoid. Markdown.">${p.playbook}</textarea>
+              <label class="check" style="margin-top:6px"><input type="checkbox" name="require_human_review" ${p.require_human_review ? 'checked' : ''}><span>Work must be approved by a person, not another agent</span></label></div>
+            ${raw(repoField(`repo-${p.key}`, p, `Short mentions like PR #12 in ${p.key} briefs link here.${ws?.repo_url ? ' Empty uses the workspace’s.' : ''}`))}
+            ${raw(kindsField(`kd-${p.key}`, kindsInfo?.projects.find((x) => x.key === p.key)?.own, wsKinds?.kinds, 'Leave it empty to use the workspace’s kinds (shown faintly).'))}
+            <div><div class="label" style="margin-bottom:6px">Rules from reviews</div>${raw(ruleRows(rs))}</div>
+            <div class="row"><button class="btn ink sm">Save</button></div></div></details>
+      </form>`; }))}
       </div>
-      <details><summary class="label" style="cursor:pointer">Playbook, review setting, code repository, kinds of work and ${plural(rs.length, 'rule')}</summary>
-      <div class="pb" style="margin-top:12px"><div class="field"><label for="pb-${p.key}">Playbook</label><textarea id="pb-${p.key}" name="playbook" placeholder="Voice, links, tools to use, things to avoid. Markdown.">${p.playbook}</textarea>
-          <label class="check" style="margin-top:6px"><input type="checkbox" name="require_human_review" ${p.require_human_review ? 'checked' : ''}><span>Work must be approved by a person, not another agent</span></label></div>
-        ${raw(repoField(`repo-${p.key}`, p, `Short mentions like PR #12 in ${p.key} briefs link here.${ws?.repo_url ? ' Empty uses the workspace’s.' : ''}`))}
-        ${raw(kindsField(`kd-${p.key}`, kindsInfo?.projects.find((x) => x.key === p.key)?.own, wsKinds?.kinds, 'Leave it empty to use the workspace’s kinds (shown faintly).'))}
-        <div><div class="label" style="margin-bottom:6px">Rules from reviews</div>${raw(ruleRows(rs))}</div></div></details>
-      <div class="row"><button class="btn ink sm">Save</button><a class="btn quiet sm" href="#/tasks/${p.key}">Open tasks</a></div></form>`; }))}
-    <form class="card pad stack ws" data-act="submit:savews"><div class="row"><span class="eyebrow">Workspace</span><span class="pill mono">${me.workspace.key}</span></div>
-      <input name="name" value="${me.workspace.name}" aria-label="Workspace name" class="title-in">
-      <p class="muted" style="font-size:14px">The top of the hierarchy. Tasks with no project live here, and this playbook and these rules go with every task in every project.</p>
-      <div class="pb"><div class="field"><label for="pb-ws">Playbook for everything</label><textarea id="pb-ws" name="playbook" placeholder="How this workspace works: who we are, the voice, the tools.">${ws?.playbook ?? ''}</textarea>
-        ${raw(repoField('repo-ws', ws, 'Used by projects that don’t name their own.'))}
-        ${raw(kindsField('kd-ws', wsKinds?.own, kindsInfo?.defaults, 'Leave it empty to use Kunla’s kinds (shown faintly). Each project can set its own.'))}</div>
-        <div><div class="label" style="margin-bottom:6px">Rules for everyone</div>${raw(ruleRows(rules.filter((r) => r.project === me.workspace.key)))}</div></div>
-      <div class="row"><button class="btn ink sm">Save</button><a class="btn quiet sm" href="#/tasks/${me.workspace.key}">Tasks with no project</a></div></form></div>`;
+    </section>`;
   const refresh = async () => { [projects, me] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/me'), loadKinds()]); };
   const kindsValue = (text) => { const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean); return lines.length ? lines : null; };
   bind($app, {
