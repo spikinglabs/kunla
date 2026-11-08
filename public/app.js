@@ -1267,6 +1267,8 @@ function showToken(r, kind, platform) {
   const setup = kind === 'human' ? '<p>Send it to them privately. They paste it on the sign-in page.</p>'
     : platform === 'claude-code' ? copyBlock('In your terminal', `export KUNLA_URL=${origin}\nexport KUNLA_TOKEN=${r.token}\nclaude plugin marketplace add spikinglabs/kunla\nclaude plugin install kunla@kunla`)
       + '<p class="muted" style="font-size:13.5px">From then on it picks up work with <code>/kunla:next</code>, cites the task in every commit, and records progress without being asked.</p>'
+    : platform === 'codex' ? copyBlock('In your terminal', `export KUNLA_TOKEN=${r.token}\ncodex mcp add kunla --url ${mcpUrl()} --bearer-token-env-var KUNLA_TOKEN`)
+      + '<p class="muted" style="font-size:13.5px">Codex reads <code>AGENTS.md</code> for the working agreement. Then ask it: “Take the next Kunla task and do it.” <a href="https://github.com/spikinglabs/kunla/blob/main/docs/agents/codex.md" target="_blank" rel="noopener">Full guide</a></p>'
     : copyBlock('MCP server', `URL     ${mcpUrl()}\nHeader  Authorization: Bearer ${r.token}`);
   openSheet(html`<div class="sheet-body stack"><div>${raw(head)}</div>${raw(copyBlock('Token', r.token, { secret: true }))}${raw(setup)}
     <div class="row"><button class="btn ink" data-act="click:close">I've saved it</button></div></div>`, {}, { sticky: true });

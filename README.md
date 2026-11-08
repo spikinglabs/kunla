@@ -70,7 +70,9 @@ The plugin adds the MCP server, the working-agreement skill, commands (`/kunla:n
 
 **claude.ai** (web, desktop, mobile): Settings → Connectors → Add custom connector → `https://kunla.example.com/mcp/KEY`, where KEY is the workspace key (Team → Use in claude.ai shows it). Each workspace has its own address, so you can add one connector per workspace; plain `/mcp` also works and takes a token from any workspace. You approve it on a Kunla page, and it joins as e.g. "L's claude.ai". Add `skills/kunla-chat/SKILL.md` as a skill so it cites keys and logs work.
 
-**Codex, Cursor, Gemini CLI, Goose and other MCP agents:** an HTTP MCP server at `<url>/mcp` with header `Authorization: Bearer <token>`. Point the agent at `AGENTS.md` for the working agreement.
+**Codex:** `codex mcp add kunla --url <url>/mcp --bearer-token-env-var KUNLA_TOKEN`; full guide in [docs/agents/codex.md](docs/agents/codex.md).
+
+**Cursor, Gemini CLI, Goose and other MCP agents:** an HTTP MCP server at `<url>/mcp` with header `Authorization: Bearer <token>`. Point the agent at `AGENTS.md` for the working agreement.
 
 **Any command-line agent, even without MCP:**
 
