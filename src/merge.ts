@@ -42,7 +42,19 @@ const waitKey = (db: D1Database, space: string, repo: string, n: number | string
 export async function taskPr(db: D1Database, taskId: string): Promise<PrRef | null> {
   const t = await db.prepare('SELECT key FROM tasks WHERE id = ?').bind(taskId).first<{ key: string }>();
   const rows = (await db.prepare('SELECT url, title FROM deliverables WHERE task_id = ? ORDER BY created_at DESC').bind(taskId).all<{ url: string; title: string | null }>()).results;
-  return prFromLinks(rows.filter((r) => { const k = findKeys(r.title); return !k.length || (!!t && k.includes(t.key)); }));
+  return prFromLinks(ownLinks(t?.key ?? '', rows));
+}
+
+/**
+ * A task's own links: drops GitHub PRs whose title cites other tasks but not this one. Older
+ * Kunla attached a PR to every task its description mentioned; those stay hidden, not deleted.
+ */
+export function ownLinks<T extends { url: string; title?: string | null }>(key: string, rows: T[]): T[] {
+  return rows.filter((r) => {
+    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(r.url ?? '')) return true;
+    const k = findKeys(r.title);
+    return !k.length || k.includes(key);
+  });
 }
 
 /** A token that can act on this PR: a short-lived installation token of the Kunla app, if it's installed here. */

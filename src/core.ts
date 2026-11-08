@@ -1,5 +1,5 @@
 import { wakeMember, publicCallback, type Wake } from './wake';
-import { taskPr, tokenFor, mergeApproved } from './merge';
+import { taskPr, tokenFor, mergeApproved, ownLinks } from './merge';
 import * as continuous from './continuous';
 import { DEFAULT_DEFS, KindsError, effectiveKinds, inferKind, labelFor, linkType, matchKind, parseKinds, storeKinds, type KindDef } from './kinds';
 
@@ -1083,7 +1083,7 @@ export async function taskDetail(c: Ctx, key: string) {
     parent,
     playbook: [ws.playbook, p.kind === 'workspace' ? '' : p.playbook].filter((x) => x?.trim()).join('\n\n'),
     rules: rules.results,
-    deliverables: links,
+    deliverables: ownLinks(t.key, links),
     notes,
     reviews: reviews.results.map((r: any) => ({ ...r, via: r.via ? JSON.parse(r.via) : null })),
     subtasks: subtasks.results,
@@ -1217,7 +1217,7 @@ export async function inbox(c: Ctx) {
     const sub = await c.db.prepare(`SELECT note FROM events WHERE task_id = ? AND type IN ('submitted','work_logged') ORDER BY id DESC LIMIT 1`).bind(t.id).first<{ note: string }>();
     const dels = (await c.db.prepare('SELECT url, title FROM deliverables WHERE task_id = ?').bind(t.id).all<{ url: string; title: string | null }>()).results
       .map((d) => ({ ...d, type: linkType(d.url) }));
-    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url), await kindsFor(c, t.project_id)), summary: sub?.note ?? null, deliverables: dels, notes: await taskNotes(c.db, t.id) };
+    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url), await kindsFor(c, t.project_id)), summary: sub?.note ?? null, deliverables: ownLinks(t.key, dels), notes: await taskNotes(c.db, t.id) };
   };
   const items = [
     ...(await Promise.all(reviews.map(withSummary))).map((t) => ({ kind: 'review' as const, task: t })),
