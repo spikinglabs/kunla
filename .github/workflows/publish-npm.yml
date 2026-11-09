@@ -47,4 +47,6 @@ jobs:
         working-directory: dist-npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+          # npm only accepts provenance from public repositories.
+          PROVENANCE: ${{ github.event.repository.private && 'false' || 'true' }}
+        run: npm publish --access public --provenance=$PROVENANCE
