@@ -20,4 +20,4 @@ npm only lets you set up token-free publishing on a package that already exists,
 
 ## Releasing later
 
-Run the workflow with the new version, or push a tag: `git tag cli-v0.2.0 && git push origin cli-v0.2.0`. Every release carries npm provenance linking it to the commit and workflow run.
+Run the workflow with the new version, or push a tag: `git tag cli-v0.2.0 && git push origin cli-v0.2.0`. Once the repository is public, every release also carries npm provenance linking it to the commit and workflow run (npm refuses provenance from private repositories).
