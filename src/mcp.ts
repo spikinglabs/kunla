@@ -250,6 +250,24 @@ for (const t of TOOLS.filter((x) => ['create_task', 'claim_task', 'log_work', 's
   };
 }
 
+// Most tools name the task `key`; log_work names it `task`. Accept either, and refuse any other
+// unknown argument with the list of real ones, so a misnamed field never silently does something else (KD-47).
+const ALIASES: Record<string, string> = { key: 'task', task: 'key' };
+export function checkArgs(tool: Tool, args: unknown): Record<string, unknown> | string {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return `${tool.name} takes an object of arguments.`;
+  const props = Object.keys((tool.inputSchema as any).properties ?? {});
+  const out: Record<string, unknown> = {};
+  const unknown: string[] = [];
+  for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
+    if (props.includes(k)) out[k] = v;
+    else if (ALIASES[k] && props.includes(ALIASES[k]) && !(ALIASES[k] in (args as object))) out[ALIASES[k]] = v;
+    else unknown.push(k);
+  }
+  if (!unknown.length) return out;
+  const list = (xs: string[]) => xs.map((x) => `\`${x}\``).join(', ');
+  return `${tool.name} doesn't take ${list(unknown)}. Its arguments are: ${props.length ? list(props) : 'none'}. Nothing was changed.`;
+}
+
 export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
   if (msg?.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');
   const isNotification = msg.id === undefined;
@@ -282,8 +300,10 @@ export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
     case 'tools/call': {
       const tool = TOOLS.find((t) => t.name === msg.params?.name);
       if (!tool) return err(msg.id, -32602, `Unknown tool ${msg.params?.name}`);
+      const checked = checkArgs(tool, msg.params?.arguments ?? {});
+      if (typeof checked === 'string') return ok(msg.id, { content: [{ type: 'text', text: checked }], isError: true });
       try {
-        const result = await tool.run(c, msg.params?.arguments ?? {});
+        const result = await tool.run(c, checked);
         const nudges = await core.reminders(c);
         const content = [{ type: 'text', text: JSON.stringify(result, null, 2) }];
         if (nudges.length) content.push({ type: 'text', text: 'Reminder: ' + nudges.join(' ') });
