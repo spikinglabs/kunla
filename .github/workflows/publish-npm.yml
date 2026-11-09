@@ -1,0 +1,50 @@
+# Publishes the Kunla CLI (plugins/claude-code/bin/kunla.mjs) to npm as `kunla` (KD-14).
+# Run it from Actions → "Publish CLI to npm" → Run workflow, or push a tag like cli-v0.1.0.
+# Auth: npm trusted publishing (OIDC, no token) once it is set up on npmjs.com; until then,
+# the NPM_TOKEN repository secret is used for the first publish. See docs/npm.md.
+name: Publish CLI to npm
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish, e.g. 0.1.0
+        required: true
+  push:
+    tags: ['cli-v*']
+permissions:
+  contents: read
+  id-token: write # trusted publishing and provenance
+concurrency: { group: publish-npm, cancel-in-progress: false }
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # npm 11.5+ is needed for trusted publishing
+          registry-url: https://registry.npmjs.org
+      - name: Pick the version
+        id: v
+        env:
+          INPUT: ${{ inputs.version }}
+          REF: ${{ github.ref_name }}
+        run: |
+          V="${INPUT:-${REF#cli-v}}"
+          if ! echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then echo "Not a version: $V"; exit 1; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+      - name: Build the package
+        run: |
+          mkdir -p dist-npm/bin
+          cp npm/package.json npm/README.md LICENSE NOTICE dist-npm/
+          cp plugins/claude-code/bin/kunla.mjs dist-npm/bin/
+          cd dist-npm && npm version "${{ steps.v.outputs.version }}" --no-git-tag-version
+      - name: Smoke test
+        run: |
+          cd dist-npm && npm pack --dry-run
+          node bin/kunla.mjs --help | grep -q "kunla login"
+      - name: Publish
+        working-directory: dist-npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
