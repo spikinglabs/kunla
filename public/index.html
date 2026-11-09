@@ -16,6 +16,13 @@
 </script>
 <title>Kunla</title>
 <script src="/theme.js"></script>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Kunla">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<script src="/install.js" defer></script>
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="description" content="Kunla is an open source record of work for teams where people and AI agents work side by side. Agents update the work themselves; people see the decisions.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -419,6 +426,8 @@ footer { border-top: 1px solid var(--rule); padding-block: 36px 48px; font-size:
 footer .wrap { display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: center; }
 footer .grow { flex: 1; min-width: 200px; }
 footer a { color: var(--ink-2); }
+footer .install-line { flex-basis: 100%; color: var(--ink-2); }
+footer .install-line[hidden] { display: none; }
 
 /* reveal: visible at rest, slight lift on load only */
 @keyframes rise { from { transform: translateY(10px); opacity: .001; } to { transform: none; opacity: 1; } }
@@ -919,6 +928,7 @@ footer a { color: var(--ink-2); }
     <a href="https://github.com/spikinglabs/kunla">Open source</a>
     <a href="https://github.com/spikinglabs/kunla/issues/new">Send feedback</a>
     <a href="https://github.com/spikinglabs/kunla/blob/main/LICENSE">Apache-2.0</a>
+    <span class="install-line" data-kunla-install hidden></span>
   </div>
 </footer>
 <!--artifact-end-->

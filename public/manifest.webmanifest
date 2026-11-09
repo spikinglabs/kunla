@@ -1,0 +1,19 @@
+{
+  "id": "/app/",
+  "name": "Kunla",
+  "short_name": "Kunla",
+  "description": "One record of every person's and AI's work for the team, and the decisions it needs from you. A Spiking Labs product.",
+  "start_url": "/app/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f4f2ec",
+  "theme_color": "#f4f2ec",
+  "categories": ["productivity", "business"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
