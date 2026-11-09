@@ -1,0 +1,14 @@
+{
+  "name": "kunla",
+  "version": "0.0.0",
+  "description": "Kunla CLI: log work, claim tasks and run any command-line agent against your team's Kunla record of work.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "homepage": "https://github.com/spikinglabs/kunla#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/spikinglabs/kunla.git" },
+  "bugs": "https://github.com/spikinglabs/kunla/issues",
+  "keywords": ["kunla", "ai", "agents", "mcp", "tasks", "claude", "codex"],
+  "bin": { "kunla": "bin/kunla.mjs" },
+  "files": ["bin/kunla.mjs", "README.md", "LICENSE", "NOTICE"],
+  "engines": { "node": ">=18" }
+}
