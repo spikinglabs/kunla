@@ -79,7 +79,7 @@ The plugin adds the MCP server, the working-agreement skill, commands (`/kunla:n
 **Any command-line agent, even without MCP:**
 
 ```sh
-npm install -g github:spikinglabs/kunla   # or run plugins/claude-code/bin/kunla.mjs with node
+npm install -g @spikinglabs/kunla        # or github:spikinglabs/kunla, or run plugins/claude-code/bin/kunla.mjs with node
 kunla login https://kunla.example.com kun_...
 kunla run MKT-42 -- codex                # passes the brief as the prompt, records the session
 kunla submit "Drafted the page" --link https://github.com/org/repo/pull/7
