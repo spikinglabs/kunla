@@ -10,6 +10,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/style.css">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Kunla">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <script src="/install.js" defer></script>
 </head>
 <body>
   <div id="shell" class="shell" hidden>
@@ -23,6 +30,10 @@
       <button class="me" id="me" type="button"></button>
     </header>
     <main class="main" id="app"></main>
+    <footer class="foot">
+      <span class="foot-brand"><span class="wordmark">kunla<i></i></span><span>a <a href="https://spikinglabs.com" target="_blank" rel="noopener">Spiking Labs</a> product</span></span>
+      <span class="foot-install" data-kunla-install hidden></span>
+    </footer>
     <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
   </div>
   <main id="gate" class="gate" hidden></main>

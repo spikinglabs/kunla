@@ -1797,6 +1797,7 @@ async function route() {
     } catch { return; }
     $('gate').hidden = true;
     $('shell').hidden = false;
+    window.kunlaInstall?.paint();
     rememberSpace();
   }
   const [, view = '', arg] = (location.hash || '#/').split('/');
