@@ -502,6 +502,18 @@ function leaseFor(c: Ctx, m: Member): string | null {
   return new Date((c.now ? c.now() : new Date()).getTime() + c.leaseMinutes * 60_000).toISOString();
 }
 
+/**
+ * When a person hands work back to an agent (answers its question, or asks for changes), the agent
+ * may not hear about it for hours: a chat only runs when someone writes to it. So the task stays
+ * with that agent for a day instead of the usual lease, and next_task offers it first. The normal
+ * lease starts again as soon as the agent claims it or sends a heartbeat (KD-54).
+ */
+export const HANDBACK_HOURS = 24;
+function handBackLease(c: Ctx, m: Member): string | null {
+  if (m.kind !== 'ai') return null;
+  return new Date((c.now ? c.now() : new Date()).getTime() + HANDBACK_HOURS * 3_600_000).toISOString();
+}
+
 export async function createTask(c: Ctx, input: {
   project?: string; title: string; brief?: string; criteria?: string[]; priority?: number;
   assignee?: string; reviewer?: string; status?: 'inbox' | 'ready'; parent?: string; due_at?: string; kind?: string; repo?: string;
@@ -993,7 +1005,7 @@ export async function reviewTask(c: Ctx, key: string, input: {
     const assignee = t.assignee_id ? await getMember(c, t.assignee_id) : null;
     await touch(c, t.id, {
       status: 'in_progress', reviewer_id: c.me.id, review_rounds: t.review_rounds + 1,
-      lease_expires_at: assignee ? leaseFor(c, assignee) : null,
+      lease_expires_at: assignee ? handBackLease(c, assignee) : null,
     });
   }
   const waiting = open.length ? `Approved. ${t.key} finishes when ${open.join(', ')} ${open.length === 1 ? 'is' : 'are'} done.` : null;
@@ -1085,7 +1097,7 @@ export async function answer(c: Ctx, key: string, text: string, via?: Via) {
   const holder = t.assignee_id ? await getMember(c, t.assignee_id) : null;
   await touch(c, t.id, {
     status: holder ? 'in_progress' : 'ready', blocked_question: null, blocked_on_id: null,
-    lease_expires_at: holder ? leaseFor(c, holder) : null,
+    lease_expires_at: holder ? handBackLease(c, holder) : null,
   });
   await event(c, t.id, 'answered', required(text, 'answer'), { question: t.blocked_question, from: 'blocked', to: holder ? 'in_progress' : 'ready', blocked_on_id: t.blocked_on_id, ...(via ? { via } : {}) });
   if (holder && via?.agent_id !== holder.id) await wakeMember(c, holder.id, 'answered', t, text);
