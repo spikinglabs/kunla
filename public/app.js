@@ -520,7 +520,8 @@ function subline(brief, pulse) {
   const working = pulse.filter((p) => p.kind === 'ai' && p.state === 'working').length;
   const blocked = pulse.filter((p) => p.state === 'blocked');
   const out = [];
-  out.push(parts.length ? `Since yesterday ${parts.join('; ')}.` : 'Quiet since yesterday.');
+  const when = sinceWords(brief);
+  out.push(parts.length ? `${when[0].toUpperCase() + when.slice(1)}, ${parts.join('; ')}.` : `Quiet ${when}.`);
   if (brief.rules_added) out.push(`You added ${plural(brief.rules_added, 'rule')}.`);
   if (brief.tidied) out.push(`Kunla closed ${plural(brief.tidied, 'stale proposal')}.`);
   const focus = projects.filter((p) => p.focus);
@@ -528,6 +529,29 @@ function subline(brief, pulse) {
   if (working) out.push(`${plural(working, 'agent')} ${working === 1 ? 'is' : 'are'} working now.`);
   if (blocked.length) out.push(html`<b>${blocked[0].name}</b> is waiting on an answer.`);
   return out.join(' ');
+}
+
+// The briefing covers "since you were last here" (KD-49), so it says how far back it reaches.
+function sinceWords(brief) {
+  if (!brief.since || brief.window === 'first_visit') return 'since yesterday';
+  const h = (Date.now() - new Date(brief.since).getTime()) / 3600000;
+  if (h < 1) return 'since you were here earlier';
+  if (h < 24) return `since you were here ${plural(Math.round(h), 'hour')} ago`;
+  return `since you were here ${plural(Math.round(h / 24), 'day')} ago`;
+}
+
+// Asks (KD-50): what waits on someone else for too long. The deck holds what waits on you.
+const ASK_LABEL = { budget_stop: 'Stopped', question_waiting: 'Unanswered', review_waiting: 'Review waiting', quiet_claim: 'Gone quiet', overlap: 'Overlap' };
+function asksCard(list) {
+  if (!list?.length) return '';
+  const act = (a) => a.action === 'limits' ? html`<a class="btn sm" href="#/team">Change limits</a>`
+    : a.action === 'take_over' ? html`<a class="btn sm" href="#/t/${a.task.key}">Take over…</a>`
+    : a.action === 'compare' ? html`<a class="btn sm quiet" href="#/t/${a.task.key}">${a.task.key}</a><a class="btn sm quiet" href="#/t/${a.other.key}">${a.other.key}</a>`
+    : html`<a class="btn sm quiet" href="#/t/${a.task.key}">Open</a>`;
+  return html`<div class="card pad asks" style="margin-top:28px"><div class="section-t"><h2>Needs a look</h2><span class="muted" style="font-size:13px">Waiting on someone for too long</span></div>
+    <div class="ask-list">${join(list.map((a) => html`<div class="ask ${a.kind}"><span class="ask-k">${ASK_LABEL[a.kind] || a.kind}</span>
+      <div class="grow"><div class="ask-l">${a.line}</div>${raw(a.task && a.action !== 'compare' ? html`<div class="muted ask-t">${a.task.title}</div>` : '')}</div>
+      <div class="ask-a">${raw(act(a))}</div></div>`))}</div></div>`;
 }
 
 // The briefing deck is one horizontal scroll-snap track holding every card (KD-46). The browser moves
@@ -575,7 +599,7 @@ function deckTrack(track, { onChange }) {
 async function viewBriefing() {
   renderShell('');
   const [inbox, brief, pulse, rules, prog, ready, team] = await Promise.all([
-    api('GET', '/api/inbox'), api('GET', '/api/briefing?hours=24'), api('GET', '/api/pulse'), api('GET', '/api/rules'), api('GET', '/api/progress'),
+    api('GET', '/api/inbox'), api('GET', '/api/briefing'), api('GET', '/api/pulse'), api('GET', '/api/rules'), api('GET', '/api/progress'),
     api('GET', '/api/tasks?status=ready&limit=200'), me.kind === 'human' ? api('GET', '/api/members') : Promise.resolve(members),
   ]);
   members = team;
@@ -606,7 +630,8 @@ async function viewBriefing() {
           <h2>All clear</h2><p class="muted">Nothing waits on you. Agents keep the record up to date on their own.</p>
           <button class="btn ink" data-act="click:palette">Delegate something <kbd>⌘K</kbd></button></div>`)}
         ${raw(continuousNudge(readyFree))}
-        ${raw(brief.finished.length ? html`<div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Finished since yesterday</h2><a class="muted" href="#/map" style="font-size:13px">See the map</a></div>
+        ${raw(asksCard(brief.asks))}
+        ${raw(brief.finished.length ? html`<div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Finished ${sinceWords(brief)}</h2><a class="muted" href="#/map" style="font-size:13px">See the map</a></div>
           <div class="done-list">${join(brief.finished.map((f) => html`<a href="#/t/${f.key}"><span class="key">${f.key}</span><span class="t grow">${f.title}</span><span class="muted" style="font-size:13px">${f.worker ?? ''}</span></a>`))}</div></div>` : '')}
       </section>
       <aside class="side">
@@ -1568,6 +1593,17 @@ async function viewProjects() {
       <div class="m">${r.created_by}, ${agoLong(r.created_at)}${r.source_task ? ' · from ' + r.source_task : ''} · sent with ${plural(r.sent_with, 'task')}</div></div></div>`).join('')
     : '<p class="muted" style="font-size:14px">None yet. When you send work back, tick “Teach the team” and the correction lands here.</p>';
   const dateVal = (iso) => (iso ? iso.slice(0, 10) : '');
+  // The weekly digest (KD-52): the Briefing, sent to a chat channel for people who don't open Kunla.
+  const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const digestField = (d) => { d = d || { on: false, day: 1, format: 'slack', has_url: false }; return html`<div class="field digest-field"><div class="label" style="margin-bottom:6px">Weekly digest</div>
+    <label class="check"><input type="checkbox" class="switch" name="digest_on" ${d.on ? 'checked' : ''}><span>Send a weekly digest to a chat channel</span></label>
+    <p class="muted hint-s">For people who don't open Kunla: what finished per project, who worked on what, and what has waited too long. Sent early on the day you pick (UTC).</p>
+    <div class="row" style="gap:8px;margin-top:6px">
+      <select name="digest_day" aria-label="Day" style="width:auto">${join(DAYS.map((n, i) => html`<option value="${i}" ${d.day === i ? 'selected' : ''}>${n}</option>`))}</select>
+      <select name="digest_format" aria-label="Kind of webhook" style="width:auto">${join([['slack', 'Slack (or anything taking {text})'], ['discord', 'Discord'], ['json', 'Plain JSON']].map(([k, l]) => html`<option value="${k}" ${d.format === k ? 'selected' : ''}>${l}</option>`))}</select></div>
+    <input name="digest_url" type="url" style="margin-top:6px" placeholder="${d.has_url ? `Saved (${d.url_host}). Paste a new address to change it.` : 'https://hooks.slack.com/services/…'}" autocomplete="off" spellcheck="false">
+    <div class="row" style="gap:8px;margin-top:6px"><button type="button" class="btn sm quiet" data-act="click:digestpreview">Preview</button>${raw(d.has_url && me.roles?.includes('admin') ? '<button type="button" class="btn sm quiet" data-act="click:digestsend">Send now</button>' : '')}</div>
+    <pre class="digest-preview" id="digest-preview" hidden></pre></div>`; };
   // The workspace is the container and its projects are rows inside it (KD-17): one box, the
   // workspace as its header, so nobody reads the two as siblings. Settings fold away.
   const wsName = me.workspace.name;
@@ -1588,6 +1624,7 @@ async function viewProjects() {
             ${raw(repoField('repo-ws', ws, 'Used by projects that don’t name their own.'))}
             ${raw(kindsField('kd-ws', wsKinds?.own, kindsInfo?.defaults, 'Leave it empty to use Kunla’s kinds (shown faintly). Each project can set its own.'))}
             <div><div class="label" style="margin-bottom:6px">Rules for everyone</div>${raw(ruleRows(wsRules))}</div>
+            ${raw(digestField(ws?.digest))}
             <div class="row"><button class="btn ink sm">Save</button></div></div></details>
       </form>
       <div class="wsbox-list">
@@ -1622,7 +1659,14 @@ async function viewProjects() {
       await api('PATCH', `/api/projects/${f.dataset.key}`, { name: d.name, ...(d.playbook !== undefined ? { playbook: d.playbook } : {}), ...(d.kinds !== undefined ? { kinds: kindsValue(d.kinds) } : {}), require_human_review: !!d.require_human_review, focus: !!d.focus, ends_at: d.ends_at || null, ...(d.repo_url !== undefined ? { repo_url: d.repo_url.trim() || null, repo_forge: d.repo_forge || null } : {}) });
       await refresh(); toast('Saved. Agents get it with their next task.'); viewProjects();
     },
-    savews: async (f) => { const d = formData(f); await api('PATCH', `/api/projects/${me.workspace.key}`, { name: d.name, playbook: d.playbook, kinds: kindsValue(d.kinds), repo_url: (d.repo_url || '').trim() || null, repo_forge: d.repo_forge || null }); await refresh(); toast('Saved for the whole workspace.'); viewProjects(); },
+    savews: async (f) => {
+      const d = formData(f);
+      const digest = { on: !!d.digest_on, day: Number(d.digest_day ?? 1), format: d.digest_format || 'slack', ...((d.digest_url || '').trim() ? { url: d.digest_url.trim() } : {}) };
+      await api('PATCH', `/api/projects/${me.workspace.key}`, { name: d.name, playbook: d.playbook, kinds: kindsValue(d.kinds), repo_url: (d.repo_url || '').trim() || null, repo_forge: d.repo_forge || null, digest });
+      await refresh(); toast('Saved for the whole workspace.'); viewProjects();
+    },
+    digestpreview: async () => { const el = $('digest-preview'); const r = await api('GET', '/api/digest'); el.textContent = r.text; el.hidden = false; },
+    digestsend: async () => { const r = await api('POST', '/api/digest/send'); toast(r.ok ? 'Digest sent.' : `Could not send it: ${r.error}`); },
     create: async (f) => { await api('POST', '/api/projects', formData(f)); await refresh(); viewProjects(); },
     rule: async (el) => { await api('PATCH', `/api/rules/${el.dataset.id}`, { active: el.checked }); toast(el.checked ? 'Rule on. Agents get it from now.' : 'Rule off.'); },
     up: async (el) => {

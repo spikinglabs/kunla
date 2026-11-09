@@ -41,7 +41,7 @@ type Tool = { name: string; description: string; inputSchema: object; run: (c: C
 export const TOOLS: Tool[] = [
   {
     name: 'whoami', readOnly: true,
-    description: 'Your Kunla member profile (person or AI), sponsor, the projects you can see, and the kinds of work the workspace and its projects use.',
+    description: 'Your Kunla member profile (person or AI), sponsor, the projects you can see, and the kinds of work the workspace and its projects use. For an agent, since_last_session lists what changed for you since you last called: call it when a session starts.',
     inputSchema: { type: 'object', properties: {} },
     run: (c) => core.whoami(c),
   },
@@ -221,7 +221,7 @@ const err = (id: Rpc['id'], code: number, message: string) => ({ jsonrpc: '2.0',
 
 export const INSTRUCTIONS = `Kunla is the team's record of work, shared by people and AIs.
 Working agreement:
-1. Before starting, call next_task or get_task; follow the brief, the playbook and every rule. next_task respects the team's focus and your lane, so prefer it over picking work yourself.
+1. Before starting, call next_task or get_task; follow the brief, the playbook and every rule. next_task respects the team's focus and your lane, so prefer it over picking work yourself. Both whoami and next_task carry since_last_session: what changed for you since you last called (answers, approvals, work sent back or handed to you, new rules, focus). Act on it before starting new work.
 2. Cite the task key in everything you produce (commit trailer, PR title, doc source line, message line); get_task gives the exact text.
 3. Record progress with log_work (one sentence). If work has no task yet, log_work creates one.
 4. When done, submit_for_review with at least one deliverable link or notes with the outcome. get_task's how_to_finish says what to hand in for that kind of work. If you are stuck, update_task with blocked_question.

@@ -199,6 +199,21 @@ details.hookmore[open] summary { margin-bottom: 8px; }
 .done-list a { display: flex; gap: 10px; align-items: baseline; padding: 8px 0; text-decoration: none; border-top: 1px solid var(--rule); font-size: 14px; }
 .done-list a:first-child { border-top: 0; }
 .done-list a:hover .t { text-decoration: underline; }
+/* Asks on the Briefing (KD-50): what waits on someone else for too long. */
+.ask-list { display: flex; flex-direction: column; }
+.ask { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--rule); font-size: 14px; }
+.ask:first-child { border-top: 0; }
+.ask-k { flex: none; font: 600 11px/20px var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--wait); min-width: 104px; }
+.ask.budget_stop .ask-k, .ask.question_waiting .ask-k { color: var(--warn); }
+.ask-l { line-height: 1.4; }
+.ask-t { font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+.ask-a { flex: none; display: flex; gap: 6px; }
+@media (max-width: 560px) {
+  .ask { flex-wrap: wrap; }
+  .ask-k { min-width: 0; width: 100%; line-height: 16px; }
+  .ask .grow { flex: 1 1 60%; min-width: 0; }
+}
+.digest-preview { white-space: pre-wrap; font: 12.5px/1.5 var(--mono); background: transparent; border: 1px solid var(--rule); border-radius: 10px; padding: 12px; margin-top: 8px; max-height: 360px; overflow: auto; }
 
 /* ---------- work map ---------- */
 .map { overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 8px 20px 12px 0; touch-action: pan-x pan-y; overscroll-behavior-x: contain; }
