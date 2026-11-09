@@ -1,6 +1,7 @@
 import { wakeMember, publicCallback, type Wake } from './wake';
 import { taskPr, tokenFor, mergeApproved, ownLinks } from './merge';
 import * as continuous from './continuous';
+import { sinceLastSession } from './catchup';
 import { FORGES, mentions, normalizeRepo, repoOf, type Repo } from './refs';
 import { DEFAULT_DEFS, KindsError, effectiveKinds, inferKind, labelFor, linkType, matchKind, parseKinds, storeKinds, type KindDef } from './kinds';
 
@@ -31,6 +32,7 @@ export interface Project {
   kind: 'project' | 'workspace'; focus: number; rank: number; ends_at: string | null; space_id: string;
   kinds?: string | null; // kinds of work for tasks here (JSON); NULL inherits (kinds.ts)
   repo_url?: string | null; repo_forge?: string | null; // code repository, so "PR #12" becomes a link (refs.ts)
+  digest?: string | null; // workspace row only: weekly digest settings (JSON, KD-52)
 }
 export interface Task {
   id: string; project_id: string; key: string; title: string; brief: string; criteria: string;
@@ -219,6 +221,7 @@ export async function updateProject(c: Ctx, key: string, input: {
   name?: string; playbook?: string; require_human_review?: boolean; focus?: boolean; rank?: number; ends_at?: string | null;
   kinds?: unknown; // list of kinds of work for this project or workspace; null goes back to inheriting
   repo_url?: string | null; repo_forge?: string | null; // '' or null clears; forge null means guess from the host
+  digest?: unknown; // workspace only: weekly digest settings (KD-52), see digestSettings
 }) {
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can change project settings.');
   const p = await getProject(c, key);
@@ -233,6 +236,12 @@ export async function updateProject(c: Ctx, key: string, input: {
     let defs: KindDef[] | null;
     try { defs = parseKinds(input.kinds); } catch (e) { if (e instanceof KindsError) throw new KunlaError(400, e.message); throw e; }
     await c.db.prepare('UPDATE projects SET kinds = ? WHERE id = ?').bind(storeKinds(defs), p.id).run();
+  }
+  // Focus changes reach agents in their "since your last session" block (KD-51).
+  if (input.focus !== undefined && !!input.focus !== !!p.focus && p.kind === 'project') await event(c, null, input.focus ? 'focus_on' : 'focus_off', `${p.key} ${input.name ?? p.name}`);
+  if (input.digest !== undefined) {
+    if (p.kind !== 'workspace') throw new KunlaError(400, 'The weekly digest is a workspace setting.');
+    await c.db.prepare('UPDATE projects SET digest = ? WHERE id = ?').bind(digestSettings(input.digest, p.digest), p.id).run();
   }
   const ends = input.ends_at === undefined ? p.ends_at : input.ends_at ? new Date(input.ends_at).toISOString() : null;
   await c.db.prepare('UPDATE projects SET name = ?, playbook = ?, require_human_review = ?, focus = ?, rank = ?, ends_at = ? WHERE id = ?').bind(
@@ -1267,6 +1276,15 @@ export async function listTasks(c: Ctx, f: { project?: string; status?: string; 
 
 /** The best next thing for me to do: my work in progress, then my assigned work, then reviews, then open work. */
 export async function nextTask(c: Ctx, project?: string) {
+  const r = await pickNext(c, project);
+  const caught = await sinceLastSession(c);
+  if (!caught) return r;
+  if (r) return { ...r, since_last_session: caught };
+  // Nothing to take, but things changed for it: still say so, once.
+  return caught.count ? { reason: 'none', task: null, message: 'Nothing waiting for you. Use log_work to record work you do outside the queue.', since_last_session: caught } : null;
+}
+
+async function pickNext(c: Ctx, project?: string) {
   await sweepLeases(c);
   // Steering: an explicit project wins; otherwise open work is limited to the member's lane
   // and offered in focus order (focused projects, then rank, then workspace-level work).
@@ -1421,6 +1439,8 @@ export async function whoami(c: Ctx) {
     board: c.baseUrl,
     // Agents learn continuous mode here (and in every MCP reply), so nobody has to tell them.
     ...(c.me.kind === 'ai' ? { continuous: continuous.forAgent(await continuous.status(c, c.me), { platform: c.me.platform, hasWake: !!c.me.callback, sponsor: sponsor?.name }) } : {}),
+    // The agent's standup: what changed for it since it last called (KD-51).
+    ...(c.me.kind === 'ai' ? { since_last_session: await sinceLastSession(c) } : {}),
   };
 }
 
@@ -1464,4 +1484,43 @@ export async function setRuleActive(c: Ctx, ruleId: string, active: boolean) {
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can change rules.');
   const r = await c.db.prepare('UPDATE rules SET active = ? WHERE id = ? AND project_id IN (SELECT id FROM projects WHERE space_id = ?)').bind(active ? 1 : 0, ruleId, c.space).run();
   if (!r.meta.changes) throw new KunlaError(404, 'No such rule.');
+}
+
+// ---------- weekly digest settings (KD-52) ----------
+
+export interface DigestSettings { on: boolean; day: number; url: string | null; format: 'slack' | 'discord' | 'json' }
+export const DIGEST_FORMATS = ['slack', 'discord', 'json'] as const;
+
+export function parseDigest(raw: string | null | undefined): DigestSettings | null {
+  if (!raw) return null;
+  try { const d = JSON.parse(raw); return d && typeof d === 'object' ? d : null; } catch { return null; }
+}
+
+/** What the app sees: never the webhook address itself, which works as a password for the channel. */
+export function publicDigest(raw: string | null | undefined) {
+  const d = parseDigest(raw);
+  if (!d) return { on: false, day: 1, format: 'slack' as const, has_url: false, url_host: null };
+  let host: string | null = null;
+  try { host = d.url ? new URL(d.url).host : null; } catch { host = null; }
+  return { on: d.on, day: d.day, format: d.format, has_url: !!d.url, url_host: host };
+}
+
+/** Validate digest settings from the app; an absent url keeps the saved one, null or '' clears it. */
+function digestSettings(input: unknown, before: string | null | undefined): string | null {
+  if (input === null) return null;
+  if (typeof input !== 'object') throw new KunlaError(400, 'digest is an object: {on, day, url, format}.');
+  const i = input as Record<string, unknown>;
+  const old = parseDigest(before);
+  const day = i.day === undefined ? old?.day ?? 1 : Number(i.day);
+  if (!Number.isInteger(day) || day < 0 || day > 6) throw new KunlaError(400, 'day is 0 (Sunday) to 6 (Saturday).');
+  const format = (i.format ?? old?.format ?? 'slack') as DigestSettings['format'];
+  if (!DIGEST_FORMATS.includes(format)) throw new KunlaError(400, `format is one of ${DIGEST_FORMATS.join(', ')}.`);
+  let url = i.url === undefined ? old?.url ?? null : (i.url ? String(i.url).trim() : null);
+  if (url) {
+    let u: URL;
+    try { u = new URL(url); } catch { throw new KunlaError(400, 'Give the webhook as a full https:// address.'); }
+    if (u.protocol !== 'https:') throw new KunlaError(400, 'The webhook address must start with https://.');
+    url = u.toString();
+  }
+  return JSON.stringify({ on: !!(i.on ?? old?.on), day, url, format } satisfies DigestSettings);
 }

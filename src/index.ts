@@ -7,6 +7,7 @@ import * as core from './core';
 import { handleRpc, TOOLS } from './mcp';
 import { oauth } from './oauth';
 import * as views from './views';
+import * as digest from './digest';
 import * as github from './github';
 import * as wake from './wake';
 import * as merge from './merge';
@@ -172,11 +173,22 @@ api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ct
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
 api.get('/projects', async (c) => c.json(await core.listProjects(c.get('ctx'))));
 api.get('/kinds', async (c) => c.json(await core.listKinds(c.get('ctx'))));
-api.get('/projects/:key', async (c) => c.json(await core.getProject(c.get('ctx'), c.req.param('key'))));
+// The digest webhook works like a password for the channel, so the app only learns whether one is set.
+api.get('/projects/:key', async (c) => { const p = await core.getProject(c.get('ctx'), c.req.param('key')); return c.json({ ...p, digest: p.kind === 'workspace' ? core.publicDigest(p.digest) : undefined }); });
 api.post('/projects', async (c) => c.json(await core.createProject(c.get('ctx'), await c.req.json())));
-api.patch('/projects/:key', async (c) => c.json(await core.updateProject(c.get('ctx'), c.req.param('key'), await c.req.json())));
+api.patch('/projects/:key', async (c) => { const p = await core.updateProject(c.get('ctx'), c.req.param('key'), await c.req.json()); return c.json({ ...p, digest: p.kind === 'workspace' ? core.publicDigest(p.digest) : undefined }); });
+// The weekly digest (KD-52): a preview anyone in the workspace can read, and "send it now" for admins.
+api.get('/digest', async (c) => c.json(await digest.build(c.get('ctx'), Math.min(31, Math.max(1, Number(c.req.query('days')) || 7)))));
+api.post('/digest/send', async (c) => {
+  const ctx = c.get('ctx');
+  if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only an admin can send the digest.' }, 403);
+  const s = core.parseDigest((await core.getWorkspace(ctx)).digest);
+  if (!s?.url) return c.json({ error: 'Add a webhook address for the digest first.' }, 400);
+  return c.json(await digest.send(ctx, s));
+});
 api.get('/rules', async (c) => c.json(await views.rulesWithReach(c.get('ctx'), c.req.query('project'))));
-api.get('/briefing', async (c) => c.json(await views.briefing(c.get('ctx'), Number(c.req.query('hours') || 24))));
+// Without hours a person's briefing covers "since you were last here" (KD-49).
+api.get('/briefing', async (c) => { const h = Number(c.req.query('hours')); return c.json(await views.briefing(c.get('ctx'), h > 0 ? h : undefined)); });
 api.get('/changes', async (c) => c.json(await views.changes(c.get('ctx'))));
 api.get('/progress', async (c) => c.json(await views.progress(c.get('ctx'))));
 api.get('/pulse', async (c) => c.json(await views.pulse(c.get('ctx'))));
@@ -203,11 +215,14 @@ app.route('/api', api);
 // Anything else falls through to the static web app.
 app.all('*', (c) => (c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : c.text('Not found', 404)));
 
-// Cron (wrangler.toml [triggers]): at the start of each UTC day, wake continuous agents that stopped on a daily budget.
+// Cron (wrangler.toml [triggers]): at the start of each UTC day, wake continuous agents that stopped on a daily budget
+// and send the weekly digests due today.
 export async function scheduled(_e: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
   const base = (env.PUBLIC_URL || '').replace(/\/$/, '');
   const jobs: Promise<unknown>[] = [];
   await continuous.newDay({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30), notify: (w) => { jobs.push(wake.deliver(env.DB, w).catch((e) => console.error('wake failed', e))); } });
+  // Weekly digests whose day is today (KD-52).
+  jobs.push(digest.sendDue({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30) }).catch((e) => console.error('digest failed', e)));
   ctx.waitUntil(Promise.all(jobs));
 }
 

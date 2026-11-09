@@ -1,15 +1,47 @@
 // Read models for the web app and in-chat views: the briefing, the live pulse, the work map
 // and rules with their reach. All derived from the event record; nobody writes a status update.
 import { sweepLeases, listMembers, taskKind } from './core';
+import * as continuous from './continuous';
 import type { Ctx, Member, Task } from './core';
 
 const now = (c: Ctx) => (c.now ? c.now() : new Date());
 type Ev = { task_id: string; key: string; title: string; type: string; note: string | null; actor_id: string | null; created_at: string; data: string };
 
-/** What happened since a point in time, per member, for the briefing headline. */
-export async function briefing(c: Ctx, sinceHours = 24) {
+// ---------- the briefing is the standup (KD-48) ----------
+// People don't write status. The Briefing says what happened since you were last here (KD-49), what
+// waits on you (the decision deck), and what waits on anyone else for too long (asks, KD-50).
+
+const VISIT_GAP_MS = 60 * 60_000;   // away for more than an hour: the next visit starts a new briefing
+const MAX_WINDOW_DAYS = 14;         // a briefing never reaches back further than this
+const FIRST_VISIT_HOURS = 24;
+
+/**
+ * Where a person's briefing starts. Coming back after a break, it starts where they left off; while
+ * they stay (refreshes, coming back within the hour) it holds still, so the page doesn't empty itself.
+ */
+export async function visitWindow(c: Ctx): Promise<{ since: string; window: 'last_visit' | 'first_visit' }> {
+  const t = now(c).getTime();
+  const row = await c.db.prepare('SELECT seen_at, visit_from FROM members WHERE id = ?').bind(c.me.id).first<{ seen_at: string | null; visit_from: string | null }>();
+  let from: number; let window: 'last_visit' | 'first_visit' = 'last_visit';
+  if (!row?.seen_at) { from = t - FIRST_VISIT_HOURS * 3600_000; window = 'first_visit'; }
+  else if (t - new Date(row.seen_at).getTime() > VISIT_GAP_MS) from = new Date(row.seen_at).getTime();
+  else if (row.visit_from) from = new Date(row.visit_from).getTime();
+  else { from = t - FIRST_VISIT_HOURS * 3600_000; window = 'first_visit'; }
+  from = Math.max(from, t - MAX_WINDOW_DAYS * 86400_000);
+  const since = new Date(from).toISOString();
+  await c.db.prepare('UPDATE members SET seen_at = ?, visit_from = ? WHERE id = ?').bind(new Date(t).toISOString(), since, c.me.id).run();
+  return { since, window };
+}
+
+/**
+ * What happened since a point in time, per member, for the briefing headline. Without hours a person
+ * gets "since you were last here"; with hours (or for an agent) it is a fixed look back.
+ */
+export async function briefing(c: Ctx, sinceHours?: number) {
   await sweepLeases(c);
-  const since = new Date(now(c).getTime() - sinceHours * 3600_000).toISOString();
+  const w = sinceHours === undefined && c.me.kind === 'human' ? await visitWindow(c)
+    : { since: new Date(now(c).getTime() - (sinceHours ?? FIRST_VISIT_HOURS) * 3600_000).toISOString(), window: 'hours' as const };
+  const since = w.since;
   const rows = (await c.db.prepare(
     `SELECT m.id, m.name, m.kind, e.type, COUNT(DISTINCT e.task_id) AS n FROM events e JOIN members m ON m.id = e.actor_id
      WHERE e.space_id = ? AND e.created_at > ? AND e.type IN ('submitted','approved','work_logged','claimed','rule_added','changes_requested')
@@ -21,10 +53,110 @@ export async function briefing(c: Ctx, sinceHours = 24) {
   }
   const finished = (await c.db.prepare(
     `SELECT t.key, t.title, m.name AS worker FROM events e JOIN tasks t ON t.id = e.task_id LEFT JOIN members m ON m.id = t.assignee_id
-     WHERE e.space_id = ? AND e.type = 'approved' AND e.created_at > ? ORDER BY e.id DESC LIMIT 5`).bind(c.space, since).all()).results;
+     WHERE e.space_id = ? AND e.type = 'approved' AND e.created_at > ? ORDER BY e.id DESC LIMIT 8`).bind(c.space, since).all()).results;
   const rulesAdded = (await c.db.prepare(`SELECT COUNT(*) AS n FROM rules r JOIN projects p ON p.id = r.project_id WHERE p.space_id = ? AND r.created_at > ?`).bind(c.space, since).first<{ n: number }>())?.n ?? 0;
   const tidied = (await c.db.prepare(`SELECT COUNT(*) AS n FROM events WHERE space_id = ? AND type = 'tidied' AND created_at > ?`).bind(c.space, since).first<{ n: number }>())?.n ?? 0;
-  return { since, members: [...by.values()], finished, rules_added: rulesAdded, tidied };
+  return { since, window: w.window, members: [...by.values()], finished, rules_added: rulesAdded, tidied, asks: await asks(c) };
+}
+
+// ---------- asks: what waits on someone for too long (KD-50) ----------
+
+const QUIET_DAYS = 2;            // a person's claim with no activity for this long
+const REVIEW_WAIT_DAYS = 2;      // a review waiting on someone else
+const QUESTION_WAIT_HOURS = 24;  // a blocked question waiting on someone else
+const MAX_ASKS = 8;
+const BUDGET_STOPS = ['tasks_budget', 'cost_budget', 'tokens_budget', 'review_limit', 'ended'];
+
+export type AskKind = 'budget_stop' | 'question_waiting' | 'review_waiting' | 'quiet_claim' | 'overlap';
+export interface Ask {
+  kind: AskKind; line: string; since: string;
+  task: { key: string; title: string } | null;
+  other?: { key: string; title: string };          // overlap: the second task
+  member?: { id: string; name: string; kind: string };
+  action: 'open' | 'take_over' | 'limits' | 'compare';
+}
+
+const words = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9äöüß ]/g, ' ').split(/\s+/).filter((w) => w.length > 2));
+function similar(a: string, b: string) {
+  const x = words(a), y = words(b);
+  if (x.size < 2 || y.size < 2) return false;
+  const shared = [...x].filter((w) => y.has(w)).length;
+  return shared >= 2 && shared / Math.min(x.size, y.size) >= 0.6;
+}
+const days = (ms: number) => { const d = Math.floor(ms / 86400_000); return d >= 1 ? `${d} day${d > 1 ? 's' : ''}` : `${Math.max(1, Math.floor(ms / 3600_000))} hours`; };
+
+/**
+ * The standup's real content: things that wait on someone else for too long, which the decision deck
+ * (only what waits on you) doesn't show. Each comes with what you can do about it.
+ */
+export async function asks(c: Ctx): Promise<Ask[]> {
+  const t = now(c).getTime();
+  const iso = (ms: number) => new Date(t - ms).toISOString();
+  const members = await listMembers(c);
+  const byId = new Map(members.map((m) => [m.id, m]));
+  const who = (id: string | null) => (id && byId.get(id)) ? { id, name: byId.get(id)!.name, kind: byId.get(id)!.kind } : undefined;
+  const me = c.me?.id ?? '';
+  const admin = (() => { try { return JSON.parse(c.me?.roles || '[]').includes('admin'); } catch { return false; } })();
+  const out: Ask[] = [];
+
+  // Agents stopped by a limit their sponsor set: only the sponsor (or an admin) can lift it.
+  for (const m of members) {
+    if (m.kind !== 'ai' || (m as any).removed_at) continue;
+    if (!(admin || m.sponsor_id === me)) continue;
+    const settings = continuous.parseSettings(m.continuous);
+    const run = continuous.parseRunState(m.run_state);
+    if (!settings?.on || run?.state !== 'stopped' || !run.reason || !BUDGET_STOPS.includes(run.reason)) continue;
+    out.push({ kind: 'budget_stop', since: run.at, task: null, member: who(m.id), action: 'limits',
+      line: `${m.name} stopped: ${run.message ?? run.reason.replace('_', ' ')}` });
+  }
+
+  // Questions blocked on someone other than you, for a day or more.
+  const qs = (await c.db.prepare(
+    `SELECT key, title, blocked_on_id, assignee_id, updated_at FROM tasks WHERE space_id = ? AND status = 'blocked'
+     AND blocked_on_id IS NOT NULL AND blocked_on_id != ? AND updated_at < ? ORDER BY updated_at LIMIT 20`)
+    .bind(c.space, me, iso(QUESTION_WAIT_HOURS * 3600_000)).all<{ key: string; title: string; blocked_on_id: string; assignee_id: string | null; updated_at: string }>()).results;
+  for (const q of qs) out.push({ kind: 'question_waiting', since: q.updated_at, task: { key: q.key, title: q.title }, member: who(q.blocked_on_id), action: 'open',
+    line: `${who(q.assignee_id)?.name ?? 'Someone'} has waited ${days(t - new Date(q.updated_at).getTime())} for ${who(q.blocked_on_id)?.name ?? 'an answer'} on ${q.key}.` });
+
+  // Reviews waiting on someone else for two days or more.
+  const rs = (await c.db.prepare(
+    `SELECT key, title, reviewer_id, updated_at FROM tasks WHERE space_id = ? AND status = 'review'
+     AND reviewer_id IS NOT NULL AND reviewer_id != ? AND updated_at < ? ORDER BY updated_at LIMIT 20`)
+    .bind(c.space, me, iso(REVIEW_WAIT_DAYS * 86400_000)).all<{ key: string; title: string; reviewer_id: string; updated_at: string }>()).results;
+  for (const r of rs) out.push({ kind: 'review_waiting', since: r.updated_at, task: { key: r.key, title: r.title }, member: who(r.reviewer_id), action: 'open',
+    line: `${r.key} has waited ${days(t - new Date(r.updated_at).getTime())} for a review from ${who(r.reviewer_id)?.name ?? 'someone'}.` });
+
+  // Claims that went quiet. An agent's claim lapses by itself (lease); a person's never does, so say it.
+  const active = (await c.db.prepare(
+    `SELECT t.key, t.title, t.status, t.assignee_id, t.parent_id, t.lease_expires_at, t.updated_at,
+       (SELECT MAX(e.created_at) FROM events e WHERE e.task_id = t.id) AS last_at,
+       EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')) AS has_open_subs
+     FROM tasks t WHERE t.space_id = ? AND t.status IN ('in_progress','review','blocked') AND t.assignee_id IS NOT NULL
+     ORDER BY t.updated_at DESC LIMIT 200`).bind(c.space).all<{ key: string; title: string; status: string; assignee_id: string; parent_id: string | null; lease_expires_at: string | null; updated_at: string; last_at: string | null; has_open_subs: number }>()).results;
+  for (const a of active) {
+    if (a.status !== 'in_progress' || a.lease_expires_at || a.has_open_subs) continue;
+    const last = a.last_at && a.last_at > a.updated_at ? a.last_at : a.updated_at;
+    if (t - new Date(last).getTime() < QUIET_DAYS * 86400_000) continue;
+    const holder = who(a.assignee_id);
+    const yours = a.assignee_id === me;
+    out.push({ kind: 'quiet_claim', since: last, task: { key: a.key, title: a.title }, member: holder, action: yours || c.me?.kind !== 'human' ? 'open' : 'take_over',
+      line: yours ? `You haven't touched ${a.key} in ${days(t - new Date(last).getTime())}. Log progress, or hand it on.`
+        : `${holder?.name ?? 'Someone'} has held ${a.key} for ${days(t - new Date(last).getTime())} with no activity.` });
+  }
+
+  // Two members working on what looks like the same thing (titles that share most of their words).
+  const seen = new Set<string>();
+  for (let i = 0; i < active.length; i++) for (let j = i + 1; j < active.length; j++) {
+    const x = active[i], y = active[j];
+    if (x.assignee_id === y.assignee_id || x.parent_id === y.key || y.parent_id === x.key) continue;
+    if (!similar(x.title, y.title) || seen.has(x.key) || seen.has(y.key)) continue;
+    seen.add(x.key); seen.add(y.key);
+    out.push({ kind: 'overlap', since: x.updated_at > y.updated_at ? x.updated_at : y.updated_at, task: { key: x.key, title: x.title }, other: { key: y.key, title: y.title }, action: 'compare',
+      line: `${who(x.assignee_id)?.name ?? 'Someone'} (${x.key}) and ${who(y.assignee_id)?.name ?? 'someone'} (${y.key}) may be doing the same work.` });
+  }
+
+  const order: Record<AskKind, number> = { budget_stop: 0, question_waiting: 1, review_waiting: 2, quiet_claim: 3, overlap: 4 };
+  return out.sort((a, b) => order[a.kind] - order[b.kind] || a.since.localeCompare(b.since)).slice(0, MAX_ASKS);
 }
 
 /** One line per member: what they are doing right now, and whether they are live. */
