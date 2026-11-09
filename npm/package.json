@@ -1,5 +1,5 @@
 {
-  "name": "kunla",
+  "name": "@spikinglabs/kunla",
   "version": "0.0.0",
   "description": "Kunla CLI: log work, claim tasks and run any command-line agent against your team's Kunla record of work.",
   "license": "Apache-2.0",

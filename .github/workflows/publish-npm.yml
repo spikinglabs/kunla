@@ -1,4 +1,4 @@
-# Publishes the Kunla CLI (plugins/claude-code/bin/kunla.mjs) to npm as `kunla` (KD-14).
+# Publishes the Kunla CLI (plugins/claude-code/bin/kunla.mjs) to npm as `@spikinglabs/kunla` (KD-14; npm refuses plain `kunla` as too close to `konva`).
 # Run it from Actions → "Publish CLI to npm" → Run workflow, or push a tag like cli-v0.1.0.
 # Auth: npm trusted publishing (OIDC, no token) once it is set up on npmjs.com; until then,
 # the NPM_TOKEN repository secret is used for the first publish. See docs/npm.md.
