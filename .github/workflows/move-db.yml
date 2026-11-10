@@ -20,13 +20,7 @@ jobs:
       # Without the app's config, wrangler finds both databases by name in the account.
       - run: rm wrangler.toml
       - name: Export the US database
-        # Schema written in dependency order (tables, then indexes); the data comes from a data-only export.
-        run: |
-          npx wrangler d1 execute "$FROM" --remote --json --command "SELECT type, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name" > schema.json
-          node -e "const r=require('./schema.json')[0].results; require('fs').writeFileSync('schema.sql', r.map(x=>x.sql+';').join('\n')); console.log(r.length+' schema statements')"
-          npx wrangler d1 export "$FROM" --remote --no-schema --output data.sql
-          { echo 'PRAGMA defer_foreign_keys = true;'; cat schema.sql; cat data.sql; } > dump.sql
-          wc -c dump.sql; grep -c '^INSERT' dump.sql
+        run: node scripts/copy-d1.mjs "$FROM" dump.sql && wc -c dump.sql
       - name: Wipe the EU database
         run: |
           npx wrangler d1 execute "$TO" --remote --json --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'" > tables.json
@@ -36,6 +30,11 @@ jobs:
         run: npx wrangler d1 execute "$TO" --remote --yes --file dump.sql
       - name: Compare row counts
         run: |
-          Q="SELECT (SELECT COUNT(*) FROM tasks) tasks, (SELECT COUNT(*) FROM events) events, (SELECT COUNT(*) FROM members) members, (SELECT COUNT(*) FROM projects) projects, (SELECT COUNT(*) FROM tokens) tokens, (SELECT COUNT(*) FROM settings) settings, (SELECT COUNT(*) FROM d1_migrations) migrations, (SELECT MAX(id) FROM events) last_event"
-          npx wrangler d1 execute "$FROM" --remote --json --command "$Q" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{require('fs').writeFileSync('a.json',JSON.stringify(JSON.parse(s)[0].results));console.log('US',JSON.parse(s)[0].results)})"
-          npx wrangler d1 execute "$TO" --remote --json --command "$Q" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const b=JSON.stringify(JSON.parse(s)[0].results);console.log('EU',b);if(b!==require('fs').readFileSync('a.json','utf8')){console.error('Counts differ (a write may have landed during the copy)');process.exit(1)}})"
+          node -e "
+            const { execFileSync } = require('child_process');
+            const want = require('./counts.json'); const bad = [];
+            for (const [t, n] of Object.entries(want)) {
+              const got = JSON.parse(execFileSync('npx', ['wrangler','d1','execute',process.env.TO,'--remote','--json','--command','SELECT COUNT(*) AS n FROM \"'+t+'\"']).toString())[0].results[0].n;
+              console.log(t, n, got); if (got !== n) bad.push(t);
+            }
+            if (bad.length) { console.error('Counts differ: ' + bad); process.exit(1); }"
