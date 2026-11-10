@@ -9,6 +9,13 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*", "/mcp", "/mcp/*", "/oauth/*", "/.well-known/*", "/t/*", "/hooks/*"]
 
+# Run the Worker next to its D1 database instead of next to the visitor. A page load makes a few
+# database round trips; across an ocean each one costs ~100 ms, next to the database ~1 ms.
+# Smart Placement finds that spot by itself (it can take ~15 minutes after a deploy to settle).
+# The deploy workflow swaps this for an explicit hint when the KUNLA_PLACEMENT_REGION variable is set.
+[placement]
+mode = "smart"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "kunla"

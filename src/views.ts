@@ -19,9 +19,12 @@ const FIRST_VISIT_HOURS = 24;
  * Where a person's briefing starts. Coming back after a break, it starts where they left off; while
  * they stay (refreshes, coming back within the hour) it holds still, so the page doesn't empty itself.
  */
-export async function visitWindow(c: Ctx): Promise<{ since: string; window: 'last_visit' | 'first_visit' }> {
+export async function visitWindow(c: Ctx): Promise<{ since: string; window: 'last_visit' | 'first_visit'; saved: Promise<unknown> }> {
   const t = now(c).getTime();
-  const row = await c.db.prepare('SELECT seen_at, visit_from FROM members WHERE id = ?').bind(c.me.id).first<{ seen_at: string | null; visit_from: string | null }>();
+  // The signed-in member row already carries both columns (memberForToken reads m.*), so no extra round trip.
+  const known = c.me as Member & { seen_at?: string | null; visit_from?: string | null };
+  const row = 'seen_at' in known ? { seen_at: known.seen_at ?? null, visit_from: known.visit_from ?? null }
+    : await c.db.prepare('SELECT seen_at, visit_from FROM members WHERE id = ?').bind(c.me.id).first<{ seen_at: string | null; visit_from: string | null }>();
   let from: number; let window: 'last_visit' | 'first_visit' = 'last_visit';
   if (!row?.seen_at) { from = t - FIRST_VISIT_HOURS * 3600_000; window = 'first_visit'; }
   else if (t - new Date(row.seen_at).getTime() > VISIT_GAP_MS) from = new Date(row.seen_at).getTime();
@@ -29,8 +32,9 @@ export async function visitWindow(c: Ctx): Promise<{ since: string; window: 'las
   else { from = t - FIRST_VISIT_HOURS * 3600_000; window = 'first_visit'; }
   from = Math.max(from, t - MAX_WINDOW_DAYS * 86400_000);
   const since = new Date(from).toISOString();
-  await c.db.prepare('UPDATE members SET seen_at = ?, visit_from = ? WHERE id = ?').bind(new Date(t).toISOString(), since, c.me.id).run();
-  return { since, window };
+  // Not awaited here: the briefing waits for it alongside its own reads, saving a round trip.
+  const saved = c.db.prepare('UPDATE members SET seen_at = ?, visit_from = ? WHERE id = ?').bind(new Date(t).toISOString(), since, c.me.id).run();
+  return { since, window, saved };
 }
 
 /**
@@ -40,23 +44,31 @@ export async function visitWindow(c: Ctx): Promise<{ since: string; window: 'las
 export async function briefing(c: Ctx, sinceHours?: number) {
   await sweepLeases(c);
   const w = sinceHours === undefined && c.me.kind === 'human' ? await visitWindow(c)
-    : { since: new Date(now(c).getTime() - (sinceHours ?? FIRST_VISIT_HOURS) * 3600_000).toISOString(), window: 'hours' as const };
+    : { since: new Date(now(c).getTime() - (sinceHours ?? FIRST_VISIT_HOURS) * 3600_000).toISOString(), window: 'hours' as const, saved: null };
   const since = w.since;
-  const rows = (await c.db.prepare(
-    `SELECT m.id, m.name, m.kind, e.type, COUNT(DISTINCT e.task_id) AS n FROM events e JOIN members m ON m.id = e.actor_id
-     WHERE e.space_id = ? AND e.created_at > ? AND e.type IN ('submitted','approved','work_logged','claimed','rule_added','changes_requested')
-     GROUP BY m.id, e.type`).bind(c.space, since).all<{ id: string; name: string; kind: string; type: string; n: number }>()).results;
+  // Independent reads go out together: on Cloudflare each await is a round trip to the database.
+  const [rowsR, finishedR, rulesR, tidiedR, asked] = await Promise.all([
+    c.db.prepare(
+      `SELECT m.id, m.name, m.kind, e.type, COUNT(DISTINCT e.task_id) AS n FROM events e JOIN members m ON m.id = e.actor_id
+       WHERE e.space_id = ? AND e.created_at > ? AND e.type IN ('submitted','approved','work_logged','claimed','rule_added','changes_requested')
+       GROUP BY m.id, e.type`).bind(c.space, since).all<{ id: string; name: string; kind: string; type: string; n: number }>(),
+    c.db.prepare(
+      `SELECT t.key, t.title, m.name AS worker FROM events e JOIN tasks t ON t.id = e.task_id LEFT JOIN members m ON m.id = t.assignee_id
+       WHERE e.space_id = ? AND e.type = 'approved' AND e.created_at > ? ORDER BY e.id DESC LIMIT 8`).bind(c.space, since).all(),
+    c.db.prepare(`SELECT COUNT(*) AS n FROM rules r JOIN projects p ON p.id = r.project_id WHERE p.space_id = ? AND r.created_at > ?`).bind(c.space, since).first<{ n: number }>(),
+    c.db.prepare(`SELECT COUNT(*) AS n FROM events WHERE space_id = ? AND type = 'tidied' AND created_at > ?`).bind(c.space, since).first<{ n: number }>(),
+    asks(c),
+    w.saved,
+  ]);
   const by = new Map<string, { name: string; kind: string; counts: Record<string, number> }>();
-  for (const r of rows) {
+  for (const r of rowsR.results) {
     if (!by.has(r.id)) by.set(r.id, { name: r.name, kind: r.kind, counts: {} });
     by.get(r.id)!.counts[r.type] = r.n;
   }
-  const finished = (await c.db.prepare(
-    `SELECT t.key, t.title, m.name AS worker FROM events e JOIN tasks t ON t.id = e.task_id LEFT JOIN members m ON m.id = t.assignee_id
-     WHERE e.space_id = ? AND e.type = 'approved' AND e.created_at > ? ORDER BY e.id DESC LIMIT 8`).bind(c.space, since).all()).results;
-  const rulesAdded = (await c.db.prepare(`SELECT COUNT(*) AS n FROM rules r JOIN projects p ON p.id = r.project_id WHERE p.space_id = ? AND r.created_at > ?`).bind(c.space, since).first<{ n: number }>())?.n ?? 0;
-  const tidied = (await c.db.prepare(`SELECT COUNT(*) AS n FROM events WHERE space_id = ? AND type = 'tidied' AND created_at > ?`).bind(c.space, since).first<{ n: number }>())?.n ?? 0;
-  return { since, window: w.window, members: [...by.values()], finished, rules_added: rulesAdded, tidied, asks: await asks(c) };
+  const finished = finishedR.results;
+  const rulesAdded = rulesR?.n ?? 0;
+  const tidied = tidiedR?.n ?? 0;
+  return { since, window: w.window, members: [...by.values()], finished, rules_added: rulesAdded, tidied, asks: asked };
 }
 
 // ---------- asks: what waits on someone for too long (KD-50) ----------
@@ -92,10 +104,26 @@ const days = (ms: number) => { const d = Math.floor(ms / 86400_000); return d >=
 export async function asks(c: Ctx): Promise<Ask[]> {
   const t = now(c).getTime();
   const iso = (ms: number) => new Date(t - ms).toISOString();
-  const members = await listMembers(c);
+  const me = c.me?.id ?? '';
+  const [members, qsR, rsR, activeR] = await Promise.all([
+    listMembers(c),
+    c.db.prepare(
+    `SELECT key, title, blocked_on_id, assignee_id, updated_at FROM tasks WHERE space_id = ? AND status = 'blocked'
+     AND blocked_on_id IS NOT NULL AND blocked_on_id != ? AND updated_at < ? ORDER BY updated_at LIMIT 20`)
+    .bind(c.space, me, iso(QUESTION_WAIT_HOURS * 3600_000)).all<{ key: string; title: string; blocked_on_id: string; assignee_id: string | null; updated_at: string }>(),
+    c.db.prepare(
+    `SELECT key, title, reviewer_id, updated_at FROM tasks WHERE space_id = ? AND status = 'review'
+     AND reviewer_id IS NOT NULL AND reviewer_id != ? AND updated_at < ? ORDER BY updated_at LIMIT 20`)
+    .bind(c.space, me, iso(REVIEW_WAIT_DAYS * 86400_000)).all<{ key: string; title: string; reviewer_id: string; updated_at: string }>(),
+    c.db.prepare(
+    `SELECT t.key, t.title, t.status, t.assignee_id, t.parent_id, t.lease_expires_at, t.updated_at,
+       (SELECT MAX(e.created_at) FROM events e WHERE e.task_id = t.id) AS last_at,
+       EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')) AS has_open_subs
+     FROM tasks t WHERE t.space_id = ? AND t.status IN ('in_progress','review','blocked') AND t.assignee_id IS NOT NULL
+     ORDER BY t.updated_at DESC LIMIT 200`).bind(c.space).all<{ key: string; title: string; status: string; assignee_id: string; parent_id: string | null; lease_expires_at: string | null; updated_at: string; last_at: string | null; has_open_subs: number }>(),
+  ]);
   const byId = new Map(members.map((m) => [m.id, m]));
   const who = (id: string | null) => (id && byId.get(id)) ? { id, name: byId.get(id)!.name, kind: byId.get(id)!.kind } : undefined;
-  const me = c.me?.id ?? '';
   const admin = (() => { try { return JSON.parse(c.me?.roles || '[]').includes('admin'); } catch { return false; } })();
   const out: Ask[] = [];
 
@@ -111,28 +139,17 @@ export async function asks(c: Ctx): Promise<Ask[]> {
   }
 
   // Questions blocked on someone other than you, for a day or more.
-  const qs = (await c.db.prepare(
-    `SELECT key, title, blocked_on_id, assignee_id, updated_at FROM tasks WHERE space_id = ? AND status = 'blocked'
-     AND blocked_on_id IS NOT NULL AND blocked_on_id != ? AND updated_at < ? ORDER BY updated_at LIMIT 20`)
-    .bind(c.space, me, iso(QUESTION_WAIT_HOURS * 3600_000)).all<{ key: string; title: string; blocked_on_id: string; assignee_id: string | null; updated_at: string }>()).results;
+  const qs = qsR.results;
   for (const q of qs) out.push({ kind: 'question_waiting', since: q.updated_at, task: { key: q.key, title: q.title }, member: who(q.blocked_on_id), action: 'open',
     line: `${who(q.assignee_id)?.name ?? 'Someone'} has waited ${days(t - new Date(q.updated_at).getTime())} for ${who(q.blocked_on_id)?.name ?? 'an answer'} on ${q.key}.` });
 
   // Reviews waiting on someone else for two days or more.
-  const rs = (await c.db.prepare(
-    `SELECT key, title, reviewer_id, updated_at FROM tasks WHERE space_id = ? AND status = 'review'
-     AND reviewer_id IS NOT NULL AND reviewer_id != ? AND updated_at < ? ORDER BY updated_at LIMIT 20`)
-    .bind(c.space, me, iso(REVIEW_WAIT_DAYS * 86400_000)).all<{ key: string; title: string; reviewer_id: string; updated_at: string }>()).results;
+  const rs = rsR.results;
   for (const r of rs) out.push({ kind: 'review_waiting', since: r.updated_at, task: { key: r.key, title: r.title }, member: who(r.reviewer_id), action: 'open',
     line: `${r.key} has waited ${days(t - new Date(r.updated_at).getTime())} for a review from ${who(r.reviewer_id)?.name ?? 'someone'}.` });
 
   // Claims that went quiet. An agent's claim lapses by itself (lease); a person's never does, so say it.
-  const active = (await c.db.prepare(
-    `SELECT t.key, t.title, t.status, t.assignee_id, t.parent_id, t.lease_expires_at, t.updated_at,
-       (SELECT MAX(e.created_at) FROM events e WHERE e.task_id = t.id) AS last_at,
-       EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')) AS has_open_subs
-     FROM tasks t WHERE t.space_id = ? AND t.status IN ('in_progress','review','blocked') AND t.assignee_id IS NOT NULL
-     ORDER BY t.updated_at DESC LIMIT 200`).bind(c.space).all<{ key: string; title: string; status: string; assignee_id: string; parent_id: string | null; lease_expires_at: string | null; updated_at: string; last_at: string | null; has_open_subs: number }>()).results;
+  const active = activeR.results;
   for (const a of active) {
     if (a.status !== 'in_progress' || a.lease_expires_at || a.has_open_subs) continue;
     const last = a.last_at && a.last_at > a.updated_at ? a.last_at : a.updated_at;
@@ -163,17 +180,22 @@ export async function asks(c: Ctx): Promise<Ask[]> {
 export async function pulse(c: Ctx) {
   await sweepLeases(c);
   const t = now(c).getTime();
-  const members = await listMembers(c);
-  const tasks = (await c.db.prepare(
-    `SELECT * FROM tasks WHERE space_id = ? AND status IN ('in_progress','blocked','review') AND assignee_id IS NOT NULL ORDER BY updated_at DESC`).bind(c.space).all<Task>()).results;
-  // One indexed lookup per member instead of a scan of the whole event log.
-  const last = (await c.db.prepare(
-    `SELECT m.id AS actor_id, (SELECT MAX(e.created_at) FROM events e WHERE e.actor_id = m.id) AS at FROM members m WHERE m.space_id = ?`).bind(c.space).all<{ actor_id: string; at: string | null }>()).results
-    .filter((l) => l.at) as { actor_id: string; at: string }[];
+  const [members, tasksR, lastR, reviewsR, qsR] = await Promise.all([
+    listMembers(c),
+    c.db.prepare(
+      `SELECT * FROM tasks WHERE space_id = ? AND status IN ('in_progress','blocked','review') AND assignee_id IS NOT NULL ORDER BY updated_at DESC`).bind(c.space).all<Task>(),
+    // One indexed lookup per member instead of a scan of the whole event log.
+    c.db.prepare(
+      `SELECT m.id AS actor_id, (SELECT MAX(e.created_at) FROM events e WHERE e.actor_id = m.id) AS at FROM members m WHERE m.space_id = ?`).bind(c.space).all<{ actor_id: string; at: string | null }>(),
+    c.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE space_id = ? AND status = 'review'`).bind(c.space).first<{ n: number }>(),
+    c.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE space_id = ? AND status = 'blocked'`).bind(c.space).first<{ n: number }>(),
+  ]);
+  const tasks = tasksR.results;
+  const last = lastR.results.filter((l) => l.at) as { actor_id: string; at: string }[];
   const lastBy = new Map(last.map((l) => [l.actor_id, l.at]));
   const names = new Map(members.map((m) => [m.id, m.name]));
-  const pendingReviews = (await c.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE space_id = ? AND status = 'review'`).bind(c.space).first<{ n: number }>())?.n ?? 0;
-  const pendingQs = (await c.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE space_id = ? AND status = 'blocked'`).bind(c.space).first<{ n: number }>())?.n ?? 0;
+  const pendingReviews = reviewsR?.n ?? 0;
+  const pendingQs = qsR?.n ?? 0;
   return members.map((m) => {
     const mine = tasks.filter((x) => x.assignee_id === m.id);
     const working = mine.find((x) => x.status === 'in_progress');
@@ -213,16 +235,21 @@ export async function workMap(c: Ctx, days = 5) {
   await sweepLeases(c);
   const end = now(c);
   const start = new Date(end.getTime() - days * 86400_000);
-  const members = await listMembers(c);
-  const evs = (await c.db.prepare(
-    `SELECT e.task_id, t.key, t.title, e.type, e.note, e.actor_id, e.created_at, e.data FROM events e JOIN tasks t ON t.id = e.task_id
-     WHERE e.task_id IN (SELECT task_id FROM events WHERE space_id = ? AND created_at > ? UNION SELECT id FROM tasks WHERE space_id = ? AND status IN ('in_progress','blocked','review'))
-     ORDER BY e.id`).bind(c.space, start.toISOString(), c.space).all<Ev>()).results;
-  const tasks = new Map((await c.db.prepare(`SELECT * FROM tasks WHERE space_id = ? AND id IN (SELECT task_id FROM events WHERE space_id = ? AND created_at > ? UNION SELECT id FROM tasks WHERE space_id = ? AND status IN ('in_progress','blocked','review'))`)
-    .bind(c.space, c.space, start.toISOString(), c.space).all<Task>()).results.map((t) => [t.id, t]));
+  const [members, evsR, tasksR, projectsR] = await Promise.all([
+    listMembers(c),
+    c.db.prepare(
+      `SELECT e.task_id, t.key, t.title, e.type, e.note, e.actor_id, e.created_at, e.data FROM events e JOIN tasks t ON t.id = e.task_id
+       WHERE e.task_id IN (SELECT task_id FROM events WHERE space_id = ? AND created_at > ? UNION SELECT id FROM tasks WHERE space_id = ? AND status IN ('in_progress','blocked','review'))
+       ORDER BY e.id`).bind(c.space, start.toISOString(), c.space).all<Ev>(),
+    c.db.prepare(`SELECT * FROM tasks WHERE space_id = ? AND id IN (SELECT task_id FROM events WHERE space_id = ? AND created_at > ? UNION SELECT id FROM tasks WHERE space_id = ? AND status IN ('in_progress','blocked','review'))`)
+      .bind(c.space, c.space, start.toISOString(), c.space).all<Task>(),
+    c.db.prepare(`SELECT id, key, name, kind FROM projects WHERE space_id = ? ORDER BY kind DESC, focus DESC, rank, created_at`)
+      .bind(c.space).all<{ id: string; key: string; name: string; kind: string }>(),
+  ]);
+  const evs = evsR.results;
+  const tasks = new Map(tasksR.results.map((t) => [t.id, t]));
   const lanes = new Map<string, Seg[]>(members.map((m) => [m.id, []]));
-  const projects = (await c.db.prepare(`SELECT id, key, name, kind FROM projects WHERE space_id = ? ORDER BY kind DESC, focus DESC, rank, created_at`)
-    .bind(c.space).all<{ id: string; key: string; name: string; kind: string }>()).results;
+  const projects = projectsR.results;
   const projKey = new Map(projects.map((p) => [p.id, p.key]));
   const tagOf = new Map<string, { project?: string; work: string }>();
   const tag = (key: string) => {

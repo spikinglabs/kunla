@@ -481,20 +481,23 @@ export async function recordSession(c: Ctx, taskId: string, session?: string | n
  */
 export async function sweepLeases(c: Ctx) {
   const now = nowIso(c);
-  const expired = (await c.db.prepare(
-    `SELECT id, key, assignee_id FROM tasks WHERE space_id = ? AND status = 'in_progress' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`)
-    .bind(c.space, now).all<{ id: string; key: string; assignee_id: string }>()).results;
-  for (const t of expired) {
+  const cutoff = new Date((c.now ? c.now() : new Date()).getTime() - PROPOSAL_DAYS * 86400_000).toISOString();
+  // Every read sweeps first, so the three checks go to D1 as one batch: one round trip, not three.
+  // Nearly always all three come back empty and nothing else runs.
+  const [expiredR, wokeR, oldR] = await c.db.batch([
+    c.db.prepare(`SELECT id, key, assignee_id FROM tasks WHERE space_id = ? AND status = 'in_progress' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`).bind(c.space, now),
+    // Snoozed tasks come back on their own when the date passes.
+    c.db.prepare(`SELECT key FROM tasks WHERE space_id = ? AND status = 'parked' AND snoozed_until IS NOT NULL AND snoozed_until < ?`).bind(c.space, now),
+    c.db.prepare(`SELECT id, key FROM tasks WHERE space_id = ? AND status = 'inbox' AND updated_at < ?`).bind(c.space, cutoff),
+  ]);
+  for (const t of (expiredR.results ?? []) as { id: string; key: string; assignee_id: string }[]) {
     const r = await c.db.prepare(
       `UPDATE tasks SET status = 'ready', assignee_id = NULL, lease_expires_at = NULL, updated_at = ?
        WHERE id = ? AND status = 'in_progress' AND lease_expires_at < ?`).bind(now, t.id, now).run();
     if (r.meta.changes) await event(c, t.id, 'lease_expired', `No heartbeat for ${c.leaseMinutes} minutes, so ${t.key} went back to Ready.`, { previous_assignee: t.assignee_id }, null);
   }
-  // Snoozed tasks come back on their own when the date passes.
-  const woke = (await c.db.prepare(`SELECT key FROM tasks WHERE space_id = ? AND status = 'parked' AND snoozed_until IS NOT NULL AND snoozed_until < ?`)
-    .bind(c.space, now).all<{ key: string }>()).results;
-  for (const t of woke) await unparkTask(c, t.key, { system: true });
-  await tidy(c);
+  for (const t of (wokeR.results ?? []) as { key: string }[]) await unparkTask(c, t.key, { system: true });
+  if ((oldR.results ?? []).length) await tidy(c);
 }
 
 function leaseFor(c: Ctx, m: Member): string | null {
@@ -798,15 +801,18 @@ export async function assignMany(c: Ctx, input: { keys?: string[]; to?: string; 
  * plus the latest handoff note. Agents read this before working; the task page shows it.
  */
 async function claimInfo(c: Ctx, t: Task) {
-  const handoff = await c.db.prepare(
-    `SELECT e.type, e.note, e.data, e.created_at, m.name AS actor FROM events e LEFT JOIN members m ON m.id = e.actor_id
-     WHERE e.task_id = ? AND e.type IN ('released','taken_over','lease_expired') ORDER BY e.id DESC LIMIT 1`).bind(t.id)
-    .first<{ type: string; note: string | null; data: string; created_at: string; actor: string | null }>();
+  const held = holds(t);
+  const [handoff, holder, since, last] = await Promise.all([
+    c.db.prepare(
+      `SELECT e.type, e.note, e.data, e.created_at, m.name AS actor FROM events e LEFT JOIN members m ON m.id = e.actor_id
+       WHERE e.task_id = ? AND e.type IN ('released','taken_over','lease_expired') ORDER BY e.id DESC LIMIT 1`).bind(t.id)
+      .first<{ type: string; note: string | null; data: string; created_at: string; actor: string | null }>(),
+    held ? getMember(c, t.assignee_id!) : null,
+    held ? c.db.prepare(`SELECT created_at FROM events WHERE task_id = ? AND type IN ('claimed','taken_over') ORDER BY id DESC LIMIT 1`).bind(t.id).first<{ created_at: string }>() : null,
+    held ? c.db.prepare('SELECT max(created_at) AS at FROM events WHERE task_id = ? AND actor_id = ?').bind(t.id, t.assignee_id).first<{ at: string | null }>() : null,
+  ]);
   let claim = null;
-  if (holds(t)) {
-    const holder = await getMember(c, t.assignee_id!);
-    const since = await c.db.prepare(`SELECT created_at FROM events WHERE task_id = ? AND type IN ('claimed','taken_over') ORDER BY id DESC LIMIT 1`).bind(t.id).first<{ created_at: string }>();
-    const last = await c.db.prepare('SELECT max(created_at) AS at FROM events WHERE task_id = ? AND actor_id = ?').bind(t.id, holder.id).first<{ at: string | null }>();
+  if (holder) {
     const lastAt = last?.at ?? since?.created_at ?? t.updated_at;
     const now = (c.now ? c.now() : new Date()).getTime();
     const stale = holder.kind === 'human' && t.status === 'in_progress' && now - new Date(lastAt).getTime() > STALE_HUMAN_DAYS * 86_400_000;
@@ -1181,13 +1187,20 @@ export function references(baseUrl: string, t: Pick<Task, 'key' | 'title'>, proj
 export async function taskDetail(c: Ctx, key: string) {
   await sweepLeases(c);
   const t = await getTask(c, key);
-  const p = await getProject(c, t.project_id);
-  const [deliverables, events, rules, reviews, subtasks, sessions, notes] = await Promise.all([
+  // Everything below depends only on the task, so it goes to D1 in one wave instead of a dozen hops.
+  const [p, ws0, defs, parent, names, sharing, repo, deliverables, events, rules, reviews, subtasks, sessions, notes] = await Promise.all([
+    getProject(c, t.project_id),
+    getWorkspace(c),
+    kindsFor(c, t.project_id),
+    t.parent_id ? c.db.prepare('SELECT key, title, status FROM tasks WHERE id = ?').bind(t.parent_id).first() : null,
+    memberNames(c),
+    claimInfo(c, t),
+    projectRepo(c, t.project_id),
     c.db.prepare('SELECT url, title, created_at FROM deliverables WHERE task_id = ? ORDER BY created_at, rowid').bind(t.id).all(),
     c.db.prepare(`SELECT e.id, e.type, e.note, e.data, e.created_at, m.name AS actor, m.kind AS actor_kind
                   FROM events e LEFT JOIN members m ON m.id = e.actor_id WHERE e.task_id = ? ORDER BY e.id DESC LIMIT 50`).bind(t.id).all(),
     c.db.prepare(`SELECT r.id, r.text, r.created_at, p.key AS project FROM rules r JOIN projects p ON p.id = r.project_id
-                  WHERE r.project_id IN (?, ?) AND r.active = 1 ORDER BY p.kind DESC, r.created_at`).bind(p.id, c.space).all(),
+                  WHERE r.project_id IN (?, ?) AND r.active = 1 ORDER BY p.kind DESC, r.created_at`).bind(t.project_id, c.space).all(),
     c.db.prepare(`SELECT r.verdict, r.comment, r.what_was_wrong, r.created_at, m.name AS reviewer, r.via FROM reviews r
                   JOIN members m ON m.id = r.reviewer_id WHERE r.task_id = ? ORDER BY r.created_at`).bind(t.id).all(),
     c.db.prepare(`SELECT t.key, t.title, t.status, m.name AS assignee FROM tasks t LEFT JOIN members m ON m.id = t.assignee_id
@@ -1197,14 +1210,9 @@ export async function taskDetail(c: Ctx, key: string) {
     taskNotes(c.db, t.id),
   ]);
   const links = (deliverables.results as { url: string; title: string | null; created_at: string }[]).map((d) => ({ ...d, type: linkType(d.url) }));
-  const defs = await kindsFor(c, t.project_id);
   const kind = taskKind(t, links.map((d) => d.url), defs);
   const def = defs.find((d) => d.key === kind);
-  const parent = t.parent_id ? await c.db.prepare('SELECT key, title, status FROM tasks WHERE id = ?').bind(t.parent_id).first() : null;
-  const ws = p.kind === 'workspace' ? p : await getWorkspace(c);
-  const names = await memberNames(c);
-  const sharing = await claimInfo(c, t);
-  const repo = await projectRepo(c, t.project_id);
+  const ws = p.kind === 'workspace' ? p : ws0;
   return {
     ...publicTask(t, names),
     kind,
@@ -1268,23 +1276,24 @@ export async function listTasks(c: Ctx, f: { project?: string; status?: string; 
   // Older tasks have no stored kind; they are guessed below, so let them through here.
   // Kinds can differ per project, so the filter takes keys or names as given; older tasks have no
   // stored kind and are guessed below, so let them through here.
-  const byProject = await kindsByProject(c);
+  const byProjectP = kindsByProject(c);
+  const byProject = f.kind ? await byProjectP : null;
   const kinds = f.kind ? f.kind.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean) : null;
   if (kinds) {
-    const all = [...byProject.values()].flat();
+    const all = [...byProject!.values()].flat();
     const keys = [...new Set(kinds.flatMap((k) => all.filter((d) => matchKind([d], k)).map((d) => d.key)).concat(kinds))];
     kinds.splice(0, kinds.length, ...keys);
     where.push(`(t.kind IS NULL OR t.kind IN (${kinds.map(() => '?').join(',')}))`); args.push(...kinds);
   }
-  const rows = (await c.db.prepare(
+  const [rowsR, names, byKind] = await Promise.all([c.db.prepare(
     `SELECT t.*, p.key AS project_key, p.kind AS project_kind, pt.key AS parent_key,
        (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id) AS sub_total,
        (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.status IN ('done','declined')) AS sub_done
      FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN tasks pt ON pt.id = t.parent_id
      WHERE ${where.join(' AND ')}
-     ORDER BY t.priority, t.updated_at DESC LIMIT ?`).bind(...args, Math.min(f.limit ?? 200, 1000)).all<Task>()).results;
-  const names = await memberNames(c);
-  const out = rows.map((t) => publicTask(t, names, byProject));
+     ORDER BY t.priority, t.updated_at DESC LIMIT ?`).bind(...args, Math.min(f.limit ?? 200, 1000)).all<Task>(), memberNames(c), byProjectP]);
+  const rows = rowsR.results;
+  const out = rows.map((t) => publicTask(t, names, byKind));
   return kinds ? out.filter((t) => kinds.includes(t.kind)) : out;
 }
 
@@ -1346,25 +1355,48 @@ async function pickNext(c: Ctx, project?: string) {
 /** The decision inbox: everything waiting on a person. The home screen. */
 export async function inbox(c: Ctx) {
   await sweepLeases(c);
-  const names = await memberNames(c);
   const mine = c.me.id;
-  const reviews = (await c.db.prepare(
-    `SELECT t.* FROM tasks t WHERE t.space_id = ? AND t.status = 'review'
-     AND (t.reviewer_id = ? OR (t.reviewer_id IS NULL AND (t.assignee_id IS NULL OR t.assignee_id != ?)))
-     ORDER BY t.priority, t.updated_at`).bind(c.space, mine, mine).all<Task>()).results;
-  const questions = (await c.db.prepare(
-    `SELECT * FROM tasks WHERE space_id = ? AND status = 'blocked' AND (blocked_on_id = ? OR blocked_on_id IS NULL) ORDER BY priority, updated_at`)
-    .bind(c.space, mine).all<Task>()).results;
-  const proposals = (await c.db.prepare(`SELECT * FROM tasks WHERE space_id = ? AND status = 'inbox' ORDER BY priority, created_at`).bind(c.space).all<Task>()).results;
-  const flagged = (await c.db.prepare(
-    `SELECT * FROM tasks WHERE space_id = ? AND review_rounds >= ? AND status = 'in_progress' ORDER BY updated_at`).bind(c.space, MAX_REVIEW_ROUNDS).all<Task>()).results;
+  // One wave of reads instead of six sequential ones: on Cloudflare each await is a round trip to D1.
+  const [names, byProject, reviewsR, questionsR, proposalsR, flaggedR] = await Promise.all([
+    memberNames(c),
+    kindsByProject(c),
+    c.db.prepare(
+      `SELECT t.* FROM tasks t WHERE t.space_id = ? AND t.status = 'review'
+       AND (t.reviewer_id = ? OR (t.reviewer_id IS NULL AND (t.assignee_id IS NULL OR t.assignee_id != ?)))
+       ORDER BY t.priority, t.updated_at`).bind(c.space, mine, mine).all<Task>(),
+    c.db.prepare(
+      `SELECT * FROM tasks WHERE space_id = ? AND status = 'blocked' AND (blocked_on_id = ? OR blocked_on_id IS NULL) ORDER BY priority, updated_at`)
+      .bind(c.space, mine).all<Task>(),
+    c.db.prepare(`SELECT * FROM tasks WHERE space_id = ? AND status = 'inbox' ORDER BY priority, created_at`).bind(c.space).all<Task>(),
+    c.db.prepare(
+      `SELECT * FROM tasks WHERE space_id = ? AND review_rounds >= ? AND status = 'in_progress' ORDER BY updated_at`).bind(c.space, MAX_REVIEW_ROUNDS).all<Task>(),
+  ]);
+  const [reviews, questions, proposals, flagged] = [reviewsR.results, questionsR.results, proposalsR.results, flaggedR.results];
+  // Each review card needs its summary, links and notes: three queries for all cards together
+  // (ids passed as one JSON array, so any number of cards fits D1's limit on bound values).
+  const ids = JSON.stringify(reviews.map((t) => t.id));
+  const [subsR, allDelsR, allNotesR] = reviews.length ? await Promise.all([
+    c.db.prepare(`SELECT task_id, note FROM events WHERE id IN (SELECT MAX(id) FROM events WHERE task_id IN (SELECT value FROM json_each(?))
+                  AND type IN ('submitted','work_logged') GROUP BY task_id)`).bind(ids).all<{ task_id: string; note: string }>(),
+    c.db.prepare('SELECT task_id, url, title FROM deliverables WHERE task_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, rowid').bind(ids)
+      .all<{ task_id: string; url: string; title: string | null }>(),
+    c.db.prepare(`SELECT n.task_id, n.id, n.title, n.body, n.created_at, m.name AS author, m.kind AS author_kind FROM task_notes n
+                  LEFT JOIN members m ON m.id = n.added_by WHERE n.task_id IN (SELECT value FROM json_each(?)) ORDER BY n.created_at`).bind(ids)
+      .all<{ task_id: string; id: string; title: string | null; body: string; created_at: string; author: string | null; author_kind: Kind | null }>(),
+  ]) : [{ results: [] }, { results: [] }, { results: [] }];
+  const group = <T extends { task_id: string }>(rows: T[]) => {
+    const m = new Map<string, Omit<T, 'task_id'>[]>();
+    for (const { task_id, ...rest } of rows) { if (!m.has(task_id)) m.set(task_id, []); m.get(task_id)!.push(rest); }
+    return m;
+  };
+  const subOf = new Map((subsR.results as { task_id: string; note: string }[]).map((r) => [r.task_id, r.note]));
+  const delsOf = group(allDelsR.results as { task_id: string; url: string; title: string | null }[]);
+  const notesOf = group(allNotesR.results as { task_id: string; id: string; title: string | null; body: string; created_at: string; author: string | null; author_kind: Kind | null }[]);
   const withSummary = async (t: Task) => {
-    const sub = await c.db.prepare(`SELECT note FROM events WHERE task_id = ? AND type IN ('submitted','work_logged') ORDER BY id DESC LIMIT 1`).bind(t.id).first<{ note: string }>();
-    const dels = (await c.db.prepare('SELECT url, title FROM deliverables WHERE task_id = ?').bind(t.id).all<{ url: string; title: string | null }>()).results
-      .map((d) => ({ ...d, type: linkType(d.url) }));
-    const repo = await repoFor(t.project_id);
-    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url), await kindsFor(c, t.project_id)), summary: sub?.note ?? null, deliverables: ownLinks(t.key, dels), notes: await taskNotes(c.db, t.id),
-      mentions: mentions(`${t.brief}\n${sub?.note ?? ''}`, repo) };
+    const summary = subOf.get(t.id) ?? null;
+    const dels = (delsOf.get(t.id) ?? []).map((d) => ({ ...d, type: linkType(d.url) }));
+    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url), byProject.get(t.project_id)), summary, deliverables: ownLinks(t.key, dels), notes: notesOf.get(t.id) ?? [],
+      mentions: mentions(`${t.brief}\n${summary ?? ''}`, await repoFor(t.project_id)) };
   };
   // Briefs and summaries name PRs as "acme/site#12" or "PR #12": hand the links over with the card (refs.ts).
   const repos = new Map<string, Promise<Repo | null>>();
@@ -1438,23 +1470,31 @@ export async function reminders(c: Ctx): Promise<string[]> {
 }
 
 export async function whoami(c: Ctx) {
-  const projects = await listProjects(c);
-  const sponsor = c.me.sponsor_id ? await getMember(c, c.me.sponsor_id) : null;
+  const ai = c.me.kind === 'ai';
+  // Independent reads in one wave (each await is a round trip to D1 on Cloudflare).
+  const [projects, sponsor, w, k, cont, caught] = await Promise.all([
+    listProjects(c),
+    c.me.sponsor_id ? getMember(c, c.me.sponsor_id) : null,
+    getWorkspace(c),
+    listKinds(c),
+    ai ? continuous.status(c, c.me) : null,
+    ai ? sinceLastSession(c) : null,
+  ]);
   return {
     id: c.me.id, name: c.me.name, kind: c.me.kind, platform: c.me.platform, roles: parseList(c.me.roles), github_login: c.me.github_login ?? null,
     sponsor: sponsor ? sponsor.name : null,
-    workspace: await getWorkspace(c).then((w) => ({ id: w.id, key: w.key, name: w.name })),
+    workspace: { id: w.id, key: w.key, name: w.name },
     lane: parseList(c.me.scope),
     projects: projects.map((p) => ({ key: p.key, name: p.name, focus: !!p.focus, ends_at: p.ends_at })),
-    kinds_of_work: await listKinds(c).then((k) => ({
+    kinds_of_work: {
       workspace: k.workspace.kinds.map((d) => d.key),
       ...(k.projects.some((p) => p.own) ? { projects: Object.fromEntries(k.projects.filter((p) => p.own).map((p) => [p.key, p.kinds.map((d) => d.key)])) } : {}),
-    })),
+    },
     board: c.baseUrl,
     // Agents learn continuous mode here (and in every MCP reply), so nobody has to tell them.
-    ...(c.me.kind === 'ai' ? { continuous: continuous.forAgent(await continuous.status(c, c.me), { platform: c.me.platform, hasWake: !!c.me.callback, sponsor: sponsor?.name }) } : {}),
+    ...(ai ? { continuous: continuous.forAgent(cont, { platform: c.me.platform, hasWake: !!c.me.callback, sponsor: sponsor?.name }) } : {}),
     // The agent's standup: what changed for it since it last called (KD-51).
-    ...(c.me.kind === 'ai' ? { since_last_session: await sinceLastSession(c) } : {}),
+    ...(ai ? { since_last_session: caught } : {}),
   };
 }
 
