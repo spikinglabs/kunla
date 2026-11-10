@@ -917,7 +917,7 @@ async function viewTask(key) {
         ${raw(t.parent ? html`<span>/</span><a href="#/t/${t.parent.key}">${t.parent.key} ${t.parent.title}</a>` : '')}<span>/</span><span class="mono">${t.key}</span></div>
       <h1>${t.title}</h1>
       <div class="row"><span class="pill ${t.status === 'review' ? 'lime' : t.status === 'blocked' ? 'warn' : t.status === 'done' ? 'on' : ''}">${STATUS[t.status]}</span>${raw(hint(STATUS_HINT[t.status], `What ${STATUS[t.status]} means`))}
-        <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join([...(t.kinds_here || []), ...((t.kinds_here || []).some((x) => x.key === t.kind) ? [] : [{ key: t.kind, label: kindName(t.kind) }])].map((x) => html`<option value="${x.key}" ${t.kind === x.key ? 'selected' : ''}>${x.label}</option>`))}</select></label>${raw(!decision && OPEN.has(t.status) ? html`<button type="button" class="pill later-btn" data-act="click:later" title="Put it off: it leaves the briefing and agents leave it alone until it comes back">${raw(CLOCK)}Later…</button>` : '')}
+        <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join([...(t.kinds_here || []), ...((t.kinds_here || []).some((x) => x.key === t.kind) ? [] : [{ key: t.kind, label: kindName(t.kind) }])].map((x) => html`<option value="${x.key}" ${t.kind === x.key ? 'selected' : ''}>${x.label}</option>`))}</select></label>${raw(!decision && OPEN.has(t.status) ? html`<button type="button" class="pill later-btn" data-act="click:later" title="Put it off: it leaves the briefing and agents leave it alone until it comes back">${raw(CLOCK)}Later…</button>` : '')}${raw(t.status === 'ready' && !t.claim && me.kind === 'human' ? '<button type="button" class="pill later-btn" data-act="click:unaccept" title="Not ready after all: it goes back to the proposals, where it can be accepted or declined">↩ Back to Proposed</button>' : '')}
         <div class="people"><span>${raw(who(t.assignee, 'Nobody yet'))}</span>${raw(t.reviewer ? html`<span class="muted">reviewed by</span><span>${raw(who(t.reviewer))}</span>` : '')}
         ${raw(t.created_by ? html`<span class="muted">asked by ${t.created_by.name}</span>` : '')}</div></div>
       ${raw(decision ? html`<div class="card" style="margin-top:24px">${raw(decision)}</div>` : '')}
@@ -958,6 +958,7 @@ async function viewTask(key) {
   bind($app, {
     ...decisionHandlers(reload),
     later: () => showLater(t.key, reload),
+    unaccept: async () => { await api('PATCH', `/api/tasks/${t.key}`, { status: 'inbox' }); toast(`${t.key} is a proposal again. Agents leave it alone until it is accepted.`); reload(); },
     kind: async (el) => { await api('PATCH', `/api/tasks/${t.key}`, { kind: el.value }); toast(`${t.key} is ${kindName(el.value).toLowerCase()} work now.`); reload(); },
     unpark: async () => { const r = await api('POST', `/api/tasks/${t.key}/unpark`); toast(`${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     takeit: async () => { await api('POST', `/api/tasks/${t.key}/claim`); toast(`${t.key} is yours. Agents will skip it.`); reload(); },
