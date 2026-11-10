@@ -628,3 +628,9 @@ details.notes[open] .nprev { display: none; }
 .selbar { position: sticky; bottom: 16px; z-index: 20; margin-top: 16px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 12px 30px -14px rgba(0,0,0,.35); border-left: 3px solid var(--lime); }
 .selbar select { width: auto; min-width: 200px; max-width: 100%; flex: 0 1 auto; }
 @media (max-width: 760px) { .selbar { bottom: calc(84px + env(safe-area-inset-bottom)); } }
+
+/* KD-81: Briefing filtered to one project. One line of pills that scrolls sideways on a phone. */
+.brief-filter { display: flex; gap: 6px; margin: 0 0 14px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.brief-filter::-webkit-scrollbar { display: none; }
+.brief-filter .pill { flex: none; cursor: pointer; font: inherit; font-size: 13px; background: none; color: inherit; }
+.brief-filter .pill.on { background: var(--ink); color: var(--canvas); }

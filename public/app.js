@@ -503,12 +503,13 @@ function showLater(key, after, skip) {
 }
 
 // ---------- briefing ----------
-function headline(n, brief, pulse) {
+function headline(n, brief, pulse, project) {
   const h = new Date().getHours();
   const hi = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
   const first = firstName(me.name);
-  if (!n) return html`${hi}, ${first}. <em>Nothing</em> needs you.`;
-  return html`${hi}, ${first}. <em>${plural(n, 'decision')}</em> ${n === 1 ? 'needs' : 'need'} you.`;
+  const where = project ? ` in ${project}` : '';
+  if (!n) return html`${hi}, ${first}. <em>Nothing</em>${where} needs you.`;
+  return html`${hi}, ${first}. <em>${plural(n, 'decision')}</em>${where} ${n === 1 ? 'needs' : 'need'} you.`;
 }
 
 function subline(brief, pulse) {
@@ -596,6 +597,16 @@ function deckTrack(track, { onChange }) {
   };
 }
 
+// Briefing narrowed to one project (KD-81). Task keys start with their project's key (KD-60), so the
+// deck, the asks and the finished list all filter by key without asking the server again.
+// Remembered per workspace; tasks with no project carry the workspace key.
+const BRIEF_PROJECT_KEY = 'kunla.briefProject';
+const briefProject = {
+  get: () => { try { return JSON.parse(localStorage.getItem(BRIEF_PROJECT_KEY) || '{}')[me.workspace.key] || ''; } catch { return ''; } },
+  set: (k) => { try { const all = JSON.parse(localStorage.getItem(BRIEF_PROJECT_KEY) || '{}'); if (k) all[me.workspace.key] = k; else delete all[me.workspace.key]; localStorage.setItem(BRIEF_PROJECT_KEY, JSON.stringify(all)); } catch {} },
+};
+const keyIn = (key, project) => !!key && key.slice(0, key.lastIndexOf('-')) === project;
+
 async function viewBriefing() {
   renderShell('');
   const [inbox, brief, pulse, rules, prog, ready, team] = await Promise.all([
@@ -608,8 +619,22 @@ async function viewBriefing() {
   const stats = [...prog.filter((x) => !x.workspace), ...prog.filter((x) => x.workspace && Object.keys(x.counts).length).map((x) => ({ ...x, name: 'No project' }))]
     .map((x) => ({ project: { key: x.key, name: x.name }, counts: x.counts }));
   decisionCount = inbox.count; renderShell('');
-  const items = inbox.items;
+  // The project pills: every project with something waiting on you, in focus order; "No project" last.
+  const projOf = (key) => key.slice(0, key.lastIndexOf('-'));
+  const pkeys = [...new Set([...projects.map((p) => p.key), me.workspace.key])];
+  const nameOf = (k) => k === me.workspace.key ? 'No project' : (projects.find((p) => p.key === k)?.name ?? k);
+  const waiting = new Map();
+  for (const it of inbox.items) { const k = projOf(it.task.key); waiting.set(k, (waiting.get(k) || 0) + 1); }
+  let only = briefProject.get();
+  if (only && !pkeys.includes(only)) { only = ''; briefProject.set(''); }
+  const choices = pkeys.filter((k) => waiting.get(k) || k === only);
+  const items = only ? inbox.items.filter((it) => keyIn(it.task.key, only)) : inbox.items;
+  const askList = only ? (brief.asks || []).filter((a) => !a.task || keyIn(a.task.key, only) || keyIn(a.other?.key, only)) : brief.asks;
+  const finished = only ? brief.finished.filter((f) => keyIn(f.key, only)) : brief.finished;
   if (deck.i >= items.length) deck.i = 0;
+  const pills = choices.length > 1 || only ? html`<div class="brief-filter" role="radiogroup" aria-label="Show decisions from">
+      <button class="pill ${only ? '' : 'on'}" role="radio" aria-checked="${String(!only)}" data-act="click:only" data-k="">All <span class="mono" style="opacity:.6">${inbox.items.length}</span></button>
+      ${join(choices.map((k) => html`<button class="pill ${only === k ? 'on' : ''}" role="radio" aria-checked="${String(only === k)}" data-act="click:only" data-k="${k}">${nameOf(k)} <span class="mono" style="opacity:.6">${waiting.get(k) || 0}</span></button>`))}</div>` : '';
   const active = rules.filter((r) => r.active);
   const reach = active.reduce((s, r) => s + (r.sent_with || 0), 0);
   const order = { working: 0, blocked: 1, waiting: 2, idle: 3 };
@@ -617,22 +642,23 @@ async function viewBriefing() {
 
   $app.innerHTML = html`<section class="hello">
       <div class="eyebrow">${new Date().toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</div>
-      <h1 style="margin-top:12px">${raw(headline(items.length, brief, pulse))}</h1>
+      <h1 style="margin-top:12px">${raw(headline(items.length, brief, pulse, only && nameOf(only)))}</h1>
       <p class="sub">${raw(subline(brief, pulse))}</p>
       <div class="row" id="elsewhere" style="margin-top:16px"></div>
     </section>
     <div class="brief">
       <section>
+        ${raw(pills)}
         ${raw(items.length ? html`<div class="deck-top"><span class="eyebrow">${deck.i + 1} of ${items.length}</span>
           <div class="dots">${join(items.map((it, i) => html`<button class="${i === deck.i ? 'on' : ''}" data-act="click:go" data-i="${i}" aria-label="Decision ${i + 1}: ${it.task.key}"></button>`))}</div></div>
           <div class="deck" tabindex="-1" aria-roledescription="carousel">${join(items.map((it, i) => html`<div class="slide" aria-roledescription="slide" aria-label="${i + 1} of ${items.length}">${raw(decisionCard(it))}</div>`))}</div>`
         : html`<div class="card clear"><div class="big"><svg width="26" height="26" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-          <h2>All clear</h2><p class="muted">Nothing waits on you. Agents keep the record up to date on their own.</p>
+          <h2>All clear</h2><p class="muted">${only ? `Nothing in ${nameOf(only)} waits on you.` : 'Nothing waits on you. Agents keep the record up to date on their own.'}</p>
           <button class="btn ink" data-act="click:palette">Delegate something <kbd>⌘K</kbd></button></div>`)}
         ${raw(continuousNudge(readyFree))}
-        ${raw(asksCard(brief.asks))}
-        ${raw(brief.finished.length ? html`<div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Finished ${sinceWords(brief)}</h2><a class="muted" href="#/map" style="font-size:13px">See the map</a></div>
-          <div class="done-list">${join(brief.finished.map((f) => html`<a href="#/t/${f.key}"><span class="key">${f.key}</span><span class="t grow">${f.title}</span><span class="muted" style="font-size:13px">${f.worker ?? ''}</span></a>`))}</div></div>` : '')}
+        ${raw(asksCard(askList))}
+        ${raw(finished.length ? html`<div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Finished ${sinceWords(brief)}</h2><a class="muted" href="#/map" style="font-size:13px">See the map</a></div>
+          <div class="done-list">${join(finished.map((f) => html`<a href="#/t/${f.key}"><span class="key">${f.key}</span><span class="t grow">${f.title}</span><span class="muted" style="font-size:13px">${f.worker ?? ''}</span></a>`))}</div></div>` : '')}
       </section>
       <aside class="side">
         <div class="card pad"><div class="section-t"><h2>Right now</h2><a class="muted" href="#/map" style="font-size:13px">Map</a></div>
@@ -661,6 +687,7 @@ async function viewBriefing() {
   bind($app, {
     ...decisionHandlers(viewBriefing, () => track?.go(track.target() + 1)),
     go: (el) => track?.go(Number(el.dataset.i)),
+    only: (el) => { briefProject.set(el.dataset.k); deck.i = 0; viewBriefing(); },
     palette: () => openPalette(),
     ...nudgeHandlers(readyFree, viewBriefing),
   });
