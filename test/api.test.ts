@@ -163,6 +163,18 @@ describe('the record of work', () => {
     expect(tr.body.status).toBe('ready');
   });
 
+  it('a person can move a task to any state they set by hand (KD-57)', async () => {
+    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Wander' });
+    await tool(ai, 'claim_task', { key: 'MKT-1' });
+    const back = await call('PATCH', '/api/tasks/MKT-1', human, { status: 'inbox' });
+    expect(back.body.status).toBe('inbox');
+    expect(back.body.assignee ?? back.body.assignee_id ?? null).toBeNull();
+    for (const s of ['ready', 'in_progress', 'declined', 'ready', 'done']) {
+      const r = await call('PATCH', '/api/tasks/MKT-1', human, { status: s });
+      expect(r.body.status).toBe(s);
+    }
+  });
+
   it('project status reports progress and the agent-recorded share', async () => {
     await call('POST', '/api/tasks', human, { project: 'MKT', title: 'A' });
     await tool(ai, 'claim_task', { key: 'MKT-1' });

@@ -674,7 +674,7 @@ export async function updateTask(c: Ctx, key: string, input: {
     if (t.status === 'blocked' && input.status !== 'blocked') { fields.blocked_question = null; fields.blocked_on_id = null; }
     if (input.status === 'ready') { fields.assignee_id = fields.assignee_id ?? null; fields.lease_expires_at = null; }
     // A person can take back an accepted task (KD-57): it is a proposal again, and no agent keeps a lease on it.
-    if (input.status === 'inbox') fields.lease_expires_at = null;
+    if (input.status === 'inbox') { fields.lease_expires_at = null; if (holds(t)) fields.assignee_id = fields.assignee_id ?? null; }
     if (input.status === 'in_progress' && !t.assignee_id) { fields.assignee_id = c.me.id; fields.lease_expires_at = leaseFor(c, c.me); }
   }
   // Any update by the holder also renews the lease.
