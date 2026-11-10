@@ -5,6 +5,9 @@
 # Optional variable KUNLA_DOMAIN (e.g. kunla.example.com): serve Kunla on that hostname as a Workers custom
 # domain. The domain's zone must be in the same Cloudflare account, and the API token needs Zone: Workers Routes
 # Edit, Zone: DNS Edit and Zone: Zone Read for it.
+# Optional variable KUNLA_PLACEMENT_REGION (e.g. aws:us-east-1): run the Worker next to that cloud region, where
+# your D1 database lives, instead of letting Smart Placement find it. ENAM databases sit near aws:us-east-1,
+# WEUR near aws:eu-west-1 or aws:eu-central-1.
 name: Deploy
 on:
   workflow_dispatch:
@@ -27,6 +30,9 @@ jobs:
       - name: Use your domain
         if: vars.KUNLA_DOMAIN != ''
         run: sed -i '/^compatibility_date/a routes = [{ pattern = "${{ vars.KUNLA_DOMAIN }}", custom_domain = true }]' wrangler.toml
+      - name: Pin where the Worker runs
+        if: vars.KUNLA_PLACEMENT_REGION != ''
+        run: sed -i 's/^mode = "smart"$/region = "${{ vars.KUNLA_PLACEMENT_REGION }}"/' wrangler.toml
       - run: npm run deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

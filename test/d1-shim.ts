@@ -20,6 +20,8 @@ class Stmt {
     const r = this.s().run(...(this.args as any[]));
     return { success: true, results: [], meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
   }
+  // What D1's batch gives back for one statement: rows for a read, changes for a write.
+  async batched() { return /^\s*(SELECT|WITH)\b/i.test(this.sql) ? this.all() : this.run(); }
   async raw() { return this.s().all(...(this.args as any[])).map((r: any) => Object.values(r)); }
 }
 
@@ -35,7 +37,7 @@ export function makeD1(path = ':memory:', opts: { before?: string } = {}): D1Dat
   migrate(opts.before);
   return {
     prepare: (sql: string) => new Stmt(db, sql),
-    batch: async (stmts: any[]) => Promise.all(stmts.map((s) => s.run())),
+    batch: async (stmts: any[]) => Promise.all(stmts.map((s) => s.batched())),
     exec: async (sql: string) => { db.exec(sql); return { count: 0, duration: 0 }; },
     migrate: () => migrate(),
   } as unknown as D1Database;
