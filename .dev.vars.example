@@ -1,0 +1,2 @@
+# Secrets Kunla reads. For local dev, copy to .dev.vars. The Deploy to Cloudflare button asks for these.
+SETUP_TOKEN=change-me-to-long-random-text

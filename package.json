@@ -9,8 +9,8 @@
     "kunla": "plugins/claude-code/bin/kunla.mjs"
   },
   "scripts": {
-    "dev": "wrangler d1 migrations apply kunla --local && wrangler dev",
-    "deploy": "wrangler d1 migrations apply kunla --remote && wrangler deploy",
+    "dev": "wrangler d1 migrations apply DB --local && wrangler dev",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -23,5 +23,15 @@
     "typescript": "^5.6.0",
     "vitest": "^2.1.0",
     "wrangler": "^4.0.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "SETUP_TOKEN": {
+        "description": "Any long random text (a password manager can make one). Kunla asks for it once, when you set it up at **/app/**, so nobody else can claim your Kunla first. Keep it somewhere safe."
+      },
+      "LEASE_MINUTES": {
+        "description": "Minutes an AI's claim on a task stays alive without a heartbeat. `30` is a good default."
+      }
+    }
   }
 }
