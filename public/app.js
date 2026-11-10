@@ -1094,7 +1094,12 @@ async function viewTasks(project) {
         <div class="rows">${join(rows.slice(0, 200).map((t) => trow(t) + kids(t.key).map((k) => trow(k, true)).join('')))}${raw(rows.length > 200 ? `<p class="muted pad">${rows.length - 200} more. Narrow the filter.</p>` : '')}</div></section>`; }))
         : raw(`<div class="card clear"><h2>Nothing here</h2><p class="muted">${tv.filter === 'stuck' ? 'Nothing is stuck. Good.' : 'Try another filter.'}</p></div>`);
     }
+    // Redrawing replaces the board, which would snap its columns back to the start; keep the reader where they were.
+    const redraw = !!$app.querySelector('.tlist'), keepLeft = $app.querySelector('.tlist .cols')?.scrollLeft || 0, keepY = window.scrollY;
     $app.innerHTML = head + `<div class="tlist ${sel.on ? 'selecting' : ''}">${body.__raw ?? body}</div>` + (sel.on ? selBar(shown) : '');
+    const board = $app.querySelector('.tlist .cols');
+    if (board && keepLeft) board.scrollLeft = keepLeft;
+    if (redraw) window.scrollTo(window.scrollX, keepY);
     bind($app, {
       new: () => openPalette(p && project !== me.workspace.key ? `#${p.key} ` : ''),
       ...nudgeHandlers(readyFree, draw),
