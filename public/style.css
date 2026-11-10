@@ -589,6 +589,10 @@ a.inline-link.mention { display: inline; padding: 0; border: 0; border-radius: 0
 .kind.k-discussion, .kind.k-learning, .kind.k-reading { border-style: dashed; }
 .later-btn { background: var(--surface); color: var(--ink-2); font-size: 13px; cursor: pointer; gap: 5px; }
 .later-btn:hover { color: var(--ink); }
+.statuspick select { height: 26px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--rule-2); background: var(--surface); color: var(--ink); font-size: 13px; font-weight: 600; cursor: pointer; }
+.statuspick.lime select { background: var(--lime); color: var(--on-lime); border-color: var(--lime); }
+.statuspick.on select { background: var(--ink); color: var(--canvas); border-color: var(--ink); }
+.statuspick.warn select { border-color: var(--warn); color: var(--warn); }
 .kindpick select { height: 26px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--rule-2); background: var(--surface); color: var(--ink); font-size: 13px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .ltype { font: 600 10.5px/1 var(--mono); text-transform: uppercase; color: var(--muted); }

@@ -916,8 +916,8 @@ async function viewTask(key) {
       <div class="crumbs"><a href="#/tasks">${t.workspace.name}</a>${raw(t.project ? html`<span>/</span><a href="#/tasks/${p.key}">${p.name}</a>` : '')}
         ${raw(t.parent ? html`<span>/</span><a href="#/t/${t.parent.key}">${t.parent.key} ${t.parent.title}</a>` : '')}<span>/</span><span class="mono">${t.key}</span></div>
       <h1>${t.title}</h1>
-      <div class="row"><span class="pill ${t.status === 'review' ? 'lime' : t.status === 'blocked' ? 'warn' : t.status === 'done' ? 'on' : ''}">${STATUS[t.status]}</span>${raw(hint(STATUS_HINT[t.status], `What ${STATUS[t.status]} means`))}
-        <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join([...(t.kinds_here || []), ...((t.kinds_here || []).some((x) => x.key === t.kind) ? [] : [{ key: t.kind, label: kindName(t.kind) }])].map((x) => html`<option value="${x.key}" ${t.kind === x.key ? 'selected' : ''}>${x.label}</option>`))}</select></label>${raw(!decision && OPEN.has(t.status) ? html`<button type="button" class="pill later-btn" data-act="click:later" title="Put it off: it leaves the briefing and agents leave it alone until it comes back">${raw(CLOCK)}Later…</button>` : '')}
+      <div class="row">${raw(me.kind === 'human' ? statusPick(t) : html`<span class="pill ${statusTone(t.status)}">${STATUS[t.status]}</span>`)}${raw(hint(STATUS_HINT[t.status], `What ${STATUS[t.status]} means`))}
+        <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join([...(t.kinds_here || []), ...((t.kinds_here || []).some((x) => x.key === t.kind) ? [] : [{ key: t.kind, label: kindName(t.kind) }])].map((x) => html`<option value="${x.key}" ${t.kind === x.key ? 'selected' : ''}>${x.label}</option>`))}</select></label>
         <div class="people"><span>${raw(who(t.assignee, 'Nobody yet'))}</span>${raw(t.reviewer ? html`<span class="muted">reviewed by</span><span>${raw(who(t.reviewer))}</span>` : '')}
         ${raw(t.created_by ? html`<span class="muted">asked by ${t.created_by.name}</span>` : '')}</div></div>
       ${raw(decision ? html`<div class="card" style="margin-top:24px">${raw(decision)}</div>` : '')}
@@ -958,6 +958,17 @@ async function viewTask(key) {
   bind($app, {
     ...decisionHandlers(reload),
     later: () => showLater(t.key, reload),
+    status: async (el) => {
+      const to = el.value;
+      if (to === t.status) return;
+      if (to === 'parked') { el.value = t.status; return showLater(t.key, reload); }
+      try {
+        // Done from In review is an approval, so it goes through review (and merges the PR where that is the rule).
+        if (to === 'done' && t.status === 'review') await api('POST', `/api/tasks/${t.key}/review`, { verdict: 'approved' });
+        else await api('PATCH', `/api/tasks/${t.key}`, { status: to });
+      } catch (err) { el.value = t.status; throw err; }
+      toast(`${t.key} is ${STATUS[to]} now.`); reload();
+    },
     kind: async (el) => { await api('PATCH', `/api/tasks/${t.key}`, { kind: el.value }); toast(`${t.key} is ${kindName(el.value).toLowerCase()} work now.`); reload(); },
     unpark: async () => { const r = await api('POST', `/api/tasks/${t.key}/unpark`); toast(`${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     takeit: async () => { await api('POST', `/api/tasks/${t.key}/claim`); toast(`${t.key} is yours. Agents will skip it.`); reload(); },
@@ -973,6 +984,16 @@ async function viewTask(key) {
     copy: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); toast('Copied.'); } catch { toast(el.dataset.v); } },
   });
   $app.querySelectorAll('textarea[name=answer]').forEach((ta) => ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ta.form.requestSubmit(); }));
+}
+
+// ---------- status picker (KD-57) ----------
+// People can move a task to any state they can set by hand. Waiting and In review need a question or the work,
+// so they only show while the task is already there; Later… opens the put-off sheet.
+const statusTone = (s) => (s === 'review' ? 'lime' : s === 'blocked' ? 'warn' : s === 'done' ? 'on' : '');
+const PICKABLE = ['inbox', 'ready', 'in_progress', 'blocked', 'review', 'done', 'declined', 'parked'];
+function statusPick(t) {
+  const opts = PICKABLE.filter((s) => s === t.status || !['blocked', 'review'].includes(s));
+  return html`<label class="statuspick ${statusTone(t.status)}" title="Change status"><span class="sr">Status</span><select data-act="change:status" aria-label="Status">${join(opts.map((s) => html`<option value="${s}" ${t.status === s ? 'selected' : ''}>${s === 'parked' && t.status !== 'parked' ? 'Later…' : STATUS[s]}</option>`))}</select></label>`;
 }
 
 // ---------- sharing work: who holds a task, handoffs, take-overs (KD-36) ----------
