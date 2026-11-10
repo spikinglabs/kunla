@@ -38,6 +38,12 @@ Open http://localhost:8787/app/. On a fresh database you'll see the setup screen
 
 ## Deploy to your Cloudflare account
 
+**One click:** [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/spikinglabs/kunla)
+
+Cloudflare copies Kunla into your GitHub account, creates the D1 database, asks you for a setup token (any long random text; keep it), applies the migrations and deploys. Open the Worker's URL plus `/app/` and set up with that token. Every push to your copy deploys again, so upgrading is pulling the new release into your copy.
+
+**By hand:**
+
 ```sh
 npx wrangler login
 npx wrangler d1 create kunla          # copy the database_id into wrangler.toml
