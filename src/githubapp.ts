@@ -19,7 +19,7 @@
 // install is really its admin's (KUNLA_CLOUD_HOOK). Because strangers share the app, an install is linked only
 // after GitHub confirms, through the user sign-in GitHub runs during installation, that the person installing
 // can see that installation.
-import { KunlaError, type Ctx } from './core';
+import { KunlaError, isOwner, type Ctx } from './core';
 
 const APP_KEY = 'github_app';                 // deployment-wide: {id, slug, pem, webhook_secret, ...}
 const STATE_PREFIX = 'github_app_state:';     // one-time state for the manifest and install round trips
@@ -111,6 +111,8 @@ export async function start(c: Ctx, input: { org?: string; merge?: boolean; name
   if (!isAdmin(c)) throw new KunlaError(403, 'Only admins can connect GitHub.');
   const app = await getApp(c.db);
   if (app) return { install_url: `${app.html_url}/installations/new?state=${await newState(c.db, { space: c.space, kind: 'install' })}` };
+  // Registering the app is for the whole Kunla (every workspace uses it), so it is the owner's call.
+  if (!isOwner(c.me)) throw new KunlaError(403, "Only this Kunla's owner can register its GitHub App. Ask them to connect GitHub once; then admins install it.");
   const org = String(input.org ?? '').trim();
   if (org && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(org)) throw new KunlaError(400, 'That is not a GitHub organization name.');
   const merge = input.merge !== false;

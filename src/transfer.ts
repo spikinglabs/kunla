@@ -90,7 +90,8 @@ export async function importWorkspace(db: D1Database, data: unknown, opts: { fre
     t = (name: string) => (Array.isArray(remapped[name]) ? remapped[name] : []);
   }
 
-  // Nothing may clash: keys stay unique across a Kunla, and ids and token hashes are global too.
+  // Nothing may clash: workspace keys, ids and token hashes are unique across a Kunla. Project and task keys only
+  // need to be unique inside their workspace, and the imported one is a workspace of its own (KD-70).
   const clash = async (sql: string, values: unknown[]) => {
     if (!values.length) return null;
     const q = db.prepare(sql.replace('$', 'SELECT value FROM json_each(?1)'));
@@ -98,11 +99,10 @@ export async function importWorkspace(db: D1Database, data: unknown, opts: { fre
     return row ? Object.values(row)[0] : null;
   };
   const checks: [string, string, unknown[]][] = [
-    ['project key', 'SELECT key FROM projects WHERE key IN ($) AND id != ?2', t('projects').map((p) => p.key)],
+    ['workspace key', `SELECT key FROM projects WHERE kind = 'workspace' AND key IN ($) AND id != ?2`, t('projects').filter((p) => p.kind === 'workspace').map((p) => p.key)],
     ['project', 'SELECT id FROM projects WHERE id IN ($)', t('projects').map((p) => p.id).filter((x) => x !== starter)],
     ['member', 'SELECT id FROM members WHERE id IN ($)', t('members').map((m) => m.id)],
     ['task', 'SELECT key FROM tasks WHERE id IN ($)', t('tasks').map((x) => x.id)],
-    ['task key', 'SELECT key FROM tasks WHERE key IN ($)', t('tasks').map((x) => x.key)],
     ['token', 'SELECT id FROM tokens WHERE token_hash IN ($)', t('tokens').map((x) => x.token_hash)],
   ];
   for (const [what, sql, values] of checks) {
@@ -165,4 +165,34 @@ function chunks(rows: Record<string, unknown>[], limit: number) {
   }
   if (cur.length) out.push(cur);
   return out;
+}
+
+/**
+ * Delete a workspace and everything in it, for good (Kunla Cloud, when a pilot team leaves; KD-70). Children go
+ * first so every foreign key holds; one D1 batch, so it all happens or nothing does. Its settings (plan, GitHub
+ * links) are keyed by its id. The export above is how a team keeps a copy first.
+ */
+export async function deleteWorkspaceData(db: D1Database, space: string) {
+  const ws = await db.prepare(`SELECT id, key FROM projects WHERE id = ? AND kind = 'workspace'`).bind(space).first<{ id: string; key: string }>();
+  if (!ws) throw new KunlaError(404, 'No such workspace.');
+  const inTasks = 'task_id IN (SELECT id FROM tasks WHERE space_id = ?1)';
+  const inMembers = 'member_id IN (SELECT id FROM members WHERE space_id = ?1)';
+  const sql = [
+    `DELETE FROM deliverables WHERE ${inTasks}`,
+    `DELETE FROM reviews WHERE ${inTasks}`,
+    `DELETE FROM task_sessions WHERE ${inTasks}`,
+    `DELETE FROM task_notes WHERE ${inTasks}`,
+    'DELETE FROM waits WHERE space_id = ?1',
+    'DELETE FROM assumptions WHERE space_id = ?1',
+    'DELETE FROM events WHERE space_id = ?1',
+    'DELETE FROM rules WHERE project_id IN (SELECT id FROM projects WHERE space_id = ?1)',
+    'DELETE FROM tasks WHERE space_id = ?1',
+    `DELETE FROM tokens WHERE ${inMembers}`,
+    `DELETE FROM oauth_codes WHERE ${inMembers}`,
+    'DELETE FROM members WHERE space_id = ?1',
+    'DELETE FROM projects WHERE space_id = ?1',
+    "DELETE FROM settings WHERE key LIKE '%' || ?1 || '%'",
+  ];
+  await db.batch(sql.map((q) => db.prepare(q).bind(space)));
+  return { deleted: ws.key };
 }

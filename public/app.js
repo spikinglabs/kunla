@@ -293,7 +293,8 @@ function renderShell(view) {
 // ---------- workspaces ----------
 // A workspace is a hard boundary: its own people, agents and data, reached with its own token.
 // Several can live in this Kunla, and others can be on other deployments. The browser keeps one
-// token per workspace and asks each one directly; the server never links your memberships.
+// token per workspace and asks each one directly. Signing in with Google or Microsoft fills it with every
+// workspace that knows your email (KD-29).
 const SPACES_KEY = 'kunla.spaces';
 const loadSpaces = () => { try { return JSON.parse(localStorage.getItem(SPACES_KEY) || '[]'); } catch { return []; } };
 const saveSpaces = (l) => { try { localStorage.setItem(SPACES_KEY, JSON.stringify(l)); } catch {} };
@@ -1105,7 +1106,7 @@ async function viewTask(key) {
   const subDone = subs.filter((x) => ['done', 'declined'].includes(x.status)).length;
   $app.innerHTML = html`<div class="task"><article>
       <div class="crumbs"><a href="#/tasks">${t.workspace.name}</a>${raw(t.project ? html`<span>/</span><a href="#/tasks/${p.key}">${p.name}</a>` : '')}
-        ${raw(t.parent ? html`<span>/</span><a href="#/t/${t.parent.key}">${t.parent.key} ${t.parent.title}</a>` : '')}<span>/</span><span class="mono">${t.key}</span></div>
+        ${raw(t.parent ? html`<span>/</span><a href="#/t/${t.parent.key}">${t.parent.key} ${t.parent.title}</a>` : '')}<span>/</span><span class="mono" title="${t.full_key ? `${t.full_key} from other workspaces` : ''}">${t.key}</span></div>
       <h1>${t.title}</h1>
       <div class="row">${raw(me.kind === 'human' ? statusPick(t) : html`<span class="pill ${statusTone(t.status)}">${STATUS[t.status]}</span>`)}${raw(hint(STATUS_HINT[t.status], `What ${STATUS[t.status]} means`))}
         <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join([...(t.kinds_here || []), ...((t.kinds_here || []).some((x) => x.key === t.kind) ? [] : [{ key: t.kind, label: kindName(t.kind) }])].map((x) => html`<option value="${x.key}" ${t.kind === x.key ? 'selected' : ''}>${x.label}</option>`))}</select></label>
@@ -1142,8 +1143,8 @@ async function viewTask(key) {
         ${raw(t.playbook ? html`<details class="playbook"><summary>Playbook</summary><pre>${t.playbook}</pre></details>` : '')}</div>
       ${raw(t.how_to_finish && OPEN.has(t.status) ? html`<div class="card pad finish"><h3>Finished looks like</h3><p>${t.how_to_finish.hand_in.replace(/^./, (x) => x.toUpperCase())}</p><p class="muted">${t.how_to_finish.approval}</p></div>` : '')}
       <div class="card pad"><h3>Cite it anywhere</h3><div class="cite">${join((t.kind === 'code'
-        ? [['Commit trailer', t.references.commit_trailer], ['Branch', t.references.branch], ['Doc source line', t.references.doc_source_line], ['Link', t.references.link]]
-        : [['Doc source line', t.references.doc_source_line], ['In a message', t.references.message_line], ['Link', t.references.link], ['Commit trailer', t.references.commit_trailer]]).map(([l, v]) => html`<button type="button" data-act="click:copy" data-v="${v}"><small>${l}</small><code>${v}</code></button>`))}</div></div>
+        ? [['Commit trailer', t.references.commit_trailer], ['Branch', t.references.branch], ['Doc source line', t.references.doc_source_line], ['Link', t.references.link], ['Key from another workspace', t.full_key]]
+        : [['Doc source line', t.references.doc_source_line], ['In a message', t.references.message_line], ['Link', t.references.link], ['Commit trailer', t.references.commit_trailer], ['Key from another workspace', t.full_key]]).filter(([, v]) => v).map(([l, v]) => html`<button type="button" data-act="click:copy" data-v="${v}"><small>${l}</small><code>${v}</code></button>`))}</div></div>
     </aside></div>`;
   const reload = () => viewTask(key);
   const text = () => $app.querySelector('.composer textarea').value.trim();
@@ -1487,7 +1488,7 @@ async function viewTeam(sub) {
   members = record;
   const ps = new Map(pulse.map((p) => [p.id, p]));
   $app.innerHTML = html`<div class="head"><div><h1>Team</h1><p class="sub">People and agents side by side. Each agent works under its own name, with a person who sponsors it. Lanes keep each one on the projects you choose.</p></div>
-      <div class="row"><button class="btn go" data-act="click:connect">Connect an agent</button><button class="btn" data-act="click:claudeai">Use in claude.ai</button><button class="btn" data-act="click:addPerson">Add a person</button>${raw(me.roles?.includes('admin') ? '<button class="btn" data-act="click:github">Connect GitHub</button>' : '')}</div></div>
+      <div class="row"><button class="btn go" data-act="click:connect">Connect an agent</button><button class="btn" data-act="click:claudeai">Use in claude.ai</button><button class="btn" data-act="click:addPerson">Add a person</button>${raw(me.roles?.includes('admin') ? '<button class="btn" data-act="click:github">Connect GitHub</button>' : '')}<button class="btn" data-act="click:billing" id="billing-btn" hidden>Plan and billing</button></div></div>
     <div class="people-grid">${join(record.map((m) => { const p = ps.get(m.id) || {}; return html`<div class="card pad member">
       <div class="row" style="flex-wrap:nowrap">${raw(av(m, 'lg', p.live))}<div class="grow"><div class="nm">${m.name}</div><div class="muted" style="font-size:13px">${kindLine(m)}</div></div><span class="state ${p.state || 'idle'}">${p.state || 'idle'}</span></div>
       <div style="font-size:14px;color:var(--ink-2);min-height:21px">${raw(p.task ? html`<a href="#/t/${p.task.key}">${p.line}</a>` : esc(m.last_active ? `Last active ${agoLong(m.last_active)}` : 'Not active yet'))}</div>
@@ -1498,6 +1499,8 @@ async function viewTeam(sub) {
       ${raw(canManage(m) ? html`<div><button class="btn sm" data-act="click:manage" data-id="${m.id}">Manage</button></div>` : '')}</div>`; }))}</div>`;
   bind($app, {
     connect: () => showConnect('ai'), addPerson: () => showConnect('human'), claudeai: showClaudeAi, github: showGitHub,
+    // Kunla Cloud: the admin's billing page at the control plane (upgrade, card, invoices, cancel).
+    billing: async () => { const w = window.open('', '_blank'); try { const r = await api('GET', '/api/billing'); if (w) w.location = r.url; else location.href = r.url; } catch (e) { w?.close(); toast(e.message); } },
     contOffer: (el) => showContinuousOffer(el.dataset.id),
     manage: (el) => showManage(record.find((x) => x.id === el.dataset.id)),
     lane: async (el) => {
@@ -1510,6 +1513,8 @@ async function viewTeam(sub) {
       viewTeam();
     },
   });
+  // Only a hosted Kunla has a plan to pay for, and only admins manage it.
+  if (me.roles?.includes('admin')) api('GET', '/api/edition').then((e) => { const b = $('billing-btn'); if (b && e.plan) b.hidden = false; }).catch(() => {});
   // Open a linked dialog once, then drop it from the URL so a background refresh doesn't reopen it.
   const [subView, subQuery = ''] = (sub || '').split('?');
   if (sub && $('sheet').hidden) { if (subView === 'connect') showConnect('ai'); if (subView === 'claude-ai') showClaudeAi(); if (subView === 'github') showGitHub(undefined, new URLSearchParams(subQuery).get('gh')); }
@@ -2089,11 +2094,21 @@ async function route() {
   clearInterval(pollTimer); pollTimer = null; pollCheck = null;
   keyHandler = null;
   // Arriving from another workspace with a token in the fragment: keep it, then drop it from the address bar.
-  const use = (location.hash || '').match(/^#\/use\/(.+)$/);
+  const use = (location.hash || '').match(/^#\/use\/([^/]+)(?:\/also\/(.+))?$/);
   if (use) {
     // Switching workspace: nothing open from the old one (the workspace menu, a sheet) may stay on screen.
     closePalette(); $('sheet').hidden = true;
     token = decodeURIComponent(use[1]); me = null;
+    // Signing in with Google or Microsoft brings every workspace here with your email (KD-29): add them to the menu.
+    if (use[2]) await Promise.all(use[2].split(',').map(decodeURIComponent).map(async (t) => {
+      try {
+        const r = await fetch('/api/me', { headers: { authorization: `Bearer ${t}` } });
+        if (!r.ok) return;
+        const m = await r.json();
+        const entry = { url: location.origin, ws: m.workspace?.id, token: t, name: m.workspace?.name ?? location.host };
+        saveSpaces([...loadSpaces().filter((x) => !sameSpace(x, entry)), entry]);
+      } catch {}
+    }));
     try { localStorage.setItem(TOKEN_KEY, token); } catch {}
     history.replaceState(null, '', location.pathname + '#/');
   }

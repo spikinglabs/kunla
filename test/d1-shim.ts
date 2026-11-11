@@ -32,7 +32,10 @@ export function makeD1(path = ':memory:', opts: { before?: string } = {}): D1Dat
   const files = readdirSync(dir).filter((f: string) => f.endsWith('.sql')).sort();
   const applied = new Set<string>();
   const migrate = (upTo?: string) => {
-    for (const f of files) if (!applied.has(f) && (!upTo || f < upTo)) { db.exec(readFileSync(join(dir, f), 'utf8')); applied.add(f); }
+    for (const f of files) if (!applied.has(f) && (!upTo || f < upTo)) {
+      // wrangler applies each migration in one transaction, so deferred foreign keys are checked at its end.
+      db.exec('BEGIN'); db.exec(readFileSync(join(dir, f), 'utf8')); db.exec('COMMIT'); applied.add(f);
+    }
   };
   migrate(opts.before);
   return {

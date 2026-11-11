@@ -89,7 +89,7 @@ describe('workspace import', () => {
 
     const again = await call(to, 'POST', '/api/import', admin, data);
     expect(again.status).toBe(409);
-    expect(again.body.error).toMatch(/already has project key (SL|KD)/);
+    expect(again.body.error).toMatch(/already has workspace key SL/);
   });
 
   it('rejects files that are not exports', async () => {

@@ -53,7 +53,12 @@ export const TOOLS: Tool[] = [
     name: 'whoami', readOnly: true,
     description: 'Your Kunla member profile (person or AI), sponsor, the projects you can see, and the kinds of work the workspace and its projects use. For an agent, since_last_session lists what changed for you since you last called: call it when a session starts.',
     inputSchema: { type: 'object', properties: {} },
-    run: (c) => core.whoami(c),
+    run: async (c) => {
+      const me = await core.whoami(c);
+      // A connector that reaches several workspaces (KD-29) says which, so the agent can pass `workspace`.
+      const g = c.grants ? await c.grants() : [];
+      return g.length > 1 ? { ...me, workspaces: g.map((w) => ({ ...w, current: w.key === (me as any).workspace?.key })) } : me;
+    },
   },
   {
     name: 'next_task', readOnly: true,
@@ -309,15 +314,21 @@ export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
       });
     }
     case 'ping': return ok(msg.id, {});
-    case 'tools/list':
+    case 'tools/list': {
+      // A connector granted several workspaces (KD-29) may name one on any call; others never see the argument.
+      const g = c.grants ? await c.grants() : [];
+      const multi = g.length > 1;
+      const ws = { type: 'string', description: `Workspace key to act in: ${g.map((w) => w.key).join(', ')}. Leave out for ${g.find((w) => w.default)?.key ?? 'your default'}. Each call acts in one workspace.` };
       return ok(msg.id, {
         tools: TOOLS.map((t) => ({
-          name: t.name, description: t.description, inputSchema: t.inputSchema,
+          name: t.name, description: t.description,
+          inputSchema: multi ? { ...t.inputSchema, properties: { ...((t.inputSchema as any).properties ?? {}), workspace: ws } } : t.inputSchema,
           annotations: { readOnlyHint: !!t.readOnly, destructiveHint: false, openWorldHint: false },
           // Clients with MCP Apps (claude.ai) render this view; others ignore it and show the text (KD-10).
           ...(t.ui ? { _meta: { ui: { resourceUri: t.ui } } } : {}),
         })),
       });
+    }
     case 'resources/list': return ok(msg.id, { resources: apps.RESOURCES });
     case 'resources/templates/list': return ok(msg.id, { resourceTemplates: [] });
     case 'resources/read': {

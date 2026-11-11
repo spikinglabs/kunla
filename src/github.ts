@@ -64,11 +64,12 @@ export async function connectionInfo(c: core.Ctx) {
 /** Task keys like KD-12 in any text. Branch names are lower case (kd-12-fix-x), so case is ignored. */
 export function findKeys(...texts: (string | null | undefined)[]): string[] {
   const out = new Set<string>();
-  const re = /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{1,9})-(\d{1,6})(?![A-Za-z0-9])/g;
+  // An optional workspace key in front makes a full key (SL-KD-12, KD-70); tasksFor decides what it means.
+  const re = /(?<![A-Za-z0-9])(?:([A-Za-z][A-Za-z0-9]{1,9})-)?([A-Za-z][A-Za-z0-9]{1,9})-(\d{1,6})(?![A-Za-z0-9])/g;
   for (const t of texts) {
     if (!t) continue;
     for (const m of t.matchAll(re)) {
-      out.add(`${m[1].toUpperCase()}-${Number(m[2])}`);
+      out.add(`${m[1] ? `${m[1].toUpperCase()}-` : ''}${m[2].toUpperCase()}-${Number(m[3])}`);
       if (out.size >= MAX_KEYS) return [...out];
     }
   }
@@ -104,7 +105,19 @@ function systemCtx(base: core.Ctx): core.Ctx {
   return { ...base, me: { id: null as unknown as string, name: 'GitHub', kind: 'ai', platform: 'github', sponsor_id: null, roles: '[]', scope: '[]', created_at: '', space_id: base.space } };
 }
 
-async function tasksFor(c: core.Ctx, keys: string[]) {
+async function tasksFor(c: core.Ctx, raw: string[]) {
+  if (!raw.length) return [];
+  // Full keys (KD-70): SL-KD-12 is KD-12 when SL is this workspace, someone else's task when SL is another
+  // workspace here, and just a word in front (fix-kd-12) otherwise.
+  const prefixes = [...new Set(raw.map((k) => core.splitKey(k).ws).filter((x): x is string => !!x))];
+  const wsRows = prefixes.length ? (await c.db.prepare(`SELECT id, key FROM projects WHERE kind = 'workspace' AND key IN (${prefixes.map(() => '?').join(',')})`)
+    .bind(...prefixes).all<{ id: string; key: string }>()).results : [];
+  const keys = [...new Set(raw.flatMap((k) => {
+    const sk = core.splitKey(k);
+    if (!sk.ws) return [sk.key];
+    const w = wsRows.find((r) => r.key === sk.ws);
+    return !w || w.id === c.space ? [sk.key] : [];
+  }))];
   if (!keys.length) return [];
   return (await c.db.prepare(
     `SELECT t.*, p.require_human_review AS rhr FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.space_id = ? AND t.key IN (${keys.map(() => '?').join(',')})`)

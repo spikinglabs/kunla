@@ -83,26 +83,45 @@ oauth.post('/oauth/approve', async (c) => {
   if (!client) return c.json({ error: 'Unknown client.' }, 400);
   if (!JSON.parse(client.redirect_uris).includes(b.redirect_uri)) return c.json({ error: 'Redirect URI not registered.' }, 400);
   if (!b.code_challenge || (b.code_challenge_method ?? 'S256') !== 'S256') return c.json({ error: 'PKCE S256 is required.' }, 400);
-  // A connector added at /mcp/KEY must join that workspace, or its token would be turned away there.
+  // One connector for several workspaces (KD-29): besides the token it signs in with, the consent page may send this
+  // browser's tokens for the person's other workspaces here, ticked. Each must be a person's own token; the app joins
+  // each of those workspaces as its own agent. A token for the same workspace twice counts once.
+  const people: core.Member[] = [me];
+  for (const t of Array.isArray(b.grants) ? b.grants.slice(0, 20) : []) {
+    const p = typeof t === 'string' ? await core.memberForToken(c.env.DB, t) : null;
+    if (!p || p.kind !== 'human') return c.json({ error: 'One of the ticked workspaces did not accept your sign-in. Sign in to it again in Kunla.' }, 401);
+    if (!people.some((x) => x.space_id === p.space_id)) people.push(p);
+  }
+  // A connector added at /mcp/KEY must reach that workspace, and uses it by default, or its token would be turned away there.
   const wsKey = workspaceKeyFromResource(b.resource);
-  if (wsKey) {
-    const ws = await core.workspaceByKey(c.env.DB, wsKey);
-    if (!ws) return c.json({ error: `No workspace ${wsKey} on this Kunla.` }, 400);
-    if (ws.id !== me.space_id) return c.json({ error: `This connector is for ${ws.name}. Sign in with your token for ${ws.name}.`, workspace: { key: ws.key, name: ws.name } }, 403);
+  let first = people[0];
+  const want = wsKey ?? (typeof b.default === 'string' ? b.default.toUpperCase() : null);
+  if (want) {
+    const ws = await core.workspaceByKey(c.env.DB, want);
+    if (!ws) return c.json({ error: `No workspace ${want} on this Kunla.` }, 400);
+    const p = people.find((x) => x.space_id === ws.id);
+    if (!p) return c.json({ error: `This connector is for ${ws.name}. Sign in with your token for ${ws.name}.`, workspace: { key: ws.key, name: ws.name } }, 403);
+    first = p;
   }
 
-  const ctx: core.Ctx = { db: c.env.DB, me, space: me.space_id, baseUrl: origin(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), licence: await readLicence(c.env.KUNLA_LICENSE) };
-  const name = String(b.name || `${me.name}'s ${client.name}`).slice(0, 80);
-  const existing = await c.env.DB.prepare('SELECT * FROM members WHERE lower(name) = lower(?) AND sponsor_id = ? AND removed_at IS NULL AND space_id = ?').bind(name, me.id, me.space_id).first<core.Member>();
-  const member = existing ?? (await core.addMember(ctx, { name, kind: 'ai', platform: b.platform || 'claude-ai' })).member;
+  const licence = await readLicence(c.env.KUNLA_LICENSE);
+  const agents: core.Member[] = [];
+  for (const p of [first, ...people.filter((x) => x !== first)]) {
+    const ctx: core.Ctx = { db: c.env.DB, me: p, space: p.space_id, baseUrl: origin(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), licence };
+    const name = String(b.name || `${p.name}'s ${client.name}`).slice(0, 80);
+    const existing = await c.env.DB.prepare('SELECT * FROM members WHERE lower(name) = lower(?) AND sponsor_id = ? AND removed_at IS NULL AND space_id = ?').bind(name, p.id, p.space_id).first<core.Member>();
+    agents.push(existing ?? (await core.addMember(ctx, { name, kind: 'ai', platform: b.platform || 'claude-ai' })).member);
+  }
+  const member = agents[0];
 
   const code = core.newToken().replace('kun_', 'code_');
-  await c.env.DB.prepare('INSERT INTO oauth_codes (code_hash, client_id, redirect_uri, code_challenge, member_id, expires_at) VALUES (?,?,?,?,?,?)')
-    .bind(await core.sha256(code), client.id, b.redirect_uri, b.code_challenge, member.id, new Date(Date.now() + 5 * 60_000).toISOString()).run();
+  await c.env.DB.prepare('INSERT INTO oauth_codes (code_hash, client_id, redirect_uri, code_challenge, member_id, expires_at, grants) VALUES (?,?,?,?,?,?,?)')
+    .bind(await core.sha256(code), client.id, b.redirect_uri, b.code_challenge, member.id, new Date(Date.now() + 5 * 60_000).toISOString(),
+      agents.length > 1 ? JSON.stringify(agents.slice(1).map((a) => a.id)) : null).run();
   const url = new URL(b.redirect_uri);
   url.searchParams.set('code', code);
   if (b.state) url.searchParams.set('state', b.state);
-  return c.json({ redirect: url.toString(), member: member.name });
+  return c.json({ redirect: url.toString(), member: member.name, workspaces: agents.length });
 });
 
 async function s256(verifier: string) {
@@ -121,5 +140,10 @@ oauth.post('/oauth/token', async (c) => {
   if ((p.client_id && p.client_id !== row.client_id) || (p.redirect_uri && p.redirect_uri !== row.redirect_uri)) return c.json({ error: 'invalid_grant' }, 400);
   if (!p.code_verifier || (await s256(p.code_verifier)) !== row.code_challenge) return c.json({ error: 'invalid_grant', error_description: 'PKCE check failed' }, 400);
   const token = await core.issueToken(c.env.DB, row.member_id, `oauth:${row.client_id}`);
+  // The other ticked workspaces (KD-29): one grant row each for the same token.
+  for (const mid of row.grants ? (JSON.parse(row.grants) as string[]) : []) {
+    const m = await c.env.DB.prepare('SELECT id, space_id FROM members WHERE id = ? AND removed_at IS NULL').bind(mid).first<{ id: string; space_id: string }>();
+    if (m) await core.addGrant(c.env.DB, token, m.id, m.space_id, `oauth:${row.client_id}`);
+  }
   return c.json({ access_token: token, token_type: 'Bearer', scope: 'kunla' }, 200, { 'Cache-Control': 'no-store' });
 });

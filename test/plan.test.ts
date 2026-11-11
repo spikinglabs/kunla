@@ -51,3 +51,23 @@ describe('Kunla Cloud plans', () => {
     for (const n of ['A', 'B', 'C', 'D']) expect((await addPerson(n)).status).toBe(200);
   });
 });
+
+describe('Kunla Cloud daily tick (KD-70)', () => {
+  const tick = async (secret = 'cloud-secret') => {
+    const ts = Math.floor(Date.now() / 1000);
+    const jobs: Promise<unknown>[] = [];
+    const res = await app.fetch(new Request('https://kunla.test/api/cloud/tick', { method: 'POST', body: '',
+      headers: { 'x-kunla-timestamp': String(ts), 'x-kunla-signature-256': `sha256=${createHmac('sha256', secret).update(`${ts}.`).digest('hex')}` } }),
+      env, { waitUntil: (p: Promise<unknown>) => jobs.push(p), passThroughOnException() {} } as any);
+    await Promise.all(jobs);
+    return res.status;
+  };
+  it('runs the start-of-day jobs when the control plane signs the call', async () => {
+    expect(await tick()).toBe(200);
+    expect(await tick('wrong')).toBe(401);
+  });
+  it('is not there on a self-hosted Kunla', async () => {
+    delete env.KUNLA_CLOUD_SECRET;
+    expect(await tick()).toBe(404);
+  });
+});
