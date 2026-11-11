@@ -4,7 +4,9 @@ import { it, expect } from 'vitest';
 import app from '../src/index';
 import { makeD1 } from './d1-shim';
 
-const HOP = 25; // ms per simulated round trip
+// ms per simulated round trip. Large enough that the request's own CPU time (tens of ms for 150 tasks on a slow
+// CI runner) can't round up into an extra hop, which made this test fail now and then.
+const HOP = 100;
 function slow(db: D1Database, stats: { n: number }) {
   const wrap = (s: any): any => new Proxy(s, { get(t, k) {
     const v = t[k];

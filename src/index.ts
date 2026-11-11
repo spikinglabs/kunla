@@ -13,7 +13,12 @@ import * as wake from './wake';
 import * as merge from './merge';
 import * as continuous from './continuous';
 import * as ghapp from './githubapp';
+import { VERSION } from './version';
+import * as transfer from './transfer';
 import * as waits from './waits';
+import { readLicence } from './licence';
+import { extensions, flushAudit } from './extensions';
+import * as ping from './ping';
 
 export interface Env {
   DB: D1Database;
@@ -21,6 +26,13 @@ export interface Env {
   LEASE_MINUTES?: string;
   SETUP_TOKEN?: string;
   PUBLIC_URL?: string;
+  /** Licence key for the Enterprise edition (KD-75); unset = Community. */
+  KUNLA_LICENSE?: string;
+  /** "on" sends the daily anonymous usage ping (KD-69); off by default. */
+  KUNLA_USAGE_PING?: string;
+  KUNLA_PING_URL?: string;
+  /** "true" on the Kunla that collects usage pings (Spiking Labs' own). */
+  KUNLA_COLLECT_PINGS?: string;
 }
 type Vars = { ctx: core.Ctx };
 type C = Context<{ Bindings: Env; Variables: Vars }>;
@@ -43,7 +55,7 @@ async function authenticate(c: C): Promise<core.Ctx | null> {
   const me = await core.memberForToken(c.env.DB, token);
   if (!me) return null;
   // The token decides the workspace: every read and write below is limited to it.
-  return { db: c.env.DB, me, space: me.space_id, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)),
+  return { db: c.env.DB, me, space: me.space_id, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), licence: await readLicence(c.env.KUNLA_LICENSE), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)),
     defer: (job) => sendLater(c, job()) };
 }
 
@@ -65,12 +77,50 @@ const requireAuth = async (c: C, next: () => Promise<void>) => {
 app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], maxAge: 86400 }));
 
 // ---------- public ----------
-app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: '0.1.0' }));
+app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: VERSION }));
 app.get('/api/setup', async (c) => c.json({ set_up: await core.isSetUp(c.env.DB), needs_setup_token: !!c.env.SETUP_TOKEN }));
 app.post('/api/setup', async (c) => {
   const body = await c.req.json<any>();
   if (c.env.SETUP_TOKEN && body.setup_token !== c.env.SETUP_TOKEN) return c.json({ error: 'Wrong setup token.' }, 403);
   return c.json(await core.setup(c.env.DB, body));
+});
+// Import a workspace export (KD-74). On a fresh Kunla it needs the setup token (header X-Kunla-Setup-Token) when
+// one is set, and the workspace becomes this Kunla's first; on a set-up Kunla an admin adds it as another workspace.
+app.post('/api/import', async (c) => {
+  const fresh = !(await core.isSetUp(c.env.DB));
+  if (fresh) {
+    if (c.env.SETUP_TOKEN && c.req.header('x-kunla-setup-token') !== c.env.SETUP_TOKEN) return c.json({ error: 'Wrong setup token.' }, 403);
+  } else {
+    const ctx = await authenticate(c as C);
+    if (!ctx) return c.json({ error: 'Sign in with a Kunla token (Authorization: Bearer kun_...).' }, 401);
+    if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only admins can import a workspace.' }, 403);
+  }
+  const data = await c.req.json().catch(() => null);
+  return c.json(await transfer.importWorkspace(c.env.DB, data, { fresh }));
+});
+// Which edition this Kunla runs and how people can sign in (KD-75). Public: the sign-in page needs it.
+app.get('/api/edition', async (c) => {
+  const l = await readLicence(c.env.KUNLA_LICENSE);
+  const signIn = extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }));
+  return c.json({ edition: l.edition, licensee: l.licensee, features: l.features, seats: l.seats, expires_at: l.expires_at, problem: l.problem, sign_in: signIn, version: VERSION });
+});
+// Sign-in providers registered by ee/ (SSO). A provider hands back a member; Kunla gives them a fresh token and
+// opens the web app with it, the same way switching workspace does.
+app.all('/auth/:id/*', async (c) => {
+  const l = await readLicence(c.env.KUNLA_LICENSE);
+  const p = extensions().signIn.find((x) => x.id === c.req.param('id') && l.features.includes(x.feature));
+  if (!p) return c.json({ error: 'No such sign-in on this Kunla.' }, 404);
+  const rest = new URL(c.req.url).pathname.slice(`/auth/${p.id}/`.length);
+  const r = await p.handle(c.req.raw, rest, c.env as unknown as Record<string, unknown>, c.env.DB);
+  if (r instanceof Response) return r;
+  if ((r as { removed_at?: string | null }).removed_at) return c.json({ error: 'This person was removed from Kunla.' }, 403);
+  const token = await core.issueToken(c.env.DB, r.id, `sign-in:${p.id}`);
+  return c.redirect(`/app/#/use/${encodeURIComponent(token)}`);
+});
+// Usage pings from copies that opted in (KD-69), accepted only where KUNLA_COLLECT_PINGS is "true".
+app.post('/api/ping', async (c) => {
+  if (c.env.KUNLA_COLLECT_PINGS !== 'true') return c.json({ error: 'This Kunla does not collect usage pings.' }, 404);
+  return c.json(await ping.receive(c.env.DB, await c.req.json().catch(() => null)));
 });
 // GitHub calls this when a pull request or push happens; tasks cited by key update themselves.
 app.post('/hooks/github', async (c) => {
@@ -174,6 +224,24 @@ api.post('/members/:id/wake/test', async (c) => {
 api.put('/members/:id/continuous', async (c) => c.json(await core.setContinuous(c.get('ctx'), c.req.param('id'), await c.req.json())));
 api.post('/members/:id/token', async (c) => c.json(await core.rotateToken(c.get('ctx'), c.req.param('id'))));
 api.delete('/members/:id', async (c) => c.json(await core.removeMember(c.get('ctx'), c.req.param('id'))));
+api.get('/export', async (c) => {
+  const data = await transfer.exportWorkspace(c.get('ctx'));
+  const name = `kunla-${data.workspace.key.toLowerCase()}-${data.exported_at.slice(0, 10)}.json`;
+  return c.json(data, 200, { 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' });
+});
+// What this copy's usage ping sends (or would send), and whether it is on (KD-69). Admins only.
+api.get('/ping/preview', async (c) => {
+  const ctx = c.get('ctx');
+  if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only admins can see the usage ping.' }, 403);
+  return c.json({ on: (c.env.KUNLA_USAGE_PING || '').toLowerCase() === 'on', url: c.env.KUNLA_PING_URL || ping.DEFAULT_PING_URL, ping: await ping.build(c.env.DB, (ctx.licence?.edition) ?? 'community') });
+});
+// On the collecting Kunla: how many copies are alive and how big (KD-69). Admins only.
+api.get('/ping/summary', async (c) => {
+  const ctx = c.get('ctx');
+  if (c.env.KUNLA_COLLECT_PINGS !== 'true') return c.json({ error: 'This Kunla does not collect usage pings.' }, 404);
+  if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only admins can see usage pings.' }, 403);
+  return c.json(await ping.summary(c.env.DB));
+});
 api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ctx'), await c.req.json())));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
 api.get('/projects', async (c) => c.json(await core.listProjects(c.get('ctx'))));
@@ -228,6 +296,10 @@ export async function scheduled(_e: unknown, env: Env, ctx: { waitUntil(p: Promi
   await continuous.newDay({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30), notify: (w) => { jobs.push(wake.deliver(env.DB, w).catch((e) => console.error('wake failed', e))); } });
   // Weekly digests whose day is today (KD-52).
   jobs.push(digest.sendDue({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30) }).catch((e) => console.error('digest failed', e)));
+  // The anonymous usage ping, for copies that turned it on (KD-69).
+  jobs.push(readLicence(env.KUNLA_LICENSE).then((l) => ping.send(env.DB, env, l.edition)));
+  // Audit export to the company's log tools, when ee/ registered a sink and the licence has it (KD-75).
+  if (extensions().audit.length) jobs.push(flushAudit(env.DB, env as unknown as Record<string, unknown>, await readLicence(env.KUNLA_LICENSE)).catch((e) => console.error('audit failed', e)));
   ctx.waitUntil(Promise.all(jobs));
 }
 

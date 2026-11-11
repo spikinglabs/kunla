@@ -5,21 +5,32 @@
 # Optional variable KUNLA_DOMAIN (e.g. kunla.example.com): serve Kunla on that hostname as a Workers custom
 # domain. The domain's zone must be in the same Cloudflare account, and the API token needs Zone: Workers Routes
 # Edit, Zone: DNS Edit and Zone: Zone Read for it.
+# Optional variable KUNLA_USAGE_PING=on: send the daily anonymous usage ping (version and counts only; see the README).
+# Optional variable KUNLA_COLLECT_PINGS=true: only on the Kunla that collects those pings.
 # Optional variable KUNLA_PLACEMENT_REGION (e.g. aws:us-east-1): run the Worker next to that cloud region, where
 # your D1 database lives, instead of letting Smart Placement find it. ENAM databases sit near aws:us-east-1,
 # WEUR near aws:eu-west-1 or aws:eu-central-1.
+# The self-upgrade workflow (upgrade.yml) also calls this one to deploy the release it just merged.
 name: Deploy
 on:
   workflow_dispatch:
   push: { branches: [main] }
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to deploy
+        type: string
+        required: true
+concurrency: { group: deploy, cancel-in-progress: false }
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || vars.KUNLA_AUTO_DEPLOY == 'true'
+    if: github.event_name != 'push' || vars.KUNLA_AUTO_DEPLOY == 'true'
     runs-on: ubuntu-latest
     env:
       KUNLA_SETUP_TOKEN: ${{ secrets.KUNLA_SETUP_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with: { ref: "${{ inputs.ref || github.sha }}" }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
@@ -30,6 +41,12 @@ jobs:
       - name: Use your domain
         if: vars.KUNLA_DOMAIN != ''
         run: sed -i '/^compatibility_date/a routes = [{ pattern = "${{ vars.KUNLA_DOMAIN }}", custom_domain = true }]' wrangler.toml
+      - name: Usage ping settings
+        if: vars.KUNLA_USAGE_PING != '' || vars.KUNLA_COLLECT_PINGS != ''
+        run: |
+          [ -n "${{ vars.KUNLA_USAGE_PING }}" ] && sed -i '/^\[vars\]$/a KUNLA_USAGE_PING = "${{ vars.KUNLA_USAGE_PING }}"' wrangler.toml
+          [ -n "${{ vars.KUNLA_COLLECT_PINGS }}" ] && sed -i '/^\[vars\]$/a KUNLA_COLLECT_PINGS = "${{ vars.KUNLA_COLLECT_PINGS }}"' wrangler.toml
+          grep -A4 '^\[vars\]' wrangler.toml
       - name: Pin where the Worker runs
         if: vars.KUNLA_PLACEMENT_REGION != ''
         run: sed -i 's/^mode = "smart"$/region = "${{ vars.KUNLA_PLACEMENT_REGION }}"/' wrangler.toml

@@ -57,7 +57,20 @@ Open your Worker's URL plus `/app/` and complete setup with the setup token.
 
 **Deploy from GitHub Actions instead:** add secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `KUNLA_SETUP_TOKEN`, and variables `KUNLA_D1_ID`, `KUNLA_AUTO_DEPLOY=true` and optionally `KUNLA_DOMAIN`. Every push to main then deploys.
 
-**Upgrading:** pull the new release and run `npm run deploy` again, or use the included GitHub Action (`.github/workflows/deploy.yml`) in your copy. Migrations only ever add tables or columns, so rolling back to the previous Worker version (`npx wrangler rollback`) is safe.
+**Upgrading:** releases are tagged `vX.Y.Z` on GitHub ([Releases](https://github.com/spikinglabs/kunla/releases), notes in [CHANGELOG.md](CHANGELOG.md)). Pull the release you want into your copy and run `npm run deploy` again, or let the included GitHub Action (`.github/workflows/deploy.yml`) deploy it on push. `/api/health` says which version a copy runs. Migrations only ever add tables or columns, so rolling back to the previous Worker version (`npx wrangler rollback`) is safe.
+
+**Move your data:** an admin can download a whole workspace from **Projects → Settings for everything → Download everything** (or `GET /api/export` with an admin token): one JSON file with projects, tasks, history, reviews, rules, people, agents and their tokens. Import it into another Kunla with
+
+```sh
+curl -X POST https://new-kunla.example.com/api/import -H 'content-type: application/json' \
+  -H 'x-kunla-setup-token: YOUR_SETUP_TOKEN' --data-binary @kunla-sl-2026-11-11.json
+```
+
+On a fresh Kunla (nobody set up yet) the setup token is enough and the workspace becomes its first; on a Kunla in use, send an admin's token (`-H 'authorization: Bearer kun_...'`) instead and it is added as another workspace. Task keys, links and everyone's tokens keep working, so agents only need the new address. Nothing is imported if any key or token already exists there. The GitHub App and claude.ai connectors point at the old address, so connect those again after a move.
+
+**Usage ping (off unless you turn it on):** set the variable `KUNLA_USAGE_PING = "on"` (in `wrangler.toml` under `[vars]`, or the repository variable of the same name when you deploy from GitHub Actions) and your Kunla sends one small message a day to Spiking Labs: a random id for the copy, its version and edition, and five counts (workspaces, people, agents, tasks, tasks created this week). No names, addresses, titles or content. Admins can see exactly what it sends at `GET /api/ping/preview`. It helps us know how many teams self-host and when a hosted Kunla is worth building.
+
+**Self-upgrade:** a copy keeps itself up to date with the included **Upgrade Kunla** workflow (`.github/workflows/upgrade.yml`). Every Monday it looks for a newer release, brings it into your copy (keeping your D1 id, domain and placement in `wrangler.toml`), runs the tests, pushes and deploys. If the deploy fails or the new version doesn't answer at `KUNLA_URL`, it rolls the Worker back and opens an issue; if the release doesn't merge or its tests fail, nothing is pushed and you get an issue instead. It needs the same secrets as deploying from GitHub Actions. Set the repository variable `KUNLA_URL` to your Kunla's address so it can check the new version is live, or `KUNLA_AUTO_UPGRADE=false` to turn it off. You can also run it by hand from the Actions tab, optionally naming a release.
 
 ## Connect your agents
 
@@ -207,6 +220,12 @@ Live views ask one tiny question every 30 seconds ("has anything changed?", a si
 ## Not in v1 yet
 
 In-chat interactive views (MCP Apps), Tiny Foundation and other knowledge providers, Jira mirroring, Docker and Postgres, Codex-specific hooks, refresh tokens for OAuth, and per-project permissions.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as described in [SECURITY.md](SECURITY.md).
+
+Maintainers release by running `npm run release:prepare -- X.Y.Z` (sets the version and adds a CHANGELOG.md section from the PRs merged since the last tag), then merging that as a PR titled `Release vX.Y.Z`. The Release workflow tags the merge and publishes the GitHub Release.
 
 ## License
 

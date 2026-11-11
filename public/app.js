@@ -1899,6 +1899,9 @@ async function viewProjects() {
             ${raw(kindsField('kd-ws', wsKinds?.own, kindsInfo?.defaults, 'Leave it empty to use Kunla’s kinds (shown faintly). Each project can set its own.'))}
             <div><div class="label" style="margin-bottom:6px">Rules for everyone</div>${raw(ruleRows(wsRules))}</div>
             ${raw(digestField(ws?.digest))}
+            ${raw(me.roles?.includes('admin') ? html`<div class="field"><div class="label" style="margin-bottom:6px">Your data</div>
+              <p class="muted" style="margin:0 0 6px;font-size:13px">One file with everything in ${wsName}: projects, tasks, history, reviews, rules, people, agents and their tokens. Another Kunla can import it, so the team can move without reconnecting anyone. Keep it safe like a password.</p>
+              <div class="row"><button type="button" class="btn sm quiet" data-act="click:exportws">Download everything</button></div></div>` : '')}
             <div class="row"><button class="btn ink sm">Save</button></div></div></details>
       </form>
       <div class="wsbox-list">
@@ -1940,6 +1943,15 @@ async function viewProjects() {
       await refresh(); toast('Saved for the whole workspace.'); viewProjects();
     },
     digestpreview: async () => { const el = $('digest-preview'); const r = await api('GET', '/api/digest'); el.textContent = r.text; el.hidden = false; },
+    exportws: async () => {
+      const data = await api('GET', '/api/export');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
+      a.download = `kunla-${data.workspace.key.toLowerCase()}-${data.exported_at.slice(0, 10)}.json`;
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      toast(`Downloaded ${plural(data.tables.tasks.length, 'task')}.`);
+    },
     digestsend: async () => { const r = await api('POST', '/api/digest/send'); toast(r.ok ? 'Digest sent.' : `Could not send it: ${r.error}`); },
     create: async (f) => { await api('POST', '/api/projects', formData(f)); await refresh(); viewProjects(); },
     rule: async (el) => { await api('PATCH', `/api/rules/${el.dataset.id}`, { active: el.checked }); toast(el.checked ? 'Rule on. Agents get it from now.' : 'Rule off.'); },

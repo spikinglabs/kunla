@@ -1,3 +1,5 @@
+import { extensions, refusal, type PolicyAction } from './extensions';
+import { COMMUNITY, type Licence } from './licence';
 import { wakeMember, publicCallback, type Wake } from './wake';
 import { taskPr, tokenFor, mergeApproved, ownLinks } from './merge';
 import * as continuous from './continuous';
@@ -60,6 +62,15 @@ export interface Ctx {
   notify?: (w: Wake) => void;
   /** Run work after the response (the Worker uses waitUntil); absent means run it inline. */
   defer?: (job: () => Promise<unknown>) => void;
+  /** This Kunla's edition (KD-75); absent means Community. */
+  licence?: Licence;
+}
+
+/** A company policy (ee/, KD-75) may refuse an action; with no policies registered this is free. */
+async function checkPolicy(c: Ctx, action: PolicyAction) {
+  if (!extensions().policies.length) return;
+  const why = await refusal(c, action, c.licence ?? COMMUNITY);
+  if (why) throw new KunlaError(403, why);
 }
 
 const id = () => crypto.randomUUID();
@@ -170,6 +181,7 @@ async function keyFromName(db: D1Database, name: string) {
 export async function createWorkspace(c: Ctx, input: { name: string; key?: string }) {
   if (c.me.kind !== 'human' || !isAdmin(c.me)) throw new KunlaError(403, 'Only admins can create workspaces.');
   const name = required(input.name, 'name').slice(0, 80);
+  await checkPolicy(c, { type: 'create_workspace', name });
   const key = input.key?.trim() ? checkKey(input.key) : await keyFromName(c.db, name);
   await assertKeyFree(c.db, key);
   const wsId = id();
@@ -327,6 +339,12 @@ export async function addMember(c: Ctx, input: { name: string; kind: Kind; platf
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can add members.');
   if (input.kind === 'human' && !isAdmin(c.me)) throw new KunlaError(403, 'Only admins can add people.');
   const name = required(input.name, 'name').trim();
+  await checkPolicy(c, { type: 'add_member', kind: input.kind === 'ai' ? 'ai' : 'human', name, platform: input.platform ?? null });
+  if (input.kind !== 'ai' && c.licence?.seats != null) {
+    // Plan limit: people count against the licence's seats across the whole Kunla; AI members are free.
+    const n = await c.db.prepare(`SELECT COUNT(*) AS n FROM members WHERE kind = 'human' AND removed_at IS NULL`).first<number>('n');
+    if ((n ?? 0) >= c.licence.seats) throw new KunlaError(403, `This Kunla's licence covers ${c.licence.seats} people, and all seats are taken. Remove someone or ask about more seats.`);
+  }
   if (input.kind === 'ai') {
     const same = await c.db.prepare(`SELECT * FROM members WHERE kind = 'ai' AND sponsor_id = ? AND lower(name) = lower(?) AND removed_at IS NULL AND space_id = ?`)
       .bind(c.me.id, name, c.space).first<Member>();
@@ -572,6 +590,7 @@ export async function claimTask(c: Ctx, key: string, session?: string) {
   }
   // Waiting is not a status: a Ready task that waits on something is skipped by agents. People can start it anyway (KD-84).
   const waitingOn = !mine && t.status === 'ready' ? await waits.waitingLine(c, t) : null;
+  if (!mine) await checkPolicy(c, { type: 'claim_task', task: { key: t.key, kind: t.kind, project_id: t.project_id } });
   if (waitingOn && c.me.kind === 'ai')
     throw new KunlaError(409, `${waitingOn} Skip it and call next_task. If you only need one answer or an agreed interface from it, ask that as a question or its own small task instead of waiting; or, if redoing the work later would be cheap, a person can let you go ahead on an assumption.`);
   const r = await c.db.prepare(

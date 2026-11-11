@@ -4,6 +4,7 @@ import type { Ctx } from './core';
 import * as views from './views';
 import * as continuous from './continuous';
 import * as apps from './apps';
+import { VERSION } from './version';
 import * as waits from './waits';
 
 /** The part of the connect-time instructions that is about this agent: continuous mode, when it is on. */
@@ -13,7 +14,7 @@ async function continuousNote(c: Ctx) {
 }
 
 const SUPPORTED = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
-export const SERVER_INFO = { name: 'kunla', version: '0.1.0' };
+export const SERVER_INFO = { name: 'kunla', version: VERSION };
 
 const key = { type: 'string', description: 'Task key, e.g. MKT-42' };
 const session = { type: 'string', description: 'Link to this chat or agent session (e.g. https://claude.ai/chat/..., https://claude.ai/code/session_...), or a reference like "claude --resume <id>", so people can open it from the task later' };
