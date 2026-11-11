@@ -13,6 +13,7 @@ import * as wake from './wake';
 import * as merge from './merge';
 import * as continuous from './continuous';
 import * as ghapp from './githubapp';
+import * as waits from './waits';
 
 export interface Env {
   DB: D1Database;
@@ -152,6 +153,10 @@ api.post('/tasks/:key/triage', async (c) => c.json(await core.triage(c.get('ctx'
 api.post('/tasks/:key/answer', async (c) => c.json(await core.answer(c.get('ctx'), c.req.param('key'), (await c.req.json<any>()).answer)));
 api.post('/tasks/:key/park', async (c) => c.json(await core.parkTask(c.get('ctx'), c.req.param('key'), await c.req.json().catch(() => ({})))));
 api.post('/tasks/:key/unpark', async (c) => c.json(await core.unparkTask(c.get('ctx'), c.req.param('key'))));
+// Waiting on and assumptions (KD-84). Adding, ticking and removing waits goes through PATCH /tasks/:key
+// (waiting_on, waits_met, not_waiting_on); a person settles an assumption here.
+api.post('/assumptions/:id', async (c) => c.json(await waits.settleAssumption(c.get('ctx'), c.req.param('id'), await c.req.json())));
+api.get('/relations', async (c) => c.json(await waits.graph(c.get('ctx'), { project: c.req.query('project') || undefined, focus: c.req.query('focus') || undefined, subtasks: c.req.query('subtasks') === '1' })));
 api.post('/log', async (c) => c.json(await core.logWork(c.get('ctx'), await c.req.json())));
 
 api.get('/members', async (c) => c.json(await core.trackRecord(c.get('ctx'))));

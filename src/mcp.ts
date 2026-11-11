@@ -4,6 +4,7 @@ import type { Ctx } from './core';
 import * as views from './views';
 import * as continuous from './continuous';
 import * as apps from './apps';
+import * as waits from './waits';
 
 /** The part of the connect-time instructions that is about this agent: continuous mode, when it is on. */
 async function continuousNote(c: Ctx) {
@@ -34,6 +35,14 @@ const notes = {
   description: 'The outcome written out, in Markdown, when it is not (only) a link: the decisions and next steps of a discussion, notes on a paper, research findings with sources, what you learned. Counts as a deliverable.',
 };
 const repo = { type: 'string', description: "The git remote of the repository you work in (output of git remote get-url origin), if any. Kunla remembers it on the project so mentions like PR #12 or acme/site!12 link to the right GitHub, GitHub Enterprise, GitLab, Gitea or Bitbucket host." };
+const waiting_on = {
+  type: 'array', items: { type: 'string' },
+  description: "What this task can't go on without, added to what it already waits on: a task key (\"KD-12\": it clears when that task is done), a link (a PR: it clears when the PR merges), or a condition in words (\"budget approved\"). Agents won't be offered or allowed to claim a Ready task while it waits. Before adding one, ask what you really need: often it is one answer (ask it with blocked_question) or an agreed interface (file it as its own small task) rather than the whole other task.",
+};
+const assumption = {
+  type: 'string',
+  description: "Instead of waiting: what you are assuming so you can carry on (\"Assuming the export is CSV, not Excel\"). A person confirms or corrects it from the decision inbox; a correction comes back to you on this task. Use it when redoing the work would be cheap.",
+};
 const notes_title = { type: 'string', description: 'Optional heading for the notes, e.g. "Decisions", "Paper notes", "Findings"' };
 
 type Tool = { name: string; description: string; inputSchema: object; run: (c: Ctx, a: any) => Promise<unknown>; readOnly?: boolean; ui?: string };
@@ -83,7 +92,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'update_task',
-    description: 'Add a progress note, change status, or mark blocked with a question for a person. A blocked question goes to the decision inbox. Status parked puts a task off ("later"): only do that when a person asks, optionally with until.',
+    description: 'Add a progress note, change status, or mark blocked with a question for a person. A blocked question goes to the decision inbox. Say what the task waits on (waiting_on: another task, a PR, a condition), tick what happened (waits_met), or state an assumption and carry on instead of waiting. Status parked puts a task off ("later"): only do that when a person asks, optionally with until.',
     inputSchema: {
       type: 'object', required: ['key'],
       properties: {
@@ -94,6 +103,9 @@ export const TOOLS: Tool[] = [
         blocked_on: { type: 'string', description: 'Who should answer (name); empty means anyone' },
         title: { type: 'string' }, brief: { type: 'string' }, criteria: { type: 'array', items: { type: 'string' } },
         priority: { type: 'number', description: '0 urgent to 3 low' }, kind, session, ...spend,
+        waiting_on, assumption,
+        waits_met: { type: 'array', items: { type: 'string' }, description: 'What it waited on has happened: wait ids, task keys or the condition words, as get_task lists them under waiting_on. Kunla clears task waits and merged PRs by itself.' },
+        not_waiting_on: { type: 'array', items: { type: 'string' }, description: 'Take waits off that were wrong or no longer matter (wait ids, task keys or condition words).' },
       },
     },
     run: (c, a) => core.updateTask(c, a.key, a),
@@ -107,7 +119,7 @@ export const TOOLS: Tool[] = [
         summary: { type: 'string', description: 'What was done, in one or two sentences' },
         task: { type: 'string', description: 'Task key, if the work belongs to one' },
         project: { type: 'string', description: 'Project key for a new task; leave out for workspace-level work' },
-        title: { type: 'string' }, kind, deliverables: links, notes, notes_title, session, ...spend,
+        title: { type: 'string' }, kind, deliverables: links, notes, notes_title, session, ...spend, assumption,
         status: { type: 'string', enum: ['in_progress', 'review', 'done'], description: "For a new task; default 'done'" },
       },
     },
@@ -150,7 +162,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'create_task',
-    description: "Create a task. Project is optional (leave it out for workspace-level work). To split your work, pass parent with a task key: the sub-task joins the parent's project, and the parent finishes when all sub-tasks do. Tasks from AIs land in the Inbox as proposals unless status is ready. If a similar open task exists you get it back instead; work on that one, or pass force true if it really is different.",
+    description: "Create a task. Project is optional (leave it out for workspace-level work). To split your work, pass parent with a task key: the sub-task joins the parent's project, and the parent finishes when all sub-tasks do. To put pieces in order, pass waiting_on (e.g. the key of the sub-task that must land first). Tasks from AIs land in the Inbox as proposals unless status is ready. If a similar open task exists you get it back instead; work on that one, or pass force true if it really is different.",
     inputSchema: {
       type: 'object', required: ['title'],
       properties: {
@@ -158,6 +170,7 @@ export const TOOLS: Tool[] = [
         criteria: { type: 'array', items: { type: 'string' } }, priority: { type: 'number' },
         assignee: { type: 'string' }, reviewer: { type: 'string' }, parent: { type: 'string', description: 'Parent task key; makes this a sub-task' },
         kind, status: { type: 'string', enum: ['inbox', 'ready'] }, force: { type: 'boolean', description: 'Create even if a similar open task exists' },
+        waiting_on, assumption,
       },
     },
     run: async (c, a) => {
@@ -184,7 +197,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'decision_inbox', readOnly: true, ui: apps.INBOX_URI,
-    description: 'What is waiting on a person: reviews, questions from blocked tasks, proposals, and tasks flagged after repeated review rounds.',
+    description: 'What is waiting on a person: reviews, questions from blocked tasks, proposals, assumptions agents made instead of waiting (confirm or correct them), and tasks flagged after repeated review rounds.',
     inputSchema: { type: 'object', properties: {} },
     run: (c) => core.inbox(c),
   },
@@ -212,6 +225,18 @@ export const TOOLS: Tool[] = [
     inputSchema: { type: 'object', properties: { project: { type: 'string' } } },
     run: (c, a) => core.projectStatus(c, a.project),
   },
+  {
+    name: 'relations', readOnly: true,
+    description: "How open tasks connect: what waits on what (other tasks, conditions such as a PR merging, and sub-tasks), who owes each piece, which promises went quiet, and the bottlenecks that hold up the most work. Pass project or a task key to see just that part. The web app draws the same thing under Map, Relations.",
+    inputSchema: { type: 'object', properties: { project: { type: 'string' }, task: { type: 'string', description: 'A task key: just the tasks connected to it' }, subtasks: { type: 'boolean', description: 'Include every open sub-task family, not only those connected to a wait' } } },
+    run: async (c, a) => ({ ...(await waits.graph(c, { project: a.project, focus: a.task, subtasks: !!a.subtasks })), link: `${c.baseUrl}/app/#/map/relations` }),
+  },
+  {
+    name: 'settle_assumption',
+    description: "People only: confirm an assumption an agent made, or correct it (say what is right). A correction goes back to the agent on its task, and work in review or done goes back to it. decision_inbox lists open assumptions with their ids.",
+    inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string', description: 'The assumption id from decision_inbox or get_task' }, confirm: { type: 'boolean' }, correct: { type: 'string', description: 'What is actually right; leave out to confirm' } } },
+    run: (c, a) => waits.settleAssumption(c, a.id, a),
+  },
 ];
 
 type Rpc = { jsonrpc: '2.0'; id?: string | number | null; method: string; params?: any };
@@ -233,7 +258,8 @@ Working agreement:
 10. When the person who sponsors you decides something about a task in your chat (approve, merge, send back, an answer), call record_decision with their words and a link to the chat, so it counts in Kunla. Never record a decision they didn't make.
 11. One holder per task. Claim before you work, and never work on a task someone else holds: if claim_task says it is taken, skip it and call next_task. If heartbeat or an update says the task is no longer yours, stop and move on. When you stop partway, release_task with a handoff note so the next person or agent can carry on; read handoff on a task before you start it.
 12. All work counts, not only code. When a chat reaches an outcome (a decision, a takeaway, a draft, findings, notes on a paper, a campaign sent), log_work it yourself with its kind and the outcome in notes or links, without waiting to be asked. Log once per outcome, not every message; keep adding to the same task key as the conversation goes on. Real next steps become their own tasks. Discussion and learning can be logged as done; send work for review when a person must sign it off.
-13. Write pull requests and issues as full URLs or owner/repo#N (owner/repo!N for a GitLab merge request) so they show as links, and pass repo (your git remote) when you work in a git repo, so short forms like PR #12 link to the right code host.`;
+13. Write pull requests and issues as full URLs or owner/repo#N (owner/repo!N for a GitLab merge request) so they show as links, and pass repo (your git remote) when you work in a git repo, so short forms like PR #12 link to the right code host.
+14. Waiting: when a task can't go on until something else happens, say so with update_task waiting_on (a task key, a PR link, or a condition such as "budget approved"); next_task then skips it and it comes back by itself when that happens. Before you add one, ask what you actually need: often it is one decision (ask it with blocked_question) or an agreed interface (file it as its own small task, done first), not the whole other task. If redoing the work later would be cheap, don't wait: pass assumption ("Assuming X") and carry on; a person confirms or corrects it. When you split work into sub-tasks, put them in order with waiting_on.`;
 
 // Agents working in a git repo pass repo (their remote); the task's project remembers it (KD-42).
 for (const t of TOOLS.filter((x) => ['create_task', 'claim_task', 'log_work', 'submit_for_review', 'update_task'].includes(x.name))) {

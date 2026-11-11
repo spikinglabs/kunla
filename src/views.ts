@@ -2,6 +2,7 @@
 // and rules with their reach. All derived from the event record; nobody writes a status update.
 import { sweepLeases, listMembers, taskKind } from './core';
 import * as continuous from './continuous';
+import * as waits from './waits';
 import type { Ctx, Member, Task } from './core';
 
 const now = (c: Ctx) => (c.now ? c.now() : new Date());
@@ -47,7 +48,7 @@ export async function briefing(c: Ctx, sinceHours?: number) {
     : { since: new Date(now(c).getTime() - (sinceHours ?? FIRST_VISIT_HOURS) * 3600_000).toISOString(), window: 'hours' as const, saved: null };
   const since = w.since;
   // Independent reads go out together: on Cloudflare each await is a round trip to the database.
-  const [rowsR, finishedR, rulesR, tidiedR, asked] = await Promise.all([
+  const [rowsR, finishedR, rulesR, tidiedR, asked, bottlenecks] = await Promise.all([
     c.db.prepare(
       `SELECT m.id, m.name, m.kind, e.type, COUNT(DISTINCT e.task_id) AS n FROM events e JOIN members m ON m.id = e.actor_id
        WHERE e.space_id = ? AND e.created_at > ? AND e.type IN ('submitted','approved','work_logged','claimed','rule_added','changes_requested')
@@ -58,6 +59,7 @@ export async function briefing(c: Ctx, sinceHours?: number) {
     c.db.prepare(`SELECT COUNT(*) AS n FROM rules r JOIN projects p ON p.id = r.project_id WHERE p.space_id = ? AND r.created_at > ?`).bind(c.space, since).first<{ n: number }>(),
     c.db.prepare(`SELECT COUNT(*) AS n FROM events WHERE space_id = ? AND type = 'tidied' AND created_at > ?`).bind(c.space, since).first<{ n: number }>(),
     asks(c),
+    waits.bottlenecks(c),
     w.saved,
   ]);
   const by = new Map<string, { name: string; kind: string; counts: Record<string, number> }>();
@@ -68,7 +70,8 @@ export async function briefing(c: Ctx, sinceHours?: number) {
   const finished = finishedR.results;
   const rulesAdded = rulesR?.n ?? 0;
   const tidied = tidiedR?.n ?? 0;
-  return { since, window: w.window, members: [...by.values()], finished, rules_added: rulesAdded, tidied, asks: asked };
+  // The one thing holding up the most work (KD-84): what to unstick first.
+  return { since, window: w.window, members: [...by.values()], finished, rules_added: rulesAdded, tidied, asks: asked, bottlenecks };
 }
 
 // ---------- asks: what waits on someone for too long (KD-50) ----------
@@ -79,7 +82,7 @@ const QUESTION_WAIT_HOURS = 24;  // a blocked question waiting on someone else
 const MAX_ASKS = 8;
 const BUDGET_STOPS = ['tasks_budget', 'cost_budget', 'tokens_budget', 'review_limit', 'ended'];
 
-export type AskKind = 'budget_stop' | 'question_waiting' | 'review_waiting' | 'quiet_claim' | 'overlap';
+export type AskKind = 'budget_stop' | 'question_waiting' | 'review_waiting' | 'quiet_promise' | 'quiet_claim' | 'overlap';
 export interface Ask {
   kind: AskKind; line: string; since: string;
   task: { key: string; title: string } | null;
@@ -105,7 +108,7 @@ export async function asks(c: Ctx): Promise<Ask[]> {
   const t = now(c).getTime();
   const iso = (ms: number) => new Date(t - ms).toISOString();
   const me = c.me?.id ?? '';
-  const [members, qsR, rsR, activeR] = await Promise.all([
+  const [members, qsR, rsR, activeR, promises] = await Promise.all([
     listMembers(c),
     c.db.prepare(
     `SELECT key, title, blocked_on_id, assignee_id, updated_at FROM tasks WHERE space_id = ? AND status = 'blocked'
@@ -121,6 +124,7 @@ export async function asks(c: Ctx): Promise<Ask[]> {
        EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')) AS has_open_subs
      FROM tasks t WHERE t.space_id = ? AND t.status IN ('in_progress','review','blocked') AND t.assignee_id IS NOT NULL
      ORDER BY t.updated_at DESC LIMIT 200`).bind(c.space).all<{ key: string; title: string; status: string; assignee_id: string; parent_id: string | null; lease_expires_at: string | null; updated_at: string; last_at: string | null; has_open_subs: number }>(),
+    waits.quietPromises(c),
   ]);
   const byId = new Map(members.map((m) => [m.id, m]));
   const who = (id: string | null) => (id && byId.get(id)) ? { id, name: byId.get(id)!.name, kind: byId.get(id)!.kind } : undefined;
@@ -148,6 +152,9 @@ export async function asks(c: Ctx): Promise<Ask[]> {
   for (const r of rs) out.push({ kind: 'review_waiting', since: r.updated_at, task: { key: r.key, title: r.title }, member: who(r.reviewer_id), action: 'open',
     line: `${r.key} has waited ${days(t - new Date(r.updated_at).getTime())} for a review from ${who(r.reviewer_id)?.name ?? 'someone'}.` });
 
+  // Promises that went quiet (KD-84): work others wait on that nobody is moving, conditions nobody ticked.
+  for (const q of promises) out.push({ kind: 'quiet_promise', since: q.since, task: { key: q.key, title: q.title }, ...(q.other ? { other: q.other } : {}), member: q.member, action: 'open', line: q.line });
+
   // Claims that went quiet. An agent's claim lapses by itself (lease); a person's never does, so say it.
   const active = activeR.results;
   for (const a of active) {
@@ -172,7 +179,7 @@ export async function asks(c: Ctx): Promise<Ask[]> {
       line: `${who(x.assignee_id)?.name ?? 'Someone'} (${x.key}) and ${who(y.assignee_id)?.name ?? 'someone'} (${y.key}) may be doing the same work.` });
   }
 
-  const order: Record<AskKind, number> = { budget_stop: 0, question_waiting: 1, review_waiting: 2, quiet_claim: 3, overlap: 4 };
+  const order: Record<AskKind, number> = { budget_stop: 0, question_waiting: 1, review_waiting: 2, quiet_promise: 3, quiet_claim: 4, overlap: 5 };
   return out.sort((a, b) => order[a.kind] - order[b.kind] || a.since.localeCompare(b.since)).slice(0, MAX_ASKS);
 }
 
@@ -235,7 +242,7 @@ export async function workMap(c: Ctx, days = 5) {
   await sweepLeases(c);
   const end = now(c);
   const start = new Date(end.getTime() - days * 86400_000);
-  const [members, evsR, tasksR, projectsR] = await Promise.all([
+  const [members, evsR, tasksR, projectsR, waitingR] = await Promise.all([
     listMembers(c),
     c.db.prepare(
       `SELECT e.task_id, t.key, t.title, e.type, e.note, e.actor_id, e.created_at, e.data FROM events e JOIN tasks t ON t.id = e.task_id
@@ -245,6 +252,11 @@ export async function workMap(c: Ctx, days = 5) {
       .bind(c.space, c.space, start.toISOString(), c.space).all<Task>(),
     c.db.prepare(`SELECT id, key, name, kind FROM projects WHERE space_id = ? ORDER BY kind DESC, focus DESC, rank, created_at`)
       .bind(c.space).all<{ id: string; key: string; name: string; kind: string }>(),
+    // Tasks waiting on another task or a condition (KD-84), oldest wait first.
+    c.db.prepare(`SELECT t.key, t.title, t.status, t.assignee_id, MIN(w.created_at) AS since, group_concat(coalesce(b.key, '"' || w.condition || '"'), ', ') AS what
+      FROM waits w JOIN tasks t ON t.id = w.task_id LEFT JOIN tasks b ON b.id = w.on_task_id
+      WHERE w.space_id = ? AND w.met_at IS NULL AND t.status NOT IN ('done','declined','parked') AND (b.id IS NULL OR b.status NOT IN ('done','declined'))
+      GROUP BY t.id ORDER BY since LIMIT 50`).bind(c.space).all<{ key: string; title: string; status: string; assignee_id: string | null; since: string; what: string }>(),
   ]);
   const evs = evsR.results;
   const tasks = new Map(tasksR.results.map((t) => [t.id, t]));
@@ -300,6 +312,8 @@ export async function workMap(c: Ctx, days = 5) {
   const clip = (s: Seg) => (s.end ?? end.toISOString()) >= start.toISOString();
   const waits = [...lanes.entries()].flatMap(([mid, segs]) => segs.filter((s) => s.kind === 'wait' && !s.end).map((s) => ({
     key: s.key, title: s.title, who: names.get(mid), label: s.label, since: s.start,
+  }))).concat(waitingR.results.map((w) => ({
+    key: w.key, title: w.title, who: (w.assignee_id && names.get(w.assignee_id)) || 'Anyone', label: `${w.key} waiting on ${w.what}`, since: w.since, on: w.what,
   }))).sort((a, b) => a.since.localeCompare(b.since));
   return {
     start: start.toISOString(), end: end.toISOString(),

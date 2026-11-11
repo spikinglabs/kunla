@@ -3,6 +3,7 @@ import { taskPr, tokenFor, mergeApproved, ownLinks } from './merge';
 import * as continuous from './continuous';
 import { sinceLastSession } from './catchup';
 import { FORGES, mentions, normalizeRepo, repoOf, type Repo } from './refs';
+import * as waits from './waits';
 import { DEFAULT_DEFS, KindsError, effectiveKinds, inferKind, labelFor, linkType, matchKind, parseKinds, storeKinds, type KindDef } from './kinds';
 
 // Kunla core: the record of work. Everything here is plain SQL over a D1-compatible
@@ -456,6 +457,8 @@ export async function touch(c: Ctx, taskId: string, fields: Partial<Task>) {
   const cols = Object.keys(fields);
   const sets = cols.map((k) => `${k} = ?`).concat('updated_at = ?').join(', ');
   await c.db.prepare(`UPDATE tasks SET ${sets} WHERE id = ?`).bind(...cols.map((k) => (fields as any)[k]), nowIso(c), taskId).run();
+  // Whatever finished a task (a review, a merge, a roll-up, a decline), the tasks waiting on it move on (KD-84).
+  if (fields.status === 'done' || fields.status === 'declined') await waits.onFinished(c, taskId);
 }
 
 /** Sub-tasks of a task that are not finished yet. A parent finishes only when these do. */
@@ -520,6 +523,7 @@ function handBackLease(c: Ctx, m: Member): string | null {
 export async function createTask(c: Ctx, input: {
   project?: string; title: string; brief?: string; criteria?: string[]; priority?: number;
   assignee?: string; reviewer?: string; status?: 'inbox' | 'ready'; parent?: string; due_at?: string; kind?: string; repo?: string;
+  waiting_on?: unknown[]; assumption?: unknown;
 }) {
   // Middle levels are optional: no project means a workspace-level task. A sub-task always
   // belongs to a task, takes its parent's project, and cannot have sub-tasks of its own.
@@ -547,8 +551,11 @@ export async function createTask(c: Ctx, input: {
     input.priority ?? 2, c.me.id, assignee, reviewer, parent, input.due_at ?? null, kind, c.space, t, t).run();
   const task = await getTask(c, key);
   await event(c, task.id, 'created', status === 'inbox' ? 'Proposed' : null, { status });
+  if (input.waiting_on !== undefined && input.waiting_on !== null) await waits.addWaits(c, task, input.waiting_on as unknown[]);
+  if (input.assumption) await waits.addAssumptions(c, task, input.assumption);
+  const waitingNow = await waits.isWaiting(c, task.id);
   if (assignee && status === 'ready') await wakeMember(c, assignee, 'assigned', task, input.brief ?? null);
-  if (status === 'ready' && !assignee) await continuous.wakeIdle(c, task);
+  if (status === 'ready' && !assignee && !waitingNow) await continuous.wakeIdle(c, task);
   return task;
 }
 
@@ -563,6 +570,10 @@ export async function claimTask(c: Ctx, key: string, session?: string) {
     const cs = await continuous.status(c, c.me);
     if (cs?.stop) throw new KunlaError(409, `Not starting ${t.key}: ${cs.message}`);
   }
+  // Waiting is not a status: a Ready task that waits on something is skipped by agents. People can start it anyway (KD-84).
+  const waitingOn = !mine && t.status === 'ready' ? await waits.waitingLine(c, t) : null;
+  if (waitingOn && c.me.kind === 'ai')
+    throw new KunlaError(409, `${waitingOn} Skip it and call next_task. If you only need one answer or an agreed interface from it, ask that as a question or its own small task instead of waiting; or, if redoing the work later would be cheap, a person can let you go ahead on an assumption.`);
   const r = await c.db.prepare(
     `UPDATE tasks SET status = 'in_progress', assignee_id = ?, lease_expires_at = ?, updated_at = ?
      WHERE id = ? AND (
@@ -577,7 +588,7 @@ export async function claimTask(c: Ctx, key: string, session?: string) {
       : t.status === 'ready' ? `${t.key} is assigned to ${holder}.${skip}`
       : t.status === 'parked' ? `${t.key} is parked for later. Leave it alone unless a person brings it back.` : `${t.key} is ${t.status}, not ready to claim.`);
   }
-  if (t.assignee_id !== c.me.id || t.status !== 'in_progress') await event(c, t.id, 'claimed');
+  if (t.assignee_id !== c.me.id || t.status !== 'in_progress') await event(c, t.id, 'claimed', waitingOn ? `Started before it stopped waiting: ${waitingOn}` : null);
   await recordSession(c, t.id, session);
   return getTask(c, t.id);
 }
@@ -627,17 +638,23 @@ export async function updateTask(c: Ctx, key: string, input: {
   note?: string; status?: Status; blocked_question?: string; blocked_on?: string;
   title?: string; brief?: string; criteria?: string[]; priority?: number; assignee?: string | null; reviewer?: string | null; session?: string;
   cost_usd?: number; tokens?: number; kind?: string;
+  waiting_on?: unknown[]; waits_met?: unknown[]; not_waiting_on?: unknown[]; assumption?: unknown;
 }, via?: Via) {
   let t = await getTask(c, key);
   // One holder at a time: an agent can comment on someone else's claimed task, but not move it,
   // reassign it or rewrite it. People can, and the holder is told (see claimLost below).
   const heldByOther = holds(t) && t.assignee_id !== c.me.id;
-  const changes = ['status', 'assignee', 'blocked_question', 'title', 'brief', 'criteria', 'priority'].filter((k) => (input as any)[k] !== undefined);
+  const changes = ['status', 'assignee', 'blocked_question', 'title', 'brief', 'criteria', 'priority', 'waiting_on', 'not_waiting_on'].filter((k) => (input as any)[k] !== undefined);
   if (heldByOther && c.me.kind === 'ai' && changes.length) {
     const holder = (await getMember(c, t.assignee_id!)).name;
     throw new KunlaError(409, `${t.key} is held by ${holder}, so you can't change its ${changes.join(', ')}. Add a note instead, or ask a person to take it over.`);
   }
   await recordSession(c, t.id, input.session);
+  // What it waits on, what happened, and what the agent is assuming instead of waiting (KD-84).
+  if (input.waiting_on !== undefined && input.waiting_on !== null) await waits.addWaits(c, t, input.waiting_on as unknown[]);
+  if (input.not_waiting_on !== undefined && input.not_waiting_on !== null) await waits.removeWaits(c, t, input.not_waiting_on as unknown[]);
+  if (input.waits_met !== undefined && input.waits_met !== null) await waits.meetWaits(c, t, input.waits_met as unknown[], input.note ?? null);
+  if (input.assumption) await waits.addAssumptions(c, t, input.assumption);
   const fields: Partial<Task> = {};
   if (input.title) fields.title = input.title;
   if (input.brief !== undefined) fields.brief = input.brief;
@@ -910,7 +927,7 @@ export function taskKind(t: Pick<Task, 'title' | 'brief'> & { kind?: string | nu
 export async function logWork(c: Ctx, input: {
   summary: string; task?: string; project?: string; title?: string;
   deliverables?: { url: string; title?: string }[]; status?: 'in_progress' | 'review' | 'done'; session?: string; cost_usd?: number; tokens?: number;
-  kind?: string; notes?: string; notes_title?: string;
+  kind?: string; notes?: string; notes_title?: string; assumption?: unknown;
 }) {
   const summary = required(input.summary, 'summary');
   const urls = (input.deliverables ?? []).map((d) => d?.url).filter(Boolean) as string[];
@@ -921,6 +938,7 @@ export async function logWork(c: Ctx, input: {
     const noteId = await addNotes(c, t.id, input.notes, input.notes_title);
     await recordSession(c, t.id, input.session);
     await event(c, t.id, 'work_logged', summary, { deliverables: input.deliverables ?? [], ...(noteId ? { note_id: noteId } : {}), ...spend(input) });
+    if (input.assumption) await waits.addAssumptions(c, t, input.assumption);
     const f: Partial<Task> = {};
     if (t.assignee_id === c.me.id && t.status === 'in_progress') f.lease_expires_at = leaseFor(c, c.me);
     if (input.kind) f.kind = checkKind(await kindsFor(c, t.project_id), input.kind);
@@ -945,6 +963,7 @@ export async function logWork(c: Ctx, input: {
   const noteId = await addNotes(c, task.id, input.notes, input.notes_title);
   await event(c, task.id, 'work_logged', summary, { deliverables: input.deliverables ?? [], ...(noteId ? { note_id: noteId } : {}), ...spend(input) });
   await recordSession(c, task.id, input.session);
+  if (input.assumption) await waits.addAssumptions(c, task, input.assumption);
   if (status === 'review') return submitForReview(c, key, { summary, deliverables: input.deliverables ?? [] });
   return task;
 }
@@ -1188,12 +1207,13 @@ export async function taskDetail(c: Ctx, key: string) {
   await sweepLeases(c);
   const t = await getTask(c, key);
   // Everything below depends only on the task, so it goes to D1 in one wave instead of a dozen hops.
-  const [p, ws0, defs, parent, names, sharing, repo, deliverables, events, rules, reviews, subtasks, sessions, notes] = await Promise.all([
+  const namesP = memberNames(c);
+  const [p, ws0, defs, parent, names, sharing, repo, deliverables, events, rules, reviews, subtasks, sessions, notes, deps] = await Promise.all([
     getProject(c, t.project_id),
     getWorkspace(c),
     kindsFor(c, t.project_id),
     t.parent_id ? c.db.prepare('SELECT key, title, status FROM tasks WHERE id = ?').bind(t.parent_id).first() : null,
-    memberNames(c),
+    namesP,
     claimInfo(c, t),
     projectRepo(c, t.project_id),
     c.db.prepare('SELECT url, title, created_at FROM deliverables WHERE task_id = ? ORDER BY created_at, rowid').bind(t.id).all(),
@@ -1208,6 +1228,7 @@ export async function taskDetail(c: Ctx, key: string) {
     c.db.prepare(`SELECT s.ref, s.created_at, m.name AS member, m.kind AS member_kind FROM task_sessions s
                   LEFT JOIN members m ON m.id = s.member_id WHERE s.task_id = ? ORDER BY s.created_at`).bind(t.id).all(),
     taskNotes(c.db, t.id),
+    waits.detail(c, t, namesP),
   ]);
   const links = (deliverables.results as { url: string; title: string | null; created_at: string }[]).map((d) => ({ ...d, type: linkType(d.url) }));
   const kind = taskKind(t, links.map((d) => d.url), defs);
@@ -1231,6 +1252,7 @@ export async function taskDetail(c: Ctx, key: string) {
     notes,
     reviews: reviews.results.map((r: any) => ({ ...r, via: r.via ? JSON.parse(r.via) : null })),
     subtasks: subtasks.results,
+    ...deps,
     sessions: sessions.results.map((s: any) => ({ ...s, url: /^https?:\/\//i.test(s.ref) ? s.ref : null })),
     history: events.results.map((e: any) => ({ ...e, data: JSON.parse(e.data || '{}') })),
     references: references(c.baseUrl, t, p.name),
@@ -1249,13 +1271,13 @@ async function memberNames(c: Ctx) {
   return map;
 }
 
-function publicTask(t: Task & { project_key?: string | null; project_kind?: string; parent_key?: string | null; sub_total?: number; sub_done?: number }, names: Map<string, Member>, kinds?: Map<string, KindDef[]>) {
+function publicTask(t: Task & { project_key?: string | null; project_kind?: string; parent_key?: string | null; sub_total?: number; sub_done?: number; wait_n?: number }, names: Map<string, Member>, kinds?: Map<string, KindDef[]>) {
   const who = (mid: string | null) => (mid && names.get(mid) ? { id: mid, name: names.get(mid)!.name, kind: names.get(mid)!.kind } : null);
   return {
     key: t.key,
     ...(t.project_kind !== undefined ? { project: t.project_kind === 'workspace' ? null : t.project_key } : {}),
     ...(t.parent_key !== undefined ? { parent: t.parent_key } : {}),
-    ...(t.sub_total ? { subtasks: { total: t.sub_total, done: t.sub_done ?? 0 } } : {}), title: t.title, kind: taskKind(t, [], kinds?.get(t.project_id)), brief: t.brief, criteria: parseList(t.criteria), status: t.status,
+    ...(t.sub_total ? { subtasks: { total: t.sub_total, done: t.sub_done ?? 0 } } : {}), ...(t.wait_n ? { waiting: t.wait_n } : {}), title: t.title, kind: taskKind(t, [], kinds?.get(t.project_id)), brief: t.brief, criteria: parseList(t.criteria), status: t.status,
     priority: t.priority, origin: t.origin, assignee: who(t.assignee_id), reviewer: who(t.reviewer_id),
     created_by: who(t.created_by), lease_expires_at: t.lease_expires_at, blocked_question: t.blocked_question,
     blocked_on: who(t.blocked_on_id), review_rounds: t.review_rounds, due_at: t.due_at,
@@ -1288,7 +1310,8 @@ export async function listTasks(c: Ctx, f: { project?: string; status?: string; 
   const [rowsR, names, byKind] = await Promise.all([c.db.prepare(
     `SELECT t.*, p.key AS project_key, p.kind AS project_kind, pt.key AS parent_key,
        (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id) AS sub_total,
-       (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.status IN ('done','declined')) AS sub_done
+       (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.status IN ('done','declined')) AS sub_done,
+       ${waits.WAIT_COUNT_SQL('t')} AS wait_n
      FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN tasks pt ON pt.id = t.parent_id
      WHERE ${where.join(' AND ')}
      ORDER BY t.priority, t.updated_at DESC LIMIT ?`).bind(...args, Math.min(f.limit ?? 200, 1000)).all<Task>(), memberNames(c), byProjectP]);
@@ -1323,10 +1346,11 @@ async function pickNext(c: Ctx, project?: string) {
   // Continuous mode: a limit stops new work (assigned or open), never finishing work or reviewing.
   const cs = await continuous.status(c, c.me);
   const picks: [string, Task | null][] = [
-    ['continue', await q(`t.status = 'in_progress' AND t.assignee_id = ? AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))`, false, c.me.id)],
-    ['assigned', cs?.stop ? null : await q(`t.status = 'ready' AND t.assignee_id = ?`, false, c.me.id)],
+    // Tasks that wait on another task or a condition are skipped until it happens (KD-84).
+    ['continue', await q(`t.status = 'in_progress' AND t.assignee_id = ? AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')) AND NOT ${waits.WAITING_SQL('t')}`, false, c.me.id)],
+    ['assigned', cs?.stop ? null : await q(`t.status = 'ready' AND t.assignee_id = ? AND NOT ${waits.WAITING_SQL('t')}`, false, c.me.id)],
     ['review', await q(`t.status = 'review' AND t.reviewer_id = ? AND (t.assignee_id IS NULL OR t.assignee_id != ?)`, false, c.me.id, c.me.id)],
-    ['open', cs?.stop ? null : await q(`t.status = 'ready' AND t.assignee_id IS NULL AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))`, true)],
+    ['open', cs?.stop ? null : await q(`t.status = 'ready' AND t.assignee_id IS NULL AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')) AND NOT ${waits.WAITING_SQL('t')}`, true)],
   ];
   const hit = picks.find(([, t]) => t);
   const focus = (await listProjects(c)).filter((p) => p.focus).map((p) => `${p.key} ${p.name}`);
@@ -1341,7 +1365,7 @@ async function pickNext(c: Ctx, project?: string) {
   if (!reason) {
     const waiting = (await c.db.prepare(
       `SELECT key FROM tasks t WHERE t.space_id = ? AND t.assignee_id = ? AND (t.status = 'blocked' OR (t.status = 'in_progress' AND EXISTS
-         (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined')))) LIMIT 5`).bind(c.space, c.me.id).all<{ key: string }>()).results;
+         (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))) OR (t.status IN ('ready','in_progress') AND ${waits.WAITING_SQL('t')})) LIMIT 5`).bind(c.space, c.me.id).all<{ key: string }>()).results;
     reason = waiting.length ? 'waiting_on_people' : 'nothing_ready';
   }
   const message = continuous.stopMessageFor(reason, cs.settings, cs.usage, { platform: c.me.platform, hasWake: !!c.me.callback });
@@ -1357,7 +1381,7 @@ export async function inbox(c: Ctx) {
   await sweepLeases(c);
   const mine = c.me.id;
   // One wave of reads instead of six sequential ones: on Cloudflare each await is a round trip to D1.
-  const [names, byProject, reviewsR, questionsR, proposalsR, flaggedR] = await Promise.all([
+  const [names, byProject, reviewsR, questionsR, proposalsR, flaggedR, assumed] = await Promise.all([
     memberNames(c),
     kindsByProject(c),
     c.db.prepare(
@@ -1370,6 +1394,8 @@ export async function inbox(c: Ctx) {
     c.db.prepare(`SELECT * FROM tasks WHERE space_id = ? AND status = 'inbox' ORDER BY priority, created_at`).bind(c.space).all<Task>(),
     c.db.prepare(
       `SELECT * FROM tasks WHERE space_id = ? AND review_rounds >= ? AND status = 'in_progress' ORDER BY updated_at`).bind(c.space, MAX_REVIEW_ROUNDS).all<Task>(),
+    // Assumptions agents made instead of waiting: only people settle them (KD-84).
+    c.me.kind === 'human' ? waits.openAssumptions(c) : Promise.resolve([]),
   ]);
   const [reviews, questions, proposals, flagged] = [reviewsR.results, questionsR.results, proposalsR.results, flaggedR.results];
   // Each review card needs its summary, links and notes: three queries for all cards together
@@ -1407,6 +1433,8 @@ export async function inbox(c: Ctx) {
     ...(await Promise.all(questions.map(withMentions))).map((t) => ({ kind: 'question' as const, task: t })),
     ...(await Promise.all(proposals.map(withMentions))).map((t) => ({ kind: 'proposal' as const, task: t })),
     ...flagged.map((t) => ({ kind: 'flagged' as const, task: publicTask(t, names) })),
+    ...assumed.map((a: any) => ({ kind: 'assumption' as const, task: publicTask(a, names),
+      assumption: { id: a.a_id, text: a.a_text, at: a.a_at, made_by: names.get(a.a_by) ? { id: a.a_by, name: names.get(a.a_by)!.name, kind: names.get(a.a_by)!.kind } : null } })),
   ];
   return { count: items.length, items };
 }
