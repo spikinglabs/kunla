@@ -150,5 +150,14 @@ describe('sign in with GitHub', () => {
     expect(q.get('client_id')).toBe('appid');
     expect(q.get('redirect_uri')).toBe('https://cloud.test/auth/github/callback');
     expect(q.get('state')).toMatch(/^acme\./);
+
+    // Google too: the shared Cloud client, back through the router, and the round trip still signs Bob in.
+    Object.assign(env, { GOOGLE_CLIENT_ID: 'cloud-gid' });
+    const { res, sent, start: gs } = await signIn({ iss: 'https://accounts.google.com', aud: 'cloud-gid', exp: Date.now() / 1000 + 300, email: 'bob@acme.com', email_verified: true });
+    const gq = new URL(gs.location).searchParams;
+    expect(gq.get('redirect_uri')).toBe('https://cloud.test/auth/google/callback');
+    expect(gq.get('state')).toMatch(/^acme\./);
+    expect(sent.body.get('redirect_uri')).toBe('https://cloud.test/auth/google/callback');
+    expect(res.location).toMatch(/^\/app\/#\/use\//);
   });
 });

@@ -45,16 +45,21 @@ function providers(env: OidcEnv): Provider[] {
 }
 
 /**
- * Where the provider sends the browser back. On Kunla Cloud, GitHub only knows the Cloud's own address (one shared
- * app for every team), so it goes there and the router sends it on to the team named before the dot in state.
+ * Where the provider sends the browser back. On Kunla Cloud, Google and GitHub sign-in use one shared app for every
+ * team, which only knows the Cloud's own address; the browser goes there and the router sends it on to the team
+ * named before the dot in state. A team's own GitHub OAuth app (GITHUB_LOGIN_*) comes straight back.
  */
+function routed(env: OidcEnv, p: Provider) {
+  if (!env.KUNLA_TENANT || !env.KUNLA_CLOUD_HOOK) return false;
+  return p.id === 'google' || (p.id === 'github' && !env.GITHUB_LOGIN_CLIENT_ID);
+}
 function callbackUrl(env: OidcEnv, p: Provider, origin: string) {
-  if (p.id === 'github' && !env.GITHUB_LOGIN_CLIENT_ID && env.KUNLA_TENANT && env.KUNLA_CLOUD_HOOK) {
-    try { return `${new URL(env.KUNLA_CLOUD_HOOK).origin}/auth/github/callback`; } catch { /* fall through */ }
+  if (routed(env, p)) {
+    try { return `${new URL(env.KUNLA_CLOUD_HOOK!).origin}/auth/${p.id}/callback`; } catch { /* fall through */ }
   }
   return `${origin}/auth/${p.id}/callback`;
 }
-const statePrefix = (env: OidcEnv, p: Provider) => (p.id === 'github' && !env.GITHUB_LOGIN_CLIENT_ID && env.KUNLA_TENANT ? `${env.KUNLA_TENANT}.` : '');
+const statePrefix = (env: OidcEnv, p: Provider) => (routed(env, p) ? `${env.KUNLA_TENANT}.` : '');
 
 /** The sign-in buttons this Kunla offers. */
 export const options = (env: OidcEnv) => providers(env).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }));
