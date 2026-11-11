@@ -65,7 +65,10 @@ export interface Ctx {
   defer?: (job: () => Promise<unknown>) => void;
   /** This Kunla's edition (KD-75); absent means Community. */
   licence?: Licence;
+  /** A connector that may reach several workspaces (KD-29): the ones its token was granted, the default first. */
+  grants?: () => Promise<Grant[]>;
 }
+export interface Grant { key: string; name: string; default: boolean }
 
 /** A company policy (ee/, KD-75) may refuse an action; with no policies registered this is free. */
 async function checkPolicy(c: Ctx, action: PolicyAction) {
@@ -106,6 +109,43 @@ export async function memberForToken(db: D1Database, token: string): Promise<Mem
     await db.prepare('UPDATE tokens SET last_used_at = ? WHERE id = ?').bind(now.toISOString(), row.token_id).run();
   const { token_id: _t, token_used: _u, ...member } = row;
   return member as Member;
+}
+
+// One connector for several workspaces (KD-29): each extra workspace's grant is a token row of its own under
+// sha256(token + "#" + workspace id); the default workspace's is the plain sha256(token).
+const grantHash = (token: string, space: string) => sha256(`${token}#${space}`);
+
+/** The member a token acts as in one workspace: its own row there, or the default row when that is the workspace. */
+export async function memberForTokenIn(db: D1Database, token: string, space: string): Promise<Member | null> {
+  const r = await db.prepare(
+    `SELECT m.* FROM tokens t JOIN members m ON m.id = t.member_id
+     WHERE t.token_hash IN (?, ?) AND t.revoked_at IS NULL AND m.removed_at IS NULL AND m.space_id = ? LIMIT 1`)
+    .bind(await grantHash(token, space), await sha256(token), space).first<Member>();
+  return r ?? null;
+}
+
+/** Every workspace a connector token reaches, default first. Few workspaces per Kunla, so hash them all. */
+export async function grantsFor(db: D1Database, token: string): Promise<Grant[]> {
+  const spaces = (await db.prepare(`SELECT id, key, name FROM projects WHERE kind = 'workspace'`).all<{ id: string; key: string; name: string }>()).results;
+  const plain = await sha256(token);
+  const byHash = new Map<string, { key: string; name: string; id: string }>();
+  for (const w of spaces) byHash.set(await grantHash(token, w.id), w);
+  const rows = (await db.prepare(
+    `SELECT t.token_hash, m.space_id FROM tokens t JOIN members m ON m.id = t.member_id
+     WHERE t.token_hash IN (SELECT value FROM json_each(?)) AND t.revoked_at IS NULL AND m.removed_at IS NULL`)
+    .bind(JSON.stringify([plain, ...byHash.keys()])).all<{ token_hash: string; space_id: string }>()).results;
+  const out: Grant[] = [];
+  for (const r of rows) {
+    const w = r.token_hash === plain ? spaces.find((x) => x.id === r.space_id) : byHash.get(r.token_hash);
+    if (w) out.push({ key: w.key, name: w.name, default: r.token_hash === plain });
+  }
+  return out.sort((a, b) => Number(b.default) - Number(a.default) || a.key.localeCompare(b.key));
+}
+
+/** Give a connector token a grant in another workspace, as that workspace's agent. */
+export async function addGrant(db: D1Database, token: string, memberId: string, space: string, label: string) {
+  await db.prepare('INSERT INTO tokens (id, member_id, label, token_hash, created_at) VALUES (?,?,?,?,?)')
+    .bind(id(), memberId, label, await grantHash(token, space), new Date().toISOString()).run();
 }
 
 export async function issueToken(db: D1Database, memberId: string, label: string): Promise<string> {

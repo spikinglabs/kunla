@@ -63,13 +63,15 @@ app.onError((e, c) => {
 });
 
 // ---------- auth ----------
+const bearer = (c: C) => { const h = c.req.header('authorization') ?? ''; return h.startsWith('Bearer ') ? h.slice(7).trim() : ''; };
 async function authenticate(c: C): Promise<core.Ctx | null> {
-  const h = c.req.header('authorization') ?? '';
-  const token = h.startsWith('Bearer ') ? h.slice(7).trim() : '';
+  const token = bearer(c);
   if (!token) return null;
   const me = await core.memberForToken(c.env.DB, token);
-  if (!me) return null;
-  // The token decides the workspace: every read and write below is limited to it.
+  return me ? ctxFor(c, me) : null;
+}
+// The token decides the workspace: every read and write below is limited to it.
+async function ctxFor(c: C, me: core.Member): Promise<core.Ctx> {
   return { db: c.env.DB, me, space: me.space_id, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), licence: await readLicence(c.env.KUNLA_LICENSE), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)),
     defer: (job) => sendLater(c, job()) };
 }
@@ -210,23 +212,55 @@ app.get('/t/:key', (c) => c.redirect(`/app/#/t/${encodeURIComponent(c.req.param(
 // /mcp takes a token from any workspace. /mcp/<KEY> is the same server for one workspace only, so a
 // chat app that allows one connector per URL (claude.ai) can add one connector per workspace: OAuth on
 // that address signs in to that workspace, and a token from another workspace is turned away.
+// One connector may also reach several workspaces (KD-29): the person ticks them when approving it, and each tool call
+// names one with an optional `workspace` argument (the default workspace otherwise). Calls never mix workspaces.
 async function handleMcp(c: C, wsKey?: string) {
-  const ctx = await authenticate(c);
+  let ctx = await authenticate(c);
   const space = wsKey ? await core.workspaceByKey(c.env.DB, wsKey) : null;
   if (wsKey && !space) return c.json({ jsonrpc: '2.0', id: null, error: { code: -32004, message: `No workspace ${wsKey.toUpperCase()} on this Kunla.` } }, 404);
+  const token = bearer(c);
+  // At /mcp/KEY a connector granted several workspaces acts in KEY.
+  if (ctx && space && ctx.space !== space.id) {
+    const there = await core.memberForTokenIn(c.env.DB, token, space.id);
+    ctx = there ? await ctxFor(c, there) : ctx;
+  }
   if (!ctx || (space && ctx.space !== space.id)) {
     const meta = `${baseUrl(c)}/.well-known/oauth-protected-resource${space ? `/mcp/${space.key}` : ''}`;
     return c.json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: ctx ? `This token belongs to another workspace; connect to ${space!.name} again.` : 'Unauthorized' } }, 401, {
       'WWW-Authenticate': `Bearer resource_metadata="${meta}"`,
     });
   }
+  const home = ctx;
+  let grants: Promise<core.Grant[]> | null = null;
+  const grantsOnce = () => (grants ??= core.grantsFor(c.env.DB, token));
+  home.grants = grantsOnce;
+  // The context for one message: the workspace its tool call names, if any.
+  const others = new Map<string, core.Ctx | null>();
+  const ctxForMsg = async (m: any): Promise<core.Ctx | string> => {
+    const args = m?.method === 'tools/call' ? m.params?.arguments : null;
+    if (!args || typeof args !== 'object' || !('workspace' in args)) return home;
+    const want = String(args.workspace ?? '').trim().toUpperCase();
+    delete args.workspace;
+    if (!want) return home;
+    if (!others.has(want)) {
+      const ws = await core.workspaceByKey(c.env.DB, want);
+      const there = ws ? (ws.id === home.space ? home.me : await core.memberForTokenIn(c.env.DB, token, ws.id)) : null;
+      others.set(want, there ? (there === home.me ? home : { ...(await ctxFor(c, there)), grants: grantsOnce }) : null);
+    }
+    return others.get(want) ?? `This connection does not reach workspace ${want}. whoami lists the workspaces it does; to add one, connect again and tick it.`;
+  };
+  const run = async (m: any) => {
+    const x = await ctxForMsg(m);
+    if (typeof x === 'string') return m?.id === undefined ? null : { jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: x }], isError: true } };
+    return handleRpc(x, m);
+  };
   let body: any;
   try { body = await c.req.json(); } catch { return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }, 400); }
   if (Array.isArray(body)) {
-    const out = (await Promise.all(body.map((m) => handleRpc(ctx, m)))).filter(Boolean);
+    const out = (await Promise.all(body.map(run))).filter(Boolean);
     return out.length ? c.json(out) : c.body(null, 202);
   }
-  const res = await handleRpc(ctx, body);
+  const res = await run(body);
   return res ? c.json(res) : c.body(null, 202);
 }
 app.post('/mcp', (c) => handleMcp(c));
