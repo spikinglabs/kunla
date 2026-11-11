@@ -157,6 +157,15 @@ export async function removeWaits(c: Ctx, t: Task, refs: unknown[]) {
   return ws.length;
 }
 
+/** Open waits per task in the workspace, for task lists: one small query, usually empty. */
+export async function openWaitCounts(c: Ctx): Promise<Map<string, number>> {
+  const rows = (await c.db.prepare(
+    `SELECT w.task_id, COUNT(*) AS n FROM waits w LEFT JOIN tasks wb ON wb.id = w.on_task_id
+     WHERE w.space_id = ? AND w.met_at IS NULL AND (w.on_task_id IS NULL OR wb.status NOT IN ${FINISHED}) GROUP BY w.task_id`).bind(c.space)
+    .all<{ task_id: string; n: number }>()).results;
+  return new Map(rows.map((r) => [r.task_id, r.n]));
+}
+
 export async function isWaiting(c: Ctx, taskId: string): Promise<boolean> {
   return !!(await c.db.prepare(`SELECT 1 AS w FROM tasks t WHERE t.id = ? AND ${WAITING_SQL('t')}`).bind(taskId).first());
 }

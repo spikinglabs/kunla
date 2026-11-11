@@ -1307,15 +1307,16 @@ export async function listTasks(c: Ctx, f: { project?: string; status?: string; 
     kinds.splice(0, kinds.length, ...keys);
     where.push(`(t.kind IS NULL OR t.kind IN (${kinds.map(() => '?').join(',')}))`); args.push(...kinds);
   }
-  const [rowsR, names, byKind] = await Promise.all([c.db.prepare(
+  const [rowsR, names, byKind, waitN] = await Promise.all([c.db.prepare(
     `SELECT t.*, p.key AS project_key, p.kind AS project_kind, pt.key AS parent_key,
        (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id) AS sub_total,
-       (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.status IN ('done','declined')) AS sub_done,
-       ${waits.WAIT_COUNT_SQL('t')} AS wait_n
+       (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.status IN ('done','declined')) AS sub_done
      FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN tasks pt ON pt.id = t.parent_id
      WHERE ${where.join(' AND ')}
-     ORDER BY t.priority, t.updated_at DESC LIMIT ?`).bind(...args, Math.min(f.limit ?? 200, 1000)).all<Task>(), memberNames(c), byProjectP]);
-  const rows = rowsR.results;
+     ORDER BY t.priority, t.updated_at DESC LIMIT ?`).bind(...args, Math.min(f.limit ?? 200, 1000)).all<Task>(), memberNames(c), byProjectP,
+    // Open waits per task (KD-84), read alongside the rows rather than as a subquery on each one.
+    waits.openWaitCounts(c)]);
+  const rows = rowsR.results.map((t) => (waitN.has(t.id) ? { ...t, wait_n: waitN.get(t.id) } : t));
   const out = rows.map((t) => publicTask(t, names, byKind));
   return kinds ? out.filter((t) => kinds.includes(t.kind)) : out;
 }
