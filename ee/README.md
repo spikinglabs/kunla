@@ -4,7 +4,7 @@ Code in this folder is **not** under the Apache-2.0 license that covers the rest
 
 Planned here (nothing yet; code lands only once the licence terms are final, KD-76):
 
-- SSO (SAML, OIDC) and SCIM provisioning
+- SSO (SAML, Okta and other OIDC providers) and SCIM provisioning. Google and Microsoft sign-in by email are in the core (`src/oidc.ts`).
 - Audit log export
 - Policies: which AIs may join, which data they may see, approval rules
 - Data residency and Postgres for large installs
@@ -29,7 +29,7 @@ export default kunla;
 |---|---|
 | `Policy` | Asked before a member is added, a workspace is created and an agent or person claims a task; a sentence refuses the action and is shown to whoever tried. |
 | `AuditSink` | Gets every new event of the record (with task key and actor) from the daily cron, oldest first, in batches; a failed send is retried from the same place. |
-| `SignInProvider` | Handles `/auth/<id>/...`; returns the member to sign in, and Kunla issues a token and opens the web app. Listed by `GET /api/edition` for the sign-in page. |
+| `SignInProvider` | Handles `/auth/<id>/...` (except `google` and `microsoft`, which the core owns); returns the member to sign in, and Kunla issues a token and opens the web app. Listed by `GET /api/edition` for the sign-in page. |
 | Seats | A licence's `seats` limits how many people the Kunla has; AI members are always free. Enforced in the core. |
 
 Each extension names a licence feature (`sso`, `audit`, `policies`, ...) and runs only when the licence includes it. With no licence, every Kunla is the complete Community edition, whatever is registered.
