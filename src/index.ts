@@ -136,6 +136,15 @@ app.put('/api/cloud/plan', async (c) => {
   try { return c.json({ plan: await plan.set(c.env.DB, input), ...(await plan.headcount(c.env.DB)) }); }
   catch (e) { return c.json({ error: (e as Error).message }, 400); }
 });
+// Kunla Cloud runs each team on Workers for Platforms, where a team Worker has no cron of its own, so the control
+// plane calls this once a day instead (KD-70). Signed like the plan calls; the jobs run after the reply.
+app.post('/api/cloud/tick', async (c) => {
+  const body = await c.req.text();
+  const err = await plan.verify(c.req.raw, body);
+  if (err) return c.json({ error: err }, plan.hosted() ? 401 : 404);
+  c.executionCtx.waitUntil(daily(c.env).catch((e) => console.error('tick failed', e)));
+  return c.json({ ok: true });
+});
 // Sign in with a work Google or Microsoft account (KD-68): free in the core. Errors go back to the sign-in page.
 const signInError = (c: C, e: unknown) => c.redirect(`/app/?signin_error=${encodeURIComponent(e instanceof Error ? e.message : 'Sign-in failed.')}`);
 app.get('/auth/:id{google|microsoft}/start', async (c) => {
@@ -334,6 +343,11 @@ app.all('*', (c) => (c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : c.text('Not 
 // Cron (wrangler.toml [triggers]): at the start of each UTC day, wake continuous agents that stopped on a daily budget
 // and send the weekly digests due today.
 export async function scheduled(_e: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
+  ctx.waitUntil(daily(env));
+}
+
+/** The start-of-day jobs. Kunla Cloud runs them through a signed POST /api/cloud/tick, since its team Workers have no cron. */
+async function daily(env: Env) {
   ghapp.configure(env); plan.configure(env);
   const base = (env.PUBLIC_URL || '').replace(/\/$/, '');
   const jobs: Promise<unknown>[] = [];
@@ -344,7 +358,7 @@ export async function scheduled(_e: unknown, env: Env, ctx: { waitUntil(p: Promi
   jobs.push(readLicence(env.KUNLA_LICENSE).then((l) => ping.send(env.DB, env, l.edition)));
   // Audit export to the company's log tools, when ee/ registered a sink and the licence has it (KD-75).
   if (extensions().audit.length) jobs.push(flushAudit(env.DB, env as unknown as Record<string, unknown>, await readLicence(env.KUNLA_LICENSE)).catch((e) => console.error('audit failed', e)));
-  ctx.waitUntil(Promise.all(jobs));
+  await Promise.all(jobs);
 }
 
 export default { fetch: app.fetch, scheduled };
