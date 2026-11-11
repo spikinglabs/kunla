@@ -1,0 +1,61 @@
+# Publishes the `kunla` Python package (pypi/), a thin wrapper that runs the npm CLI
+# @spikinglabs/kunla through npx, so the name `kunla` is ours on PyPI too (KD-83).
+# Run it from Actions → "Publish to PyPI" → Run workflow, or push a tag like pypi-v0.1.0.
+# Auth: PyPI trusted publishing (OIDC, no token). Set up once on pypi.org; see docs/pypi.md.
+name: Publish to PyPI
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish, e.g. 0.1.0
+        required: true
+  push:
+    tags: ['pypi-v*']
+permissions:
+  contents: read
+concurrency: { group: publish-pypi, cancel-in-progress: false }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Pick the version
+        id: v
+        env:
+          INPUT: ${{ inputs.version }}
+          REF: ${{ github.ref_name }}
+        run: |
+          V="${INPUT:-${REF#pypi-v}}"
+          if ! echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$'; then echo "Not a version: $V"; exit 1; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+      - name: Build
+        working-directory: pypi
+        run: |
+          cp ../LICENSE ../NOTICE .
+          sed -i "s/^version = \"0.0.0\"/version = \"${{ steps.v.outputs.version }}\"/" pyproject.toml
+          grep -q "^version = \"${{ steps.v.outputs.version }}\"" pyproject.toml
+          python -m pip install --upgrade build
+          python -m build
+      - name: Smoke test
+        run: |
+          python -m pip install pypi/dist/*.whl
+          test "$(kunla --wrapper-version)" = "${{ steps.v.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: pypi/dist/
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
