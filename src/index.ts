@@ -168,13 +168,19 @@ app.post('/api/cloud/tick', async (c) => {
 });
 // Sign in with a work Google or Microsoft account (KD-68): free in the core. Errors go back to the sign-in page.
 const signInError = (c: C, e: unknown) => c.redirect(`/app/?signin_error=${encodeURIComponent(e instanceof Error ? e.message : 'Sign-in failed.')}`);
-app.get('/auth/:id{google|microsoft}/start', async (c) => {
-  try { return await oidc.start(c.env, c.req.param('id'), baseUrl(c)); } catch (e) { return signInError(c, e); }
+app.get('/auth/:id{google|microsoft|github}/start', async (c) => {
+  try { return await oidc.start(c.env, c.req.param('id'), baseUrl(c), c.req.query('return')); } catch (e) { return signInError(c, e); }
 });
-app.get('/auth/:id{google|microsoft}/callback', async (c) => {
+app.get('/auth/:id{google|microsoft|github}/callback', async (c) => {
   try {
     const r = await oidc.callback(c.env, c.env.DB, c.req.param('id'), c.req.raw, baseUrl(c));
-    return new Response(null, { status: 302, headers: { location: `/app/#/use/${encodeURIComponent(r.token)}`, 'set-cookie': r.clearCookie } });
+    // Every workspace this email is in comes along in the fragment (never sent to a server): the one used last opens.
+    const also = r.tokens.slice(1).map(encodeURIComponent).join(',');
+    const to = r.back ? `${r.back}#signin=${r.tokens.map(encodeURIComponent).join(',')}` : `/app/#/use/${encodeURIComponent(r.token)}${also ? `/also/${also}` : ''}`;
+    const h = new Headers({ location: to });
+    h.append('set-cookie', r.clearCookie);
+    h.append('set-cookie', `kunla_oidc_back=; Path=/auth/${c.req.param('id')}; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
+    return new Response(null, { status: 302, headers: h });
   } catch (e) { return signInError(c, e); }
 });
 // Sign-in providers registered by ee/ (SSO). A provider hands back a member; Kunla gives them a fresh token and

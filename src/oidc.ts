@@ -11,15 +11,20 @@ import { KunlaError, issueToken } from './core';
 export interface OidcEnv {
   GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string;
   MICROSOFT_CLIENT_ID?: string; MICROSOFT_CLIENT_SECRET?: string; MICROSOFT_TENANT?: string;
+  /** GitHub sign-in: an OAuth app of your own, or (Kunla Cloud) the shared GitHub App's client. */
+  GITHUB_LOGIN_CLIENT_ID?: string; GITHUB_LOGIN_CLIENT_SECRET?: string;
+  GITHUB_APP_CLIENT_ID?: string; GITHUB_APP_CLIENT_SECRET?: string;
+  KUNLA_TENANT?: string; KUNLA_CLOUD_HOOK?: string;
 }
 
-interface Provider { id: 'google' | 'microsoft'; label: string; authorize: string; token: string; issuer: (iss: string) => boolean; clientId: string; secret: string }
+type Id = 'google' | 'microsoft' | 'github';
+interface Provider { id: Id; label: string; authorize: string; token: string; issuer: (iss: string) => boolean; clientId: string; secret: string; scope: string }
 
 function providers(env: OidcEnv): Provider[] {
   const out: Provider[] = [];
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) out.push({
     id: 'google', label: 'Sign in with Google', clientId: env.GOOGLE_CLIENT_ID, secret: env.GOOGLE_CLIENT_SECRET,
-    authorize: 'https://accounts.google.com/o/oauth2/v2/auth', token: 'https://oauth2.googleapis.com/token',
+    authorize: 'https://accounts.google.com/o/oauth2/v2/auth', token: 'https://oauth2.googleapis.com/token', scope: 'openid email profile',
     issuer: (iss) => iss === 'https://accounts.google.com' || iss === 'accounts.google.com',
   });
   // One tenant only: a multi-tenant app would let any Microsoft directory's admin set any email on an account.
@@ -27,11 +32,29 @@ function providers(env: OidcEnv): Provider[] {
   if (env.MICROSOFT_CLIENT_ID && env.MICROSOFT_CLIENT_SECRET && tenant && !['common', 'organizations', 'consumers'].includes(tenant.toLowerCase())) out.push({
     id: 'microsoft', label: 'Sign in with Microsoft', clientId: env.MICROSOFT_CLIENT_ID, secret: env.MICROSOFT_CLIENT_SECRET,
     authorize: `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/authorize`,
-    token: `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/token`,
+    token: `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/token`, scope: 'openid email profile',
     issuer: (iss) => iss === `https://login.microsoftonline.com/${tenant}/v2.0`,
+  });
+  // GitHub is plain OAuth, not OpenID Connect: Kunla reads the account's verified emails and its login from the API.
+  const ghId = env.GITHUB_LOGIN_CLIENT_ID || env.GITHUB_APP_CLIENT_ID, ghSecret = env.GITHUB_LOGIN_CLIENT_SECRET || env.GITHUB_APP_CLIENT_SECRET;
+  if (ghId && ghSecret) out.push({
+    id: 'github', label: 'Sign in with GitHub', clientId: ghId, secret: ghSecret, scope: 'read:user user:email',
+    authorize: 'https://github.com/login/oauth/authorize', token: 'https://github.com/login/oauth/access_token', issuer: () => false,
   });
   return out;
 }
+
+/**
+ * Where the provider sends the browser back. On Kunla Cloud, GitHub only knows the Cloud's own address (one shared
+ * app for every team), so it goes there and the router sends it on to the team named before the dot in state.
+ */
+function callbackUrl(env: OidcEnv, p: Provider, origin: string) {
+  if (p.id === 'github' && !env.GITHUB_LOGIN_CLIENT_ID && env.KUNLA_TENANT && env.KUNLA_CLOUD_HOOK) {
+    try { return `${new URL(env.KUNLA_CLOUD_HOOK).origin}/auth/github/callback`; } catch { /* fall through */ }
+  }
+  return `${origin}/auth/${p.id}/callback`;
+}
+const statePrefix = (env: OidcEnv, p: Provider) => (p.id === 'github' && !env.GITHUB_LOGIN_CLIENT_ID && env.KUNLA_TENANT ? `${env.KUNLA_TENANT}.` : '');
 
 /** The sign-in buttons this Kunla offers. */
 export const options = (env: OidcEnv) => providers(env).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }));
@@ -46,20 +69,21 @@ function cookie(req: Request, name: string) {
 }
 
 /** Step 1: send the browser to Google or Microsoft, with a one-time state and PKCE verifier in a short cookie. */
-export async function start(env: OidcEnv, id: string, origin: string): Promise<Response> {
+export async function start(env: OidcEnv, id: string, origin: string, ret?: string | null): Promise<Response> {
   const p = providers(env).find((x) => x.id === id);
   if (!p) throw new KunlaError(404, 'This sign-in is not set up on this Kunla.');
-  const state = random(), verifier = random();
+  const state = statePrefix(env, p) + random(), verifier = random();
   const challenge = b64u(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
   const url = new URL(p.authorize);
   url.search = new URLSearchParams({
-    client_id: p.clientId, response_type: 'code', scope: 'openid email profile', redirect_uri: `${origin}/auth/${p.id}/callback`,
-    state, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account',
+    client_id: p.clientId, response_type: 'code', scope: p.scope, redirect_uri: callbackUrl(env, p, origin),
+    state, code_challenge: challenge, code_challenge_method: 'S256', ...(p.id === 'github' ? {} : { prompt: 'select_account' }),
   }).toString();
-  return new Response(null, { status: 302, headers: {
-    location: url.toString(),
-    'set-cookie': `${COOKIE}=${encodeURIComponent(`${p.id}.${state}.${verifier}`)}; Path=/auth/${p.id}; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
-  } });
+  const h = new Headers({ location: url.toString() });
+  h.append('set-cookie', `${COOKIE}=${encodeURIComponent(`${p.id}.${state}.${verifier}`)}; Path=/auth/${p.id}; Max-Age=600; HttpOnly; Secure; SameSite=Lax`);
+  const r = safeReturn(ret);
+  h.append('set-cookie', `${COOKIE}_back=${r ? btoa(r) : ''}; Path=/auth/${p.id}; Max-Age=${r ? 600 : 0}; HttpOnly; Secure; SameSite=Lax`);
+  return new Response(null, { status: 302, headers: h });
 }
 
 function payload(idToken: string): Record<string, unknown> {
@@ -77,25 +101,57 @@ export async function callback(env: OidcEnv, db: D1Database, id: string, req: Re
   if (!p) throw new KunlaError(404, 'This sign-in is not set up on this Kunla.');
   const q = new URL(req.url).searchParams;
   if (q.get('error')) throw new KunlaError(400, `${p.label.replace('Sign in with ', '')} said: ${q.get('error_description') || q.get('error')}`);
-  const [cid, state, verifier] = (cookie(req, COOKIE) || '').split('.');
+  const parts = (cookie(req, COOKIE) || '').split('.');
+  const cid = parts[0], verifier = parts[parts.length - 1], state = parts.slice(1, -1).join('.');
   if (cid !== p.id || !state || state !== q.get('state') || !verifier) throw new KunlaError(400, 'This sign-in link expired or was opened in another browser. Start again.');
   const res = await fetcher(p.token, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: new URLSearchParams({
-    grant_type: 'authorization_code', code: q.get('code') || '', redirect_uri: `${origin}/auth/${p.id}/callback`,
+    grant_type: 'authorization_code', code: q.get('code') || '', redirect_uri: callbackUrl(env, p, origin),
     client_id: p.clientId, client_secret: p.secret, code_verifier: verifier,
   }).toString() });
-  const tok = await res.json().catch(() => ({})) as { id_token?: string; error_description?: string };
+  const tok = await res.json().catch(() => ({})) as { id_token?: string; access_token?: string; error_description?: string };
+  let email = '', login = '';
+  if (p.id === 'github') {
+    if (!res.ok || !tok.access_token) throw new KunlaError(400, `Sign-in failed: ${tok.error_description || res.status}.`);
+    const gh = (path: string) => fetcher(`https://api.github.com${path}`, { headers: { authorization: `Bearer ${tok.access_token}`, accept: 'application/vnd.github+json', 'user-agent': 'kunla' } }).then((r) => (r.ok ? r.json() : null));
+    const [user, emails] = await Promise.all([gh('/user'), gh('/user/emails')]) as [{ login?: string } | null, { email: string; verified: boolean; primary: boolean }[] | null];
+    login = String(user?.login ?? '');
+    // Only verified addresses count; any of them may be the one on the person's Kunla member.
+    const verified = (emails ?? []).filter((e) => e.verified).sort((a, b) => Number(b.primary) - Number(a.primary)).map((e) => e.email.trim().toLowerCase());
+    if (!login && !verified.length) throw new KunlaError(403, 'That GitHub account has no verified email address.');
+    return finish(db, p, verified, login);
+  }
   if (!res.ok || !tok.id_token) throw new KunlaError(400, `Sign-in failed: ${tok.error_description || res.status}.`);
   const c = payload(tok.id_token);
   const aud = Array.isArray(c.aud) ? c.aud : [c.aud];
   if (!aud.includes(p.clientId) || !p.issuer(String(c.iss)) || Number(c.exp) * 1000 < Date.now()) throw new KunlaError(400, 'Sign-in failed: the account token is not for this Kunla.');
   // Google says whether the email is verified; in a single Microsoft tenant the company's admin manages emails.
-  const email = String((p.id === 'microsoft' ? c.email || c.preferred_username : c.email) || '').trim().toLowerCase();
+  email = String((p.id === 'microsoft' ? c.email || c.preferred_username : c.email) || '').trim().toLowerCase();
   if (!email || (p.id === 'google' && c.email_verified !== true)) throw new KunlaError(403, 'That account has no verified email address.');
-  // Several workspaces may know the same person: sign in to the one they used last; the workspace menu has the rest.
-  const m = await db.prepare(`SELECT id, name FROM members WHERE kind = 'human' AND removed_at IS NULL AND lower(email) = ?
-      ORDER BY seen_at IS NULL, seen_at DESC, created_at LIMIT 1`).bind(email).first<{ id: string; name: string }>();
-  if (!m) throw new KunlaError(403, `Nobody with ${email} is on this Kunla yet. Ask an admin to add you with that email (Team → Add a person), then sign in again.`);
-  return { member: m, token: await issueToken(db, m.id, `sign-in:${p.id}`), clearCookie: `${COOKIE}=; Path=/auth/${p.id}; Max-Age=0; HttpOnly; Secure; SameSite=Lax` };
+  return finish(db, p, [email], '');
+
+  async function finish(db: D1Database, p: Provider, emails: string[], ghLogin: string) {
+    // Email linking (KD-29): the provider just proved this person owns these emails (and, for GitHub, the login), so
+    // they are every member with one of them, in every workspace here. They get a fresh token for each; the one used
+    // last opens, the others join the workspace menu, and the claude.ai approval page can offer them all.
+    const ms = (await db.prepare(`SELECT id, name, space_id FROM members WHERE kind = 'human' AND removed_at IS NULL
+        AND (lower(email) IN (SELECT value FROM json_each(?)) OR (? != '' AND lower(github_login) = lower(?)))
+        ORDER BY seen_at IS NULL, seen_at DESC, created_at LIMIT 20`).bind(JSON.stringify(emails), ghLogin, ghLogin).all<{ id: string; name: string; space_id: string }>()).results;
+    // One per workspace, the most recently used.
+    const seen = new Set<string>();
+    const mine = ms.filter((m) => !seen.has(m.space_id) && seen.add(m.space_id));
+    const who = emails[0] ?? `@${ghLogin}`;
+    if (!mine.length) throw new KunlaError(403, `Nobody with ${who} is on this Kunla yet. Ask an admin to add you with that email (Team → Add a person), then sign in again.`);
+    const tokens: string[] = [];
+    for (const m of mine) tokens.push(await issueToken(db, m.id, `sign-in:${p.id}`));
+    return { member: mine[0], token: tokens[0], tokens, back: back(req), clearCookie: `${COOKIE}=; Path=/auth/${p.id}; Max-Age=0; HttpOnly; Secure; SameSite=Lax` };
+  }
+}
+// Where to land after signing in: the web app, or the claude.ai approval page that sent the person (KD-29).
+// Only that page may be a destination, so a sign-in link can't be made to hand tokens to another page.
+export const safeReturn = (r: string | null | undefined) => (r && /^\/oauth\/authorize\?[^#]*$/.test(r) ? r : null);
+function back(req: Request) {
+  const raw = cookie(req, `${COOKIE}_back`);
+  try { return raw ? safeReturn(atob(raw)) : null; } catch { return null; }
 }
 
 export const _test = { payload };

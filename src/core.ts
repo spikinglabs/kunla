@@ -242,7 +242,6 @@ export async function insertWorkspace(db: D1Database, input: { name: string; key
   await assertKeyFree(db, key, null);
   const email = input.email ? String(input.email).trim().toLowerCase() : null;
   if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new KunlaError(400, 'That email does not look right.');
-  if (email && await db.prepare('SELECT 1 FROM members WHERE email = ? AND removed_at IS NULL').bind(email).first()) throw new KunlaError(409, 'Someone here already signs in with that email.');
   const wsId = id();
   const memberId = id();
   const t = input.at ?? new Date().toISOString();

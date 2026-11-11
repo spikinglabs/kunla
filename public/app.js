@@ -293,7 +293,8 @@ function renderShell(view) {
 // ---------- workspaces ----------
 // A workspace is a hard boundary: its own people, agents and data, reached with its own token.
 // Several can live in this Kunla, and others can be on other deployments. The browser keeps one
-// token per workspace and asks each one directly; the server never links your memberships.
+// token per workspace and asks each one directly. Signing in with Google or Microsoft fills it with every
+// workspace that knows your email (KD-29).
 const SPACES_KEY = 'kunla.spaces';
 const loadSpaces = () => { try { return JSON.parse(localStorage.getItem(SPACES_KEY) || '[]'); } catch { return []; } };
 const saveSpaces = (l) => { try { localStorage.setItem(SPACES_KEY, JSON.stringify(l)); } catch {} };
@@ -2089,11 +2090,21 @@ async function route() {
   clearInterval(pollTimer); pollTimer = null; pollCheck = null;
   keyHandler = null;
   // Arriving from another workspace with a token in the fragment: keep it, then drop it from the address bar.
-  const use = (location.hash || '').match(/^#\/use\/(.+)$/);
+  const use = (location.hash || '').match(/^#\/use\/([^/]+)(?:\/also\/(.+))?$/);
   if (use) {
     // Switching workspace: nothing open from the old one (the workspace menu, a sheet) may stay on screen.
     closePalette(); $('sheet').hidden = true;
     token = decodeURIComponent(use[1]); me = null;
+    // Signing in with Google or Microsoft brings every workspace here with your email (KD-29): add them to the menu.
+    if (use[2]) await Promise.all(use[2].split(',').map(decodeURIComponent).map(async (t) => {
+      try {
+        const r = await fetch('/api/me', { headers: { authorization: `Bearer ${t}` } });
+        if (!r.ok) return;
+        const m = await r.json();
+        const entry = { url: location.origin, ws: m.workspace?.id, token: t, name: m.workspace?.name ?? location.host };
+        saveSpaces([...loadSpaces().filter((x) => !sameSpace(x, entry)), entry]);
+      } catch {}
+    }));
     try { localStorage.setItem(TOKEN_KEY, token); } catch {}
     history.replaceState(null, '', location.pathname + '#/');
   }

@@ -30,13 +30,36 @@
       }
       return null;
     }
+    // Back from signing in with Google or Microsoft (KD-29): a token for every workspace with this person's email.
+    async function takeSignIn() {
+      const m = location.hash.match(/^#signin=(.+)$/);
+      if (!m) return;
+      history.replaceState(null, '', location.pathname + location.search);
+      let spaces = [];
+      try { spaces = JSON.parse(localStorage.getItem('kunla.spaces') || '[]'); } catch {}
+      for (const t of m[1].split(',').map(decodeURIComponent)) {
+        const me = await whoIs(t);
+        if (!me) continue;
+        spaces = [...spaces.filter((x) => !(x.url === location.origin && x.ws === me.workspace?.id)), { url: location.origin, ws: me.workspace?.id, token: t, name: me.workspace?.name }];
+        if (!token) token = t;
+      }
+      try { localStorage.setItem('kunla.spaces', JSON.stringify(spaces)); if (token) localStorage.setItem('kunla.token', token); } catch {}
+    }
+    const signInLinks = async (label) => {
+      const ed = await fetch('/api/edition').then((r) => r.ok ? r.json() : null).catch(() => null);
+      const ret = encodeURIComponent(location.pathname + location.search);
+      const ps = (ed?.sign_in || []).filter((p) => /^\/auth\/(google|microsoft|github)\//.test(p.url));
+      return ps.length ? `<p class="row" style="gap:8px;flex-wrap:wrap">${ps.map((p) => `<a class="btn" href="${esc(p.url)}?return=${ret}">${esc(p.label)}</a>`).join('')}</p><p class="muted" style="font-size:13px">${label}</p>` : '';
+    };
     async function main() {
+      await takeSignIn();
       const client = await fetch(`/oauth/client/${encodeURIComponent(q.get('client_id') || '')}`).then((r) => r.ok ? r.json() : null);
       if (!client) { box.innerHTML = '<h1>Unknown app</h1><p>This connection request is not valid. Try adding the connector again.</p>'; return; }
       let me = await pickToken();
       if (!me) {
         box.innerHTML = `<h1>Sign in to connect ${esc(client.name)}</h1>
-          <p>Paste your personal Kunla token${wsKey ? ` for the workspace <b>${esc(wsKey)}</b>` : ''}.</p>
+          ${await signInLinks('Signing in this way brings all your workspaces here.')}
+          <p>Or paste your personal Kunla token${wsKey ? ` for the workspace <b>${esc(wsKey)}</b>` : ''}.</p>
           ${other ? `<p class="warn">That token is for ${esc(other)}, not ${esc(wsKey)}.</p>` : ''}
           <form id="f" class="stack"><div class="field"><label for="tok">Token</label><input id="tok" name="token" type="password" required placeholder="kun_…"></div>
           <button class="primary" style="justify-content:center">Continue</button></form>`;
@@ -64,9 +87,10 @@
             <span class="grow">${esc(x.me.workspace.name)} <span class="muted mono">${esc(x.me.workspace.key)}</span></span>
             ${i === 0 ? '<span class="muted">default</span>' : ''}</label>`).join('')}
           <p class="muted" style="font-size:13px">It joins each ticked workspace as its own agent. Every request acts in one workspace, ${esc(mine[0].me.workspace.name)} unless it names another, and you can remove it from one workspace without touching the others.</p></fieldset>` : '';
+      const more = await signInLinks('Missing a workspace? Sign in again to bring every workspace with your email.');
       box.innerHTML = `<h1>Connect ${esc(client.name)} to Kunla</h1>
         <p>It joins <b>${esc(me.workspace?.name ?? 'your workspace')}</b> as an agent you sponsor. It can read tasks, record work and submit work for review, all under its own name.</p>
-        <form id="f" class="stack">${pick}<div class="field"><label for="nm">Name in Kunla</label><input id="nm" name="name" value="${esc(defaultName)}" required></div>
+        <form id="f" class="stack">${pick}${more ? `<details><summary class="muted">Missing a workspace?</summary>${more}</details>` : ''}<div class="field"><label for="nm">Name in Kunla</label><input id="nm" name="name" value="${esc(defaultName)}" required></div>
         <div class="row"><button class="primary">Allow</button><button type="button" class="ghost" id="deny">Cancel</button></div></form>`;
       document.getElementById('deny').onclick = () => {
         const u = new URL(q.get('redirect_uri')); u.searchParams.set('error', 'access_denied');

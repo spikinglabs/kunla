@@ -93,3 +93,62 @@ describe('sign in with Google or Microsoft', () => {
     expect(ai.member.email).toBeNull();
   });
 });
+
+describe('one sign-in for every workspace with your email (KD-29)', () => {
+  const ok = { iss: 'https://accounts.google.com', aud: 'gid', exp: Date.now() / 1000 + 300, email: 'bob@acme.com', email_verified: true };
+  it('brings a token for each workspace that knows the email; the app opens one and lists the rest', async () => {
+    const com = (await call(env, 'POST', '/api/workspaces', admin, { name: 'Community', key: 'COM' })).body.token;
+    expect((await call(env, 'POST', '/api/members', com, { name: 'Bobby', kind: 'human', email: 'bob@acme.com' })).status).toBe(200);
+    const m = (await signIn(ok)).res.location.match(/^\/app\/#\/use\/([^/]+)\/also\/(.+)$/)!;
+    expect(m).toBeTruthy();
+    const names = await Promise.all([m[1], ...m[2].split(',')].map(async (t) => (await call(env, 'GET', '/api/me', decodeURIComponent(t))).body.workspace.key));
+    expect(names.sort()).toEqual(['COM', 'WS']);
+  });
+
+  it('goes back to the claude.ai approval page when it started there, and nowhere else', async () => {
+    const back = encodeURIComponent('/oauth/authorize?client_id=x&state=y');
+    const start = await call(env, 'GET', `/auth/google/start?return=${back}`);
+    const state = new URL(start.location).searchParams.get('state')!;
+    const cookie = start.cookie.split(/,\s*(?=kunla_oidc)/).map((c) => c.split(';')[0]).join('; ');
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ id_token: idToken(ok) })));
+    const res = await call(env, 'GET', `/auth/google/callback?code=abc&state=${state}`, undefined, undefined, { cookie });
+    expect(res.location).toMatch(/^\/oauth\/authorize\?client_id=x&state=y#signin=kun_/);
+    const evil = await call(env, 'GET', `/auth/google/start?return=${encodeURIComponent('https://evil.test/')}`);
+    expect(evil.cookie).toMatch(/kunla_oidc_back=;/);
+  });
+});
+
+describe('sign in with GitHub', () => {
+  const github = async (user: object | null, emails: object[] | null, extra: Record<string, string> = {}) => {
+    Object.assign(env, { GITHUB_LOGIN_CLIENT_ID: 'ghid', GITHUB_LOGIN_CLIENT_SECRET: 'ghs', ...extra });
+    const start = await call(env, 'GET', '/auth/github/start');
+    const state = new URL(start.location).searchParams.get('state')!;
+    vi.stubGlobal('fetch', async (url: string) => {
+      if (url.endsWith('/login/oauth/access_token')) return new Response(JSON.stringify({ access_token: 'gho_x' }));
+      if (url.endsWith('/user')) return new Response(JSON.stringify(user));
+      if (url.endsWith('/user/emails')) return new Response(JSON.stringify(emails));
+      return new Response('{}', { status: 404 });
+    });
+    const res = await call(env, 'GET', `/auth/github/callback?code=abc&state=${state}`, undefined, undefined, { cookie: start.cookie.split(';')[0] });
+    return { start, res };
+  };
+  it('matches a verified email or the linked GitHub login', async () => {
+    expect((await call(env, 'GET', '/api/edition')).body.sign_in.map((p: any) => p.id)).toEqual(['google']);
+    const { start, res } = await github({ login: 'bobgh' }, [{ email: 'old@x.com', verified: true, primary: true }, { email: 'BOB@acme.com', verified: true, primary: false }]);
+    expect(new URL(start.location).searchParams.get('scope')).toBe('read:user user:email');
+    expect(res.location).toMatch(/^\/app\/#\/use\//);
+    expect((await github({ login: 'bobgh' }, [{ email: 'bob@acme.com', verified: false, primary: true }])).res.location).toMatch(/signin_error=/);
+    expect((await call(env, 'PATCH', `/api/members/${bob.id}`, admin, { github_login: 'bobgh' })).status).toBe(200);
+    expect((await github({ login: 'BobGH' }, [])).res.location).toMatch(/^\/app\/#\/use\//);
+  });
+
+  it('on Kunla Cloud, comes back through the Cloud router with the shared app', async () => {
+    delete env.GITHUB_LOGIN_CLIENT_ID;
+    Object.assign(env, { GITHUB_APP_CLIENT_ID: 'appid', GITHUB_APP_CLIENT_SECRET: 'apps', KUNLA_TENANT: 'acme', KUNLA_CLOUD_HOOK: 'https://cloud.test/hooks/kunla' });
+    const start = await call(env, 'GET', '/auth/github/start');
+    const q = new URL(start.location).searchParams;
+    expect(q.get('client_id')).toBe('appid');
+    expect(q.get('redirect_uri')).toBe('https://cloud.test/auth/github/callback');
+    expect(q.get('state')).toMatch(/^acme\./);
+  });
+});

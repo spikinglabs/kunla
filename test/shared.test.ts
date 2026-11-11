@@ -34,7 +34,8 @@ describe('a shared Kunla Cloud host', () => {
     const me = await call('GET', '/api/me', r.body.token);
     expect(me.body).toMatchObject({ name: 'Ada', roles: ['admin'], workspace: { key: 'ACME' }, projects: [] });
     expect((await signUp('Other', 'ACME')).status).toBe(409);
-    expect((await signUp('Again', 'AG', 'Bo', 'ada@acme.test')).status).toBe(409);
+    // One person may run several workspaces: the same email is fine (sign-in links them, KD-29).
+    expect((await signUp('Again', 'AG', 'Ada', 'ada@acme.test')).status).toBe(200);
     // Unsigned calls are refused; people cannot create or import workspaces on a shared host.
     expect((await call('POST', '/api/cloud/workspaces', owner, { name: 'X', admin_name: 'X' })).status).toBe(401);
     expect((await call('POST', '/api/workspaces', owner, { name: 'X' })).status).toBe(403);
