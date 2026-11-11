@@ -92,8 +92,8 @@ export interface Ask {
 }
 
 const words = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9äöüß ]/g, ' ').split(/\s+/).filter((w) => w.length > 2));
-function similar(a: string, b: string) {
-  const x = words(a), y = words(b);
+/** Titles that share most of their words. Takes word sets, made once per title: pairs grow with the square. */
+function similar(x: Set<string>, y: Set<string>) {
   if (x.size < 2 || y.size < 2) return false;
   const shared = [...x].filter((w) => y.has(w)).length;
   return shared >= 2 && shared / Math.min(x.size, y.size) >= 0.6;
@@ -170,10 +170,11 @@ export async function asks(c: Ctx): Promise<Ask[]> {
 
   // Two members working on what looks like the same thing (titles that share most of their words).
   const seen = new Set<string>();
+  const titleWords = active.map((a) => words(a.title));
   for (let i = 0; i < active.length; i++) for (let j = i + 1; j < active.length; j++) {
     const x = active[i], y = active[j];
     if (x.assignee_id === y.assignee_id || x.parent_id === y.key || y.parent_id === x.key) continue;
-    if (!similar(x.title, y.title) || seen.has(x.key) || seen.has(y.key)) continue;
+    if (seen.has(x.key) || seen.has(y.key) || !similar(titleWords[i], titleWords[j])) continue;
     seen.add(x.key); seen.add(y.key);
     out.push({ kind: 'overlap', since: x.updated_at > y.updated_at ? x.updated_at : y.updated_at, task: { key: x.key, title: x.title }, other: { key: y.key, title: y.title }, action: 'compare',
       line: `${who(x.assignee_id)?.name ?? 'Someone'} (${x.key}) and ${who(y.assignee_id)?.name ?? 'someone'} (${y.key}) may be doing the same work.` });
@@ -264,8 +265,9 @@ export async function workMap(c: Ctx, days = 5) {
   const projects = projectsR.results;
   const projKey = new Map(projects.map((p) => [p.id, p.key]));
   const tagOf = new Map<string, { project?: string; work: string }>();
+  const byKey = new Map(tasksR.results.map((t) => [t.key, t]));
   const tag = (key: string) => {
-    if (!tagOf.has(key)) { const t = [...tasks.values()].find((x) => x.key === key); tagOf.set(key, { project: t ? projKey.get(t.project_id) : undefined, work: t ? taskKind(t) : 'other' }); }
+    if (!tagOf.has(key)) { const t = byKey.get(key); tagOf.set(key, { project: t ? projKey.get(t.project_id) : undefined, work: t ? taskKind(t) : 'other' }); }
     return tagOf.get(key)!;
   };
   const push = (mid: string | null | undefined, s: Seg) => { if (mid && lanes.has(mid)) lanes.get(mid)!.push(Object.assign(s, tag(s.key))); };

@@ -13,7 +13,8 @@
     "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "release:prepare": "node scripts/changelog.mjs prepare"
+    "release:prepare": "node scripts/changelog.mjs prepare",
+    "bench:cpu": "vitest run --config vitest.cpu.config.ts"
   },
   "dependencies": {
     "hono": "^4.6.0"
