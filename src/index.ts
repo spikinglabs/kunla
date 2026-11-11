@@ -36,6 +36,10 @@ export interface Env {
   KUNLA_COLLECT_PINGS?: string;
   /** Sign in with Google or Microsoft (KD-68); see src/oidc.ts. */
   GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string;
+  /** One shared public GitHub App for Kunla Cloud (KD-71); see src/githubapp.ts. */
+  GITHUB_APP_ID?: string; GITHUB_APP_SLUG?: string; GITHUB_APP_PRIVATE_KEY?: string; GITHUB_APP_WEBHOOK_SECRET?: string;
+  GITHUB_APP_CLIENT_ID?: string; GITHUB_APP_CLIENT_SECRET?: string; GITHUB_APP_MERGE?: string;
+  KUNLA_TENANT?: string; KUNLA_CLOUD_HOOK?: string; KUNLA_CLOUD_SECRET?: string;
   MICROSOFT_CLIENT_ID?: string; MICROSOFT_CLIENT_SECRET?: string; MICROSOFT_TENANT?: string;
 }
 type Vars = { ctx: core.Ctx };
@@ -44,6 +48,9 @@ type C = Context<{ Bindings: Env; Variables: Vars }>;
 export const baseUrl = (c: Context<any>) => (c.env.PUBLIC_URL || new URL(c.req.url).origin).replace(/\/$/, '');
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
+
+// The shared GitHub App's settings come from the environment (KD-71).
+app.use('*', async (c, next) => { ghapp.configure(c.env ?? {}); await next(); });
 
 app.onError((e, c) => {
   if (e instanceof core.KunlaError) return c.json({ error: e.message }, e.status as any);
@@ -147,7 +154,7 @@ app.post('/hooks/github', async (c) => {
 // The Kunla GitHub App round trips (browser navigations from github.com, so no bearer token: a
 // one-time state the admin's own request made ties each one to their workspace).
 app.get('/hooks/github/app/created', async (c) => c.redirect(await ghapp.created(c.env.DB, c.req.query('code'), c.req.query('state'))));
-app.get('/hooks/github/app/installed', async (c) => c.redirect(await ghapp.installed(c.env.DB, c.req.query('installation_id'), c.req.query('state'))));
+app.get('/hooks/github/app/installed', async (c) => c.redirect(await ghapp.installed(c.env.DB, c.req.query('installation_id'), c.req.query('state'), fetch, c.req.query('code'))));
 app.get('/t/:key', (c) => c.redirect(`/app/#/t/${encodeURIComponent(c.req.param('key').toUpperCase())}`));
 
 // ---------- MCP ----------
@@ -306,6 +313,7 @@ app.all('*', (c) => (c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : c.text('Not 
 // Cron (wrangler.toml [triggers]): at the start of each UTC day, wake continuous agents that stopped on a daily budget
 // and send the weekly digests due today.
 export async function scheduled(_e: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
+  ghapp.configure(env);
   const base = (env.PUBLIC_URL || '').replace(/\/$/, '');
   const jobs: Promise<unknown>[] = [];
   await continuous.newDay({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30), notify: (w) => { jobs.push(wake.deliver(env.DB, w).catch((e) => console.error('wake failed', e))); } });
