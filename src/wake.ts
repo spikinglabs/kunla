@@ -3,7 +3,7 @@
 // by itself within seconds. One signed POST per decision, sent after the response; no polling.
 import type { Ctx, Member, Task } from './core';
 
-export type WakeEvent = 'approved' | 'changes_requested' | 'answered' | 'assigned' | 'work_ready' | 'taken_over' | 'ping';
+export type WakeEvent = 'approved' | 'changes_requested' | 'answered' | 'assigned' | 'work_ready' | 'taken_over' | 'unblocked' | 'assumption_corrected' | 'ping';
 export type WakeFormat = 'kunla' | 'github_dispatch';
 
 /** Stored as JSON in members.callback. The secret signs every call; auth is an optional Authorization header. */
@@ -38,6 +38,8 @@ const NEXT: Record<WakeEvent, (key: string) => string> = {
   assigned: (k) => `${k} was handed to you. Call get_task ${k}, claim it and start.`,
   work_ready: (k) => `${k ? `${k} is` : 'New work is'} ready in your lane (continuous mode). Call next_task, claim what it gives you, and keep taking the next task until next_task says stop.`,
   taken_over: (k) => `${k} is no longer yours: someone took it over. Stop working on it and don't push more changes for it. Log anything useful with log_work ${k}, then call next_task.`,
+  unblocked: (k) => `${k} is no longer waiting on anything. Call get_task ${k} and start (or carry on).`,
+  assumption_corrected: (k) => `A person corrected an assumption you made on ${k}. Call get_task ${k}, read the correction under assumptions, adjust the work and carry on (submit again if it was in review).`,
   ping: () => 'Test call from Kunla. Nothing to do.',
 };
 

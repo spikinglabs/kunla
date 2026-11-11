@@ -97,19 +97,21 @@ async function act(i,how){const it=data.items[i],k=it.task.key,box=$('#c'+i),out
   for(const b of document.querySelectorAll('#i'+i+' button'))b.disabled=true;out.className='done';out.textContent='Working…';
   try{let r;const quote={approve:'Approved',back:'Sent back: '+text,answer:text}[how];const src=taskLink(k);
     if(how==='back'&&!text)throw new Error('Say what needs to change.');if(how==='answer'&&!text)throw new Error('Write an answer first.');
-    if(how==='accept'||how==='decline')r=await tool('triage_proposal',{key:k,accept:how==='accept'});
+    if(how==='confirm'||how==='correct'){if(how==='correct'&&!text)throw new Error('Say what is right instead.');r=await tool('settle_assumption',how==='confirm'?{id:it.assumption.id,confirm:true}:{id:it.assumption.id,correct:text});}
+    else if(how==='accept'||how==='decline')r=await tool('triage_proposal',{key:k,accept:how==='accept'});
     else if(human())r=how==='answer'?await tool('answer_question',{key:k,answer:text}):await tool('review_task',{key:k,verdict:how==='approve'?'approved':'changes_requested',comment:text||undefined});
     else r=await tool('record_decision',{key:k,verdict:how==='approve'?'approved':how==='back'?'changes_requested':'answer',source_url:src,quote:quote+' (chosen in the Kunla view in a chat)',comment:how==='back'?text:undefined,answer:how==='answer'?text:undefined});
-    out.textContent={approve:'Approved.',back:'Sent back to '+(it.task.assignee&&it.task.assignee.name||'the worker')+'.',answer:'Answered. The task goes back to its worker.',accept:'Accepted.',decline:'Declined.'}[how];
+    out.textContent={approve:'Approved.',back:'Sent back to '+(it.task.assignee&&it.task.assignee.name||'the worker')+'.',answer:'Answered. The task goes back to its worker.',accept:'Accepted.',decline:'Declined.',confirm:'Confirmed.',correct:'Corrected. The work goes back to whoever assumed it.'}[how];
   }catch(e){out.className='err';out.textContent=e.message;for(const b of document.querySelectorAll('#i'+i+' button'))b.disabled=false;}}
 function inbox(){const d=data,items=d.items||[];
   let h='<h1>Decision inbox</h1><div class="sub">'+(items.length?items.length+' waiting on '+(human()?'you':'a person'):'Nothing is waiting on a person.')+'</div>';
-  const KIND={review:'Review',question:'Question',proposal:'Proposal',flagged:'Stuck in review'};
+  const KIND={review:'Review',question:'Question',proposal:'Proposal',flagged:'Stuck in review',assumption:'Assumption'};
   h+=items.map((it,i)=>{const t=it.task;let b='';
     if(it.kind==='review'){const dl=(t.deliverables||[]).map((x)=>'<a href="#" data-open="'+esc(x.url)+'">'+esc(x.title||x.url)+'</a>').join(' · ');
       b='<div class="s">'+esc(t.summary||'')+'</div>'+(dl?'<div class="s">'+dl+'</div>':'')+'<textarea id="c'+i+'" rows="2" placeholder="What needs to change?" hidden></textarea><div class="btns"><button class="b p" onclick="act('+i+',\\'approve\\')">Approve</button><button class="b" onclick="act('+i+',\\'back\\')">Send back</button></div>';}
     else if(it.kind==='question'){b='<div class="s">'+esc(t.blocked_question||'')+'</div><textarea id="c'+i+'" rows="2" placeholder="Your answer"></textarea><div class="btns"><button class="b p" onclick="act('+i+',\\'answer\\')">Answer</button></div>';}
     else if(it.kind==='proposal'){b='<div class="s">'+esc(t.brief||'')+'</div>'+(human()?'<div class="btns"><button class="b p" onclick="act('+i+',\\'accept\\')">Accept</button><button class="b" onclick="act('+i+',\\'decline\\')">Decline</button></div>':'<div class="s">Accept or decline it in Kunla.</div>');}
+    else if(it.kind==='assumption'){b='<div class="s">'+esc((it.assumption.made_by&&it.assumption.made_by.name)||'An agent')+' went ahead assuming: “'+esc(it.assumption.text)+'”</div><textarea id="c'+i+'" rows="2" placeholder="If that is wrong, what is right?"></textarea><div class="btns"><button class="b p" onclick="act('+i+',\'confirm\')">Confirm</button><button class="b" onclick="act('+i+',\'correct\')">Correct</button></div>';}
     else b='<div class="s">'+t.review_rounds+' review rounds so far. Worth a look.</div>';
     return '<div class="card" id="i'+i+'"><div>'+keyLink(t.key)+' <span class="pill">'+KIND[it.kind]+'</span></div><div class="t">'+esc(t.title)+'</div>'+(t.assignee?'<div class="sub" style="margin:0">'+esc(t.assignee.name)+'</div>':'')+b+'<div id="o'+i+'"></div></div>';}).join('');
   document.body.innerHTML=h+foot(d.board?d.board+'/app/':null);}

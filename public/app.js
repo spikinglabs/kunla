@@ -422,6 +422,17 @@ function decisionCard(item, { solo = false } = {}) {
         <button class="btn" data-act="click:decline">Decline</button>${raw(hint(PROPOSAL_HINT, 'What Accept and Decline do'))}<span class="spacer"></span>
         <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></div>`;
   }
+  if (item.kind === 'assumption') {
+    const a = item.assumption;
+    return html`<form class="decision ${solo ? '' : 'card'}" data-key="${t.key}" data-aid="${a.id}" data-act="submit:correct">
+      ${raw(head('Assumption'))}${raw(title)}
+      <div class="byline">${raw(who(a.made_by, 'An agent'))}<span>went ahead ${agoLong(a.at)} instead of waiting, assuming</span></div>
+      <p class="said">“${a.text}”</p>
+      <div class="field"><label for="x-${a.id}">If that's wrong, what's right?</label><textarea id="x-${a.id}" name="correct" rows="2" placeholder="${callName(a.made_by) || 'It'} gets this on ${t.key} and adjusts the work."></textarea></div>
+      <div class="acts"><button class="btn go" type="button" data-act="click:confirm">Right <kbd>A</kbd></button><button class="btn">Correct it</button>
+        ${raw(hint('An agent made this assumption so it could keep going instead of waiting for an answer. Right just goes in the record. Correct it sends your answer to the agent, and work in review or done goes back to it.', 'What Right and Correct do'))}<span class="spacer"></span>
+        <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></form>`;
+  }
   return html`<div class="decision ${solo ? '' : 'card'}" data-key="${t.key}">
     ${raw(head('Going in circles'))}${raw(title)}
     <p class="said">${t.review_rounds} review rounds and still not right. Rewrite the brief, add a check, or take it over.</p>
@@ -474,6 +485,13 @@ function decisionHandlers(after, later) {
       await after();
     },
     decline: async (el) => { const k = keyOf(el); await api('POST', `/api/tasks/${k}/triage`, { accept: false }); toast(`${k} declined.`); await after(); },
+    confirm: async (el) => { const box = el.closest('[data-aid]'); await api('POST', `/api/assumptions/${box.dataset.aid}`, { confirm: true }); toast('Confirmed. It stays in the record.'); await after(); },
+    correct: async (el) => {
+      const box = el.closest('[data-aid]'); const text = (formData(box).correct || '').trim();
+      if (!text) { box.querySelector('textarea').focus(); throw new Error('Say what is right instead, or press Right.'); }
+      const r = await api('POST', `/api/assumptions/${box.dataset.aid}`, { correct: text });
+      toast(r.status === 'in_progress' ? `${r.key} went back with your correction.` : `Correction sent on ${r.key}.`); await after();
+    },
     later: (el) => showLater(keyOf(el), after, later),
   };
 }
@@ -542,12 +560,26 @@ function sinceWords(brief) {
 }
 
 // Asks (KD-50): what waits on someone else for too long. The deck holds what waits on you.
-const ASK_LABEL = { budget_stop: 'Stopped', question_waiting: 'Unanswered', review_waiting: 'Review waiting', quiet_claim: 'Gone quiet', overlap: 'Overlap' };
+const ASK_LABEL = { budget_stop: 'Stopped', question_waiting: 'Unanswered', review_waiting: 'Review waiting', quiet_promise: 'Promise quiet', quiet_claim: 'Gone quiet', overlap: 'Overlap' };
+
+// The bottleneck (KD-84): the one thing that holds up the most work. Unstick that first.
+function bottleneckCard(list) {
+  const b = list?.[0];
+  if (!b) return '';
+  const what = b.type === 'task' ? html`<a href="#/t/${b.key}"><span class="key">${b.key}</span> ${b.title}</a>` : html`“${b.title}”`;
+  const state = b.type === 'task'
+    ? (b.holder ? `${b.holder.name} ${b.status === 'review' ? 'is waiting for a review' : b.status === 'blocked' ? 'is waiting on an answer' : b.status === 'parked' ? 'parked it' : 'is on it'}` : b.status === 'parked' ? 'It is parked' : 'Nobody is on it')
+    : (b.holder ? `${b.holder.name} owes it` : 'Nobody owns it');
+  return html`<div class="card pad bneck ${b.quiet ? 'quiet' : ''}" style="margin-top:28px"><div class="eyebrow">Bottleneck</div>
+    <p class="bneck-l">${raw(what)} is holding up <b>${plural(b.holds_up, 'task')}</b>.</p>
+    <p class="muted">${state}${b.quiet ? ', and nothing has moved for 2 days' : ''}. ${b.type === 'task' ? 'Moving this one moves the rest.' : b.link && /\/(pull|merge_requests)\//.test(b.link) ? 'It clears by itself when the PR merges.' : `Tick it on ${b.on} once it is true.`}</p>
+    <div class="row" style="margin-top:12px">${raw(b.type === 'task' ? html`<a class="btn sm" href="#/t/${b.key}">Open ${b.key}</a>` : b.link ? html`<a class="btn sm" href="${b.link}" target="_blank" rel="noopener">Open the link ↗</a>` : html`<a class="btn sm" href="#/t/${b.on}">Open ${b.on}</a>`)}<a class="btn sm quiet" href="#/map/relations${b.key ? '/' + b.key : ''}">See how it connects</a></div></div>`;
+}
 function asksCard(list) {
   if (!list?.length) return '';
   const act = (a) => a.action === 'limits' ? html`<a class="btn sm" href="#/team">Change limits</a>`
     : a.action === 'take_over' ? html`<a class="btn sm" href="#/t/${a.task.key}">Take over…</a>`
-    : a.action === 'compare' ? html`<a class="btn sm quiet" href="#/t/${a.task.key}">${a.task.key}</a><a class="btn sm quiet" href="#/t/${a.other.key}">${a.other.key}</a>`
+    : a.action === 'compare' || (a.kind === 'quiet_promise' && a.other) ? html`<a class="btn sm quiet" href="#/t/${a.task.key}">${a.task.key}</a><a class="btn sm quiet" href="#/t/${a.other.key}">${a.other.key}</a>`
     : html`<a class="btn sm quiet" href="#/t/${a.task.key}">Open</a>`;
   return html`<div class="card pad asks" style="margin-top:28px"><div class="section-t"><h2>Needs a look</h2><span class="muted" style="font-size:13px">Waiting on someone for too long</span></div>
     <div class="ask-list">${join(list.map((a) => html`<div class="ask ${a.kind}"><span class="ask-k">${ASK_LABEL[a.kind] || a.kind}</span>
@@ -656,6 +688,7 @@ async function viewBriefing() {
           <h2>All clear</h2><p class="muted">${only ? `Nothing in ${nameOf(only)} waits on you.` : 'Nothing waits on you. Agents keep the record up to date on their own.'}</p>
           <button class="btn ink" data-act="click:palette">Delegate something <kbd>⌘K</kbd></button></div>`)}
         ${raw(continuousNudge(readyFree))}
+        ${raw(bottleneckCard(only ? (brief.bottlenecks || []).filter((b) => keyIn(b.key, only) || b.held.some((k) => keyIn(k, only))) : brief.bottlenecks))}
         ${raw(asksCard(askList))}
         ${raw(finished.length ? html`<div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Finished ${sinceWords(brief)}</h2><a class="muted" href="#/map" style="font-size:13px">See the map</a></div>
           <div class="done-list">${join(finished.map((f) => html`<a href="#/t/${f.key}"><span class="key">${f.key}</span><span class="t grow">${f.title}</span><span class="muted" style="font-size:13px">${f.worker ?? ''}</span></a>`))}</div></div>` : '')}
@@ -761,7 +794,7 @@ async function viewMap() {
   const m = mapData;
   const E = new Date(m.end).getTime();
   const longest = Math.max(1, ...m.waits.map((w) => E - new Date(w.since).getTime()));
-  $app.innerHTML = html`<div class="head"><div><h1>Work map</h1>
+  $app.innerHTML = html`${raw(mapSwitch('timeline'))}<div class="head"><div><h1>Work map</h1>
       <p class="sub">${MAP_SUB[mapGroup]} Solid is work, dashed is work waiting on someone, lime is a decision. Nobody filled this in; it comes from the record.</p></div></div>
     <div class="map-group row" role="group" aria-label="Group lanes by"><span class="label">Lanes by</span>${join(MAP_GROUPS.map(([k, label]) => html`<button class="pill ${k === mapGroup ? 'on' : ''}" data-act="click:group" data-g="${k}" aria-pressed="${k === mapGroup}">${label}</button>`))}</div>
     <div class="map-tools"><div class="row map-ranges">${join(MAP_RANGES.map(([label, d]) => html`<button class="pill ${d === mapDays ? 'on' : ''}" data-act="click:days" data-n="${d}">${label}</button>`))}</div>
@@ -769,7 +802,7 @@ async function viewMap() {
     <div class="card"><div class="map" id="map"></div></div>
     <div class="row map-key" style="margin:14px 4px 0"><span><i style="background:var(--ink)"></i>Working</span><span><i style="border:1.5px dashed var(--wait)"></i>Waiting on someone</span>
       <span><i style="background:var(--lime)"></i>A decision</span><span><i style="background:var(--sunk)"></i>Night</span><span class="muted">Pinch or use − / + to zoom. Tap a bar to open the task.</span></div>
-    <div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Where work waits now</h2><span class="muted" style="font-size:13px">Oldest first. Each one is a person, not an agent.</span></div>
+    <div class="card pad" style="margin-top:28px"><div class="section-t"><h2>Where work waits now</h2><span class="muted" style="font-size:13px">Oldest first: questions, reviews, and tasks waiting on other work.</span></div>
       ${raw(m.waits.length ? html`<div class="waits">${join(m.waits.map((w) => { const ms = E - new Date(w.since).getTime(); return html`<a href="#/t/${w.key}"><span class="key">${w.key}</span>
         <span class="t">${w.title}<small>${w.who}: ${w.label.replace(w.key + ' ', '')}</small></span><span class="len"><i style="width:${(ms / longest) * 100}%"></i></span><span class="for">${span(ms)}</span></a>`; }))}</div>`
       : '<p class="muted">Nothing is waiting. Every task is either moving or done.</p>')}</div>`;
@@ -892,6 +925,130 @@ function pinchZoom(el) {
   el.addEventListener('touchend', (e) => { if (d0 && e.touches.length < 2) { d0 = 0; drawMap(f); } });
 }
 
+// ---------- relations (KD-84): how open work connects ----------
+// What must happen first sits on the left, what waits on it to the right. Solid arrows are waits, dotted
+// ones are sub-tasks (a parent finishes after its sub-tasks). The bottleneck holds up the most work.
+const mapSwitch = (on) => html`<div class="map-switch row" role="tablist" aria-label="Map views">
+  <a class="pill ${on === 'timeline' ? 'on' : ''}" role="tab" aria-selected="${String(on === 'timeline')}" href="#/map">Timeline</a>
+  <a class="pill ${on === 'relations' ? 'on' : ''}" role="tab" aria-selected="${String(on === 'relations')}" href="#/map/relations">Relations</a></div>`;
+let relSubs = false;
+try { relSubs = localStorage.getItem('kunla.relSubs') === '1'; } catch {}
+
+async function viewRelations(focus) {
+  renderShell('map');
+  const only = focus ? '' : briefProject.get();
+  const q = new URLSearchParams();
+  if (focus) q.set('focus', focus); else if (only) q.set('project', only);
+  if (relSubs) q.set('subtasks', '1');
+  const g = await api('GET', `/api/relations?${q}`);
+  const pkeys = [...projects.filter((p) => p.key !== me.workspace.key).map((p) => p.key)];
+  const nameOf = (k) => projects.find((p) => p.key === k)?.name ?? k;
+  const b = g.bottlenecks[0];
+  $app.innerHTML = html`${raw(mapSwitch('relations'))}<div class="head"><div><h1>How work connects</h1>
+      <p class="sub">What has to happen first is on the left; what waits on it is to the right. Agents and people add these as they go, and they clear themselves when the work is done.</p></div></div>
+    <div class="row rel-tools">${raw(focus ? html`<span class="pill on">Around ${focus}</span><a class="pill" href="#/map/relations">Everything</a>`
+      : html`<button class="pill ${only ? '' : 'on'}" data-act="click:only" data-k="">All projects</button>${join(pkeys.map((k) => html`<button class="pill ${only === k ? 'on' : ''}" data-act="click:only" data-k="${k}">${nameOf(k)}</button>`))}`)}
+      <span class="spacer"></span><label class="row rel-subs"><input type="checkbox" data-act="change:subs" ${relSubs ? 'checked' : ''}> All sub-tasks</label></div>
+    ${raw(b ? html`<div class="card pad bneck ${b.quiet ? 'quiet' : ''}" style="margin:14px 0 0"><span class="eyebrow">Bottleneck</span>
+      <p class="bneck-l">${raw(b.key ? html`<a href="#/t/${b.key}"><span class="key">${b.key}</span> ${b.title}</a>` : html`“${b.title}”`)} is holding up <b>${plural(b.holds_up, 'task')}</b>${b.quiet ? ', and nothing has moved for 2 days' : ''}.</p></div>` : '')}
+    <div class="card rel-card"><div class="rel" id="rel"></div></div>
+    <div class="row map-key" style="margin:14px 4px 0"><span><i class="k-wait"></i>Waits on</span><span><i class="k-sub"></i>Sub-task of</span><span><i class="k-met"></i>Cleared lately</span>
+      <span><i class="k-cond"></i>A condition</span><span><i class="k-bn"></i>Bottleneck</span><span class="muted">Tap a task to open it.</span></div>`;
+  bind($app, {
+    only: (el) => { briefProject.set(el.dataset.k); viewRelations(); },
+    subs: (el) => { relSubs = el.checked; try { localStorage.setItem('kunla.relSubs', relSubs ? '1' : '0'); } catch {} viewRelations(focus); },
+  });
+  drawRelations(g, focus);
+}
+
+function drawRelations(g, focus) {
+  const box = $('rel');
+  if (!g.nodes.length) {
+    box.innerHTML = html`<div class="rel-empty"><h2>Nothing waits on anything${focus ? ` around ${focus}` : ''}</h2><p class="muted">On a task, add what it waits on: another task, a PR link, or what has to be true. Agents do it with <code>waiting_on</code> when they split work, and next_task holds the waiting task back until it can start.</p></div>`;
+    return;
+  }
+  const W = innerWidth < 700 ? 168 : 196, H = 84, GX = innerWidth < 700 ? 36 : 46, GY = 14, GC = 30, PAD = 16;
+  const ids = g.nodes.map((n) => n.id);
+  const ins = new Map(ids.map((i) => [i, []])), outs = new Map(ids.map((i) => [i, []]));
+  for (const e of g.edges) { ins.get(e.to)?.push(e.from); outs.get(e.from)?.push(e.to); }
+  // Columns: the longest chain of waits leading into each node (a guard stops at the node count).
+  const layer = new Map();
+  const depth = (n, seen = new Set()) => {
+    if (layer.has(n)) return layer.get(n);
+    if (seen.has(n) || seen.size > ids.length) return 0;
+    seen.add(n);
+    const d = Math.max(-1, ...ins.get(n).map((p) => depth(p, seen))) + 1;
+    layer.set(n, d); return d;
+  };
+  ids.forEach((n) => depth(n));
+  // Something nothing waits for sits just before what it unblocks, not far left, so its arrow stays short.
+  for (let pass = 0; pass < 3; pass++) for (const n of ids) {
+    if (ins.get(n).length || !outs.get(n).length) continue;
+    layer.set(n, Math.max(0, Math.min(...outs.get(n).map((o) => layer.get(o))) - 1));
+  }
+  // Connected pieces are drawn one under the other, the biggest first.
+  const comp = new Map(); let ci = 0;
+  for (const n of ids) {
+    if (comp.has(n)) continue;
+    const st = [n];
+    while (st.length) { const x = st.pop(); if (comp.has(x)) continue; comp.set(x, ci); st.push(...ins.get(x), ...outs.get(x)); }
+    ci++;
+  }
+  const comps = [...Array(ci).keys()].map((c) => ids.filter((n) => comp.get(n) === c)).sort((a, b) => b.length - a.length);
+  const pos = new Map();
+  let top = PAD, maxCol = 0;
+  const byId = new Map(g.nodes.map((n) => [n.id, n]));
+  for (const members of comps) {
+    const cols = [];
+    for (const n of members) { const l = layer.get(n); (cols[l] = cols[l] || []).push(n); }
+    for (const col of cols) col?.sort((a, b) => (byId.get(b).holds_up - byId.get(a).holds_up) || String(a).localeCompare(String(b), undefined, { numeric: true }));
+    // Two passes: place each node near the middle of what it waits on, so arrows cross less.
+    const rowOf = new Map();
+    cols.forEach((col) => col?.forEach((n, i) => rowOf.set(n, i)));
+    for (let pass = 0; pass < 2; pass++) for (let l = 1; l < cols.length; l++) {
+      const col = cols[l]; if (!col) continue;
+      const bary = (n) => { const p = ins.get(n).filter((x) => rowOf.has(x) && layer.get(x) < l); return p.length ? p.reduce((s, x) => s + rowOf.get(x), 0) / p.length : rowOf.get(n); };
+      col.sort((a, b) => bary(a) - bary(b));
+      col.forEach((n, i) => rowOf.set(n, i));
+    }
+    const rows = Math.max(...cols.map((c) => c?.length || 0));
+    cols.forEach((col, l) => col?.forEach((n, i) => {
+      const off = (rows - col.length) * (H + GY) / 2;
+      pos.set(n, { x: PAD + l * (W + GX), y: top + off + i * (H + GY) });
+    }));
+    maxCol = Math.max(maxCol, cols.length);
+    top += rows * (H + GY) - GY + GC;
+  }
+  const width = PAD * 2 + maxCol * (W + GX) - GX, height = top - GC + PAD;
+  const near = new Set(focus ? [focus, ...(ins.get(focus) || []), ...(outs.get(focus) || [])] : []);
+  const path = (e) => {
+    const a = pos.get(e.from), b = pos.get(e.to); if (!a || !b) return '';
+    const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x - 6, y2 = b.y + H / 2, dx = Math.max(24, (x2 - x1) / 2);
+    const cls = `rel-e ${e.kind} ${e.met ? 'met' : ''} ${focus && (e.from === focus || e.to === focus) ? 'hot' : ''}`;
+    return `<path class="${cls}" d="M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}" marker-end="url(#${e.kind === 'sub' ? 'ah-sub' : e.met ? 'ah-met' : 'ah'})"/>`;
+  };
+  const bn = new Set(g.bottlenecks.slice(0, 1).map((x) => x.id));
+  const node = (n) => {
+    const p = pos.get(n.id);
+    const dim = focus && !near.has(n.id);
+    const fin = ['done', 'declined', 'met'].includes(n.status);
+    const tags = [n.holds_up ? `holds up ${n.holds_up}` : '', n.waiting ? `waits on ${n.waiting}` : '', n.assumptions ? `${plural(n.assumptions, 'assumption')}` : ''].filter(Boolean).join(' · ');
+    const inner = n.type === 'condition'
+      ? html`<span class="rel-k">Condition${n.holder ? ' · ' + n.holder.name : ''}</span><span class="rel-t">${n.title}</span><span class="rel-f">${n.status === 'met' ? 'came true' : tags || 'not yet'}${raw(n.quiet ? ' <b class="q">quiet</b>' : '')}</span>`
+      : html`<span class="rel-k"><span class="st-dot s-${n.status}"></span>${n.key}${raw(n.holder ? ' · ' + esc(n.holder.name) : '')}</span><span class="rel-t">${n.title}</span><span class="rel-f">${STATUS[n.status] || n.status}${tags ? ' · ' + tags : ''}${raw(n.quiet ? ' <b class="q">quiet</b>' : '')}</span>`;
+    const cls = `rel-n ${n.type} ${bn.has(n.id) ? 'bn' : ''} ${n.id === focus ? 'focus' : ''} ${dim ? 'dim' : ''} ${fin ? 'fin' : ''}`;
+    const style = `left:${p.x}px;top:${p.y}px;width:${W}px;height:${H}px`;
+    return n.key ? html`<a class="${cls}" href="#/t/${n.key}" style="${style}" title="${n.key} ${n.title}">${raw(inner)}</a>`
+      : n.link ? html`<a class="${cls}" href="${n.link}" target="_blank" rel="noopener" style="${style}" title="${n.title}">${raw(inner)}</a>`
+      : html`<div class="${cls}" style="${style}" title="${n.title}">${raw(inner)}</div>`;
+  };
+  const marker = (id, cls) => `<marker id="${id}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="${cls}" d="M0,0 L8,4 L0,8 z"/></marker>`;
+  box.innerHTML = `<div class="rel-in" style="width:${width}px;height:${height}px">
+    <svg class="rel-svg" width="${width}" height="${height}" aria-hidden="true"><defs>${marker('ah', 'ah')}${marker('ah-sub', 'ah sub')}${marker('ah-met', 'ah met')}</defs>${g.edges.map(path).join('')}</svg>
+    ${g.nodes.map(node).join('')}</div>`;
+  if (focus && pos.get(focus)) box.scrollLeft = Math.max(0, pos.get(focus).x - (box.clientWidth - W) / 2);
+}
+
 // ---------- task: review and teach ----------
 const EVENT = {
   created: (e) => e.data?.status === 'inbox' ? 'proposed it' : 'wrote the brief', claimed: () => 'picked it up', work_logged: () => 'logged work',
@@ -905,6 +1062,9 @@ const EVENT = {
   merged: () => 'merged the PR', merge_waiting: () => 'will merge the PR when checks pass', merge_blocked: () => 'could not merge the PR yet',
   assigned: () => 'handed it over', woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
   github: (e) => (e.data?.to && e.data.to !== e.data.from ? `moved it to ${STATUS[e.data.to] || e.data.to} from GitHub` : 'saw it on GitHub'),
+  waiting: () => 'said what it waits on', wait_met: () => 'ticked off something it waited on', wait_removed: () => 'took a wait off',
+  unblocked: () => 'cleared the way: nothing left to wait on', assumed: () => 'went ahead on an assumption',
+  assumption_confirmed: () => 'confirmed the assumption', assumption_corrected: () => 'corrected an assumption and sent it back',
 };
 // Under a decision recorded from a chat: who recorded it, the person's words, a link to the chat, and Undo.
 function viaLine(e, t, undoable) {
@@ -953,6 +1113,7 @@ async function viewTask(key) {
         <span class="muted">It is out of the briefing and agents leave it alone. When it comes back it returns to ${STATUS[t.returns_to] || 'Ready'}.</span></div><button class="btn go" data-act="click:unpark">Bring it back</button></div>`
         : '')}
       ${raw(t.brief ? html`<div class="sec"><h3>Brief</h3><p class="prose">${prose(t.brief, t.mentions)}</p>${raw(t.mentions?.length && t.status !== 'inbox' ? html`<div class="links" aria-label="Mentioned in the brief">${join(t.mentions.map(linkPill))}</div>` : '')}</div>` : '')}
+      ${raw(depsSection(t))}
       ${raw(!t.parent ? html`<div class="sec"><h3>Sub-tasks${subs.length ? ` · ${subDone} of ${subs.length} done` : ''}</h3>
         ${raw(subs.length ? html`<div class="bar" style="margin:0 0 12px">${raw(subs.length ? `<span class="b-done" style="width:${(subDone / subs.length) * 100}%"></span>` : '')}</div>
           <div class="subs">${join(subs.map((x) => html`<a href="#/t/${x.key}" class="subrow ${['done', 'declined'].includes(x.status) ? 'fin' : ''}"><span class="key">${x.key}</span><span class="t grow">${x.title}</span><span class="muted" style="font-size:13px">${x.assignee ?? ''}</span><span class="pill">${STATUS[x.status]}</span></a>`))}</div>` : '')}
@@ -1007,10 +1168,46 @@ async function viewTask(key) {
       const n = await api('POST', '/api/tasks', { parent: t.key, title });
       toast(`${n.key} added under ${t.key}.`); reload();
     },
+    addwait: async (f) => {
+      const d = formData(f); const v = (d.on || '').trim(); if (!v) return;
+      const item = d.owner && !/^[A-Za-z][A-Za-z0-9]{0,9}-\d+$/.test(v) ? { condition: /^https?:/.test(v) ? undefined : v, link: /^https?:/.test(v) ? v : undefined, owner: d.owner } : v;
+      await api('PATCH', `/api/tasks/${t.key}`, { waiting_on: [item] });
+      toast(`${t.key} waits on that now. Agents skip it until it happens.`); reload();
+    },
+    waitmet: async (el) => { await api('PATCH', `/api/tasks/${t.key}`, { waits_met: [el.dataset.id] }); toast('Ticked off.'); reload(); },
+    waitoff: async (el) => { await api('PATCH', `/api/tasks/${t.key}`, { not_waiting_on: [el.dataset.id] }); toast('Taken off.'); reload(); },
     comment: async (f) => { if (!text()) throw new Error('Write something first.'); await api('POST', `/api/tasks/${t.key}/comment`, { text: text() }); toast('Added to the record.'); reload(); },
     copy: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); toast('Copied.'); } catch { toast(el.dataset.v); } },
   });
   $app.querySelectorAll('textarea[name=answer]').forEach((ta) => ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ta.form.requestSubmit(); }));
+}
+
+// ---------- waiting on, what it holds up, assumptions (KD-84) ----------
+// A task waits on another task, a condition (a PR merging, "budget approved") or, as before, a person's
+// answer (the blocked question). Each wait names who owes it. Assumptions are what an agent went ahead on.
+function depsSection(t) {
+  const open = t.waiting_on || [];
+  const blocks = t.blocks || [];
+  const assumed = t.assumptions || [];
+  const met = t.recently_met || [];
+  const owner = (w) => (w.owner ? `${w.kind === 'task' ? '' : 'owed by '}${w.owner.name}` : w.kind === 'task' ? (w.task.status === 'ready' ? 'nobody on it yet' : '') : 'nobody named');
+  const row = (w) => html`<div class="dep">
+    ${raw(w.task ? html`<span class="st-dot s-${w.task.status}" title="${STATUS[w.task.status]}"></span><a href="#/t/${w.task.key}" class="grow"><span class="key">${w.task.key}</span> ${w.task.title}</a>`
+      : html`<span class="cond-dot" aria-hidden="true"></span><span class="grow">${w.condition}${raw(w.link ? html` <a href="${w.link}" target="_blank" rel="noopener" class="muted">↗</a>` : '')}</span>`)}
+    <span class="muted dep-w">${w.task ? (w.task.holder ? w.task.holder.name + ' · ' : '') + STATUS[w.task.status] : owner(w)} · ${ago(w.since)}</span>
+    ${raw(w.kind === 'condition' ? html`<button class="btn sm" data-act="click:waitmet" data-id="${w.id}" title="It happened">Done</button>` : '')}
+    <button class="btn sm quiet" data-act="click:waitoff" data-id="${w.id}" title="No longer waiting on this" aria-label="Stop waiting on ${w.label}">×</button></div>`;
+  const people = members.filter((m) => !m.removed_at);
+  const asm = (a) => html`<div class="dep asm ${a.state}"><span class="asm-k">${a.state === 'open' ? 'Assuming' : a.state === 'confirmed' ? 'Confirmed' : 'Corrected'}</span>
+    <span class="grow">${a.text}${raw(a.answer ? html`<span class="asm-a">Actually: ${a.answer}</span>` : '')}</span><span class="muted dep-w">${a.made_by?.name ?? ''} · ${ago(a.at)}</span></div>`;
+  return html`<div class="sec deps"><h3>Waiting on${open.length ? ` · ${open.length}` : ''}</h3>
+    ${raw(open.length ? html`<div class="dep-list">${join(open.map(row))}</div>` : html`<p class="muted" style="font-size:14px">${t.status === 'blocked' ? 'Only the question above.' : 'Nothing. It can go ahead.'}</p>`)}
+    ${raw(met.length ? html`<p class="muted dep-met">Cleared: ${met.map((m) => m.label).join(', ')}</p>` : '')}
+    ${raw(['done', 'declined'].includes(t.status) ? '' : html`<form class="row dep-add" data-act="submit:addwait"><input name="on" placeholder="A task key, a PR link, or what has to be true" aria-label="Waits on">
+      <select name="owner" aria-label="Who owes it"><option value="">Who owes it?</option>${join(people.map((m) => html`<option value="${m.name}">${m.name}</option>`))}</select><button class="btn sm">Add</button></form>`)}
+    ${raw(blocks.length ? html`<h3 style="margin-top:22px">Holds up · ${blocks.length}</h3><div class="dep-list">${join(blocks.map((b) => html`<div class="dep"><span class="st-dot s-${b.status}"></span><a href="#/t/${b.key}" class="grow"><span class="key">${b.key}</span> ${b.title}</a><span class="muted dep-w">waits on this</span></div>`))}</div>` : '')}
+    ${raw(assumed.length ? html`<h3 style="margin-top:22px">Assumptions</h3><div class="dep-list">${join(assumed.map(asm))}</div>` : '')}
+    ${raw(open.length || blocks.length || t.subtasks?.length || t.parent ? html`<a class="dep-map muted" href="#/map/relations/${t.key}">See how it connects ↗</a>` : '')}</div>`;
 }
 
 // ---------- status picker (KD-57) ----------
@@ -1042,6 +1239,12 @@ function claimCard(t) {
       ${raw(handoffLine)}</div>${raw(acts)}</div>`;
   }
   if (t.status !== 'ready') return '';
+  if (t.waiting) {
+    const on = t.waiting_on.map((w) => w.label).join(', ');
+    return html`<div class="card pad claim waitcard"><div class="grow"><b>Waiting on ${on}</b>
+      <span class="muted">Agents skip it until then, and it comes back by itself. ${me.kind === 'human' ? 'You can still start it.' : ''}</span>${raw(handoffLine)}</div>
+      ${raw(me.kind === 'human' ? '<button class="btn sm" data-act="click:takeit">Start anyway</button>' : '')}</div>`;
+  }
   const pinned = t.assignee && t.assignee.id !== me.id;
   const acts = me.kind !== 'human' ? '' : pinned ? '<button class="btn sm" data-act="click:takeover">Take over…</button>' : '<button class="btn sm go" data-act="click:takeit">Take it</button>';
   return html`<div class="card pad claim"><div class="grow"><b>${pinned ? `Waiting for ${t.assignee.name} to pick it up` : t.assignee ? 'Handed to you' : 'Nobody is on this yet'}</b>
@@ -1244,12 +1447,12 @@ function selBar(shown) {
 }
 
 function tcard(t) {
-  return html`<a class="card tcard ${pickCls(t)}" href="#/t/${t.key}" data-key="${t.key}">${raw(pickMark(t))}<span class="key">${t.key}${t.parent ? ' · under ' + t.parent : ''}</span><span class="t">${raw(kindChip(t.kind))}${t.title}</span>
+  return html`<a class="card tcard ${pickCls(t)}" href="#/t/${t.key}" data-key="${t.key}">${raw(pickMark(t))}<span class="key">${t.key}${t.parent ? ' · under ' + t.parent : ''}</span><span class="t">${raw(kindChip(t.kind))}${t.title}${raw(t.waiting ? ' <span class="waitchip">waits</span>' : '')}</span>
     <span class="f">${raw(who(t.assignee, t.status === 'ready' ? 'Anyone' : '—'))}<span class="key">${t.subtasks ? `${t.subtasks.done}/${t.subtasks.total} · ` : ''}${ago(t.updated_at)}</span></span></a>`;
 }
 function trow(t, child = false) {
   return html`<a class="trow ${child ? 'child' : ''} ${pickCls(t)}" href="#/t/${t.key}" data-key="${t.key}"><span class="st-dot s-${t.status}" title="${STATUS[t.status]}"></span><span class="key">${t.key}</span>
-    <span class="t">${raw(tv.group === 'kind' ? '' : kindChip(t.kind))}${t.title}${raw(t.subtasks ? ` <span class="subcount">${t.subtasks.done}/${t.subtasks.total}</span>` : '')}</span>
+    <span class="t">${raw(tv.group === 'kind' ? '' : kindChip(t.kind))}${t.title}${raw(t.subtasks ? ` <span class="subcount">${t.subtasks.done}/${t.subtasks.total}</span>` : '')}${raw(t.waiting ? ' <span class="waitchip" title="Waits on something; agents skip it until then">waits</span>' : '')}</span>
     <span class="stx">${STATUS[t.status]}</span><span class="w">${raw(who(t.assignee, t.status === 'ready' ? 'Anyone' : ''))}</span><span class="key">${ago(t.updated_at)}</span></a>`;
 }
 
@@ -1871,9 +2074,9 @@ async function route() {
     window.kunlaInstall?.paint();
     rememberSpace();
   }
-  const [, view = '', arg] = (location.hash || '#/').split('/');
+  const [, view = '', arg, arg2] = (location.hash || '#/').split('/');
   const render = {
-    '': viewBriefing, map: viewMap, tasks: () => viewTasks(arg), team: () => viewTeam(arg), projects: viewProjects, playbook: viewProjects,
+    '': viewBriefing, map: () => (arg === 'relations' ? viewRelations(decodeURIComponent(arg2 || '')) : viewMap()), tasks: () => viewTasks(arg), team: () => viewTeam(arg), projects: viewProjects, playbook: viewProjects,
     t: () => viewTask(decodeURIComponent(arg || '')),
   }[view] || viewBriefing;
   if (!$app.innerHTML) $app.innerHTML = '<div class="skel"></div>';
