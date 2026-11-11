@@ -1,3 +1,4 @@
+import * as plan from './plan';
 import { extensions, refusal, type PolicyAction } from './extensions';
 import { COMMUNITY, type Licence } from './licence';
 import { wakeMember, publicCallback, type Wake } from './wake';
@@ -340,10 +341,15 @@ export async function addMember(c: Ctx, input: { name: string; kind: Kind; platf
   if (input.kind === 'human' && !isAdmin(c.me)) throw new KunlaError(403, 'Only admins can add people.');
   const name = required(input.name, 'name').trim();
   await checkPolicy(c, { type: 'add_member', kind: input.kind === 'ai' ? 'ai' : 'human', name, platform: input.platform ?? null });
-  if (input.kind !== 'ai' && c.licence?.seats != null) {
-    // Plan limit: people count against the licence's seats across the whole Kunla; AI members are free.
-    const n = await c.db.prepare(`SELECT COUNT(*) AS n FROM members WHERE kind = 'human' AND removed_at IS NULL`).first<number>('n');
-    if ((n ?? 0) >= c.licence.seats) throw new KunlaError(403, `This Kunla's licence covers ${c.licence.seats} people, and all seats are taken. Remove someone or ask about more seats.`);
+  if (input.kind !== 'ai') {
+    // Seats: people count against the licence (self-host) or the Kunla Cloud plan (KD-72) across the whole
+    // Kunla; AI members are free.
+    const planSeats = await plan.seatLimit(c.db);
+    if (c.licence?.seats != null || planSeats != null) {
+      const n = (await c.db.prepare(`SELECT COUNT(*) AS n FROM members WHERE kind = 'human' AND removed_at IS NULL`).first<number>('n')) ?? 0;
+      if (c.licence?.seats != null && n >= c.licence.seats) throw new KunlaError(403, `This Kunla's licence covers ${c.licence.seats} people, and all seats are taken. Remove someone or ask about more seats.`);
+      if (planSeats != null && n >= planSeats) throw new KunlaError(402, `Your plan covers ${planSeats} ${planSeats === 1 ? 'person' : 'people'}, and all seats are taken. Agents are always free. Remove someone or upgrade the plan to add more people.`);
+    }
   }
   if (input.kind === 'ai') {
     const same = await c.db.prepare(`SELECT * FROM members WHERE kind = 'ai' AND sponsor_id = ? AND lower(name) = lower(?) AND removed_at IS NULL AND space_id = ?`)

@@ -1555,7 +1555,14 @@ function showConnect(kind) {
       <div class="field"><label for="cp-n">Name</label><input id="cp-n" name="name" required></div>
       <div class="field"><label for="cp-e">Work email (optional)</label><input id="cp-e" name="email" type="email" autocomplete="off" placeholder="name@company.com"></div>
       <span class="muted" style="font-size:12px;margin-top:-8px">If this Kunla has Google or Microsoft sign-in, they sign in with this account instead of pasting a token.</span>
+      <span class="muted" id="cp-plan" style="font-size:12px" hidden></span>
       <div class="row"><button class="btn go">Add</button><button class="btn quiet" type="button" data-act="click:close">Cancel</button></div></form></div>`;
+  // Kunla Cloud: say how many seats the plan has left (KD-72). Agents never use one.
+  if (kind !== 'ai') api('GET', '/api/edition').then((e) => {
+    const el = $('cp-plan'); if (!el || !e.plan || e.plan.seats == null) return;
+    const people = members.filter((x) => x.kind === 'human').length;
+    el.textContent = `Your ${e.plan.name} plan covers ${e.plan.seats} people; this workspace has ${people}. Agents are always free.`; el.hidden = false;
+  }).catch(() => {});
   openSheet(inner, {
     claudeai: showClaudeAi,
     create: async (f) => {

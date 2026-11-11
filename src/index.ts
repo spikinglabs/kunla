@@ -20,6 +20,7 @@ import { readLicence } from './licence';
 import { extensions, flushAudit } from './extensions';
 import * as ping from './ping';
 import * as oidc from './oidc';
+import * as plan from './plan';
 
 export interface Env {
   DB: D1Database;
@@ -40,6 +41,8 @@ export interface Env {
   GITHUB_APP_ID?: string; GITHUB_APP_SLUG?: string; GITHUB_APP_PRIVATE_KEY?: string; GITHUB_APP_WEBHOOK_SECRET?: string;
   GITHUB_APP_CLIENT_ID?: string; GITHUB_APP_CLIENT_SECRET?: string; GITHUB_APP_MERGE?: string;
   KUNLA_TENANT?: string; KUNLA_CLOUD_HOOK?: string; KUNLA_CLOUD_SECRET?: string;
+  /** People on Kunla Cloud's free plan (KD-72); 5 when unset. */
+  KUNLA_FREE_SEATS?: string;
   MICROSOFT_CLIENT_ID?: string; MICROSOFT_CLIENT_SECRET?: string; MICROSOFT_TENANT?: string;
 }
 type Vars = { ctx: core.Ctx };
@@ -50,7 +53,8 @@ export const baseUrl = (c: Context<any>) => (c.env.PUBLIC_URL || new URL(c.req.u
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
 // The shared GitHub App's settings come from the environment (KD-71).
-app.use('*', async (c, next) => { ghapp.configure(c.env ?? {}); await next(); });
+// Kunla Cloud's plan check is on when KUNLA_CLOUD_SECRET is set (KD-72).
+app.use('*', async (c, next) => { ghapp.configure(c.env ?? {}); plan.configure(c.env ?? {}); await next(); });
 
 app.onError((e, c) => {
   if (e instanceof core.KunlaError) return c.json({ error: e.message }, e.status as any);
@@ -113,7 +117,24 @@ app.post('/api/import', async (c) => {
 app.get('/api/edition', async (c) => {
   const l = await readLicence(c.env.KUNLA_LICENSE);
   const signIn = [...oidc.options(c.env), ...extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }))];
-  return c.json({ edition: l.edition, licensee: l.licensee, features: l.features, seats: l.seats, expires_at: l.expires_at, problem: l.problem, sign_in: signIn, version: VERSION });
+  const p = await plan.current(c.env.DB);
+  return c.json({ edition: l.edition, licensee: l.licensee, features: l.features, seats: l.seats, expires_at: l.expires_at, problem: l.problem, sign_in: signIn, version: VERSION,
+    plan: p ? { name: p.name, seats: p.seats } : null });
+});
+// Kunla Cloud's control plane sets the plan after billing changes and reads the head count to bill (KD-72).
+// Both calls are signed with KUNLA_CLOUD_SECRET; see src/plan.ts.
+app.get('/api/cloud/plan', async (c) => {
+  const err = await plan.verify(c.req.raw, '');
+  if (err) return c.json({ error: err }, plan.hosted() ? 401 : 404);
+  return c.json({ plan: await plan.current(c.env.DB), ...(await plan.headcount(c.env.DB)) });
+});
+app.put('/api/cloud/plan', async (c) => {
+  const body = await c.req.text();
+  const err = await plan.verify(c.req.raw, body);
+  if (err) return c.json({ error: err }, plan.hosted() ? 401 : 404);
+  let input: unknown; try { input = JSON.parse(body); } catch { return c.json({ error: 'Body is not JSON.' }, 400); }
+  try { return c.json({ plan: await plan.set(c.env.DB, input), ...(await plan.headcount(c.env.DB)) }); }
+  catch (e) { return c.json({ error: (e as Error).message }, 400); }
 });
 // Sign in with a work Google or Microsoft account (KD-68): free in the core. Errors go back to the sign-in page.
 const signInError = (c: C, e: unknown) => c.redirect(`/app/?signin_error=${encodeURIComponent(e instanceof Error ? e.message : 'Sign-in failed.')}`);
@@ -313,7 +334,7 @@ app.all('*', (c) => (c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : c.text('Not 
 // Cron (wrangler.toml [triggers]): at the start of each UTC day, wake continuous agents that stopped on a daily budget
 // and send the weekly digests due today.
 export async function scheduled(_e: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
-  ghapp.configure(env);
+  ghapp.configure(env); plan.configure(env);
   const base = (env.PUBLIC_URL || '').replace(/\/$/, '');
   const jobs: Promise<unknown>[] = [];
   await continuous.newDay({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30), notify: (w) => { jobs.push(wake.deliver(env.DB, w).catch((e) => console.error('wake failed', e))); } });

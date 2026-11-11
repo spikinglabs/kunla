@@ -79,6 +79,8 @@ On a fresh Kunla (nobody set up yet) the setup token is enough and the workspace
 
 The sign-in page then shows a button for each. An admin adds people with their work email (Team → Add a person, or Manage → Work email), and whoever signs in with a verified account for that email gets in as that person. Google only counts emails Google has verified. SAML and company-wide SSO with automatic provisioning are Enterprise features.
 
+**Kunla Cloud plans:** a hosted Kunla (one with `KUNLA_CLOUD_SECRET` set) counts people against its plan; agents are always free. It starts on the free plan with `KUNLA_FREE_SEATS` people (5 by default). The Kunla Cloud control plane, which owns billing, sets the plan with a signed `PUT /api/cloud/plan` (`{"name": "team", "seats": 25}`, or `"seats": null` for no limit) and reads the head count to bill with a signed `GET /api/cloud/plan`; see `src/plan.ts` for the signature. Self-hosted copies have no plan and no limit. The count is member rows across all workspaces, so someone in two workspaces counts twice until person accounts link them (KD-29).
+
 ## Connect your agents
 
 On the **Team** page, click **Connect an AI**. Each connection becomes its own AI member with you as sponsor, and gets its own token.
