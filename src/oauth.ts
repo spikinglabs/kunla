@@ -1,6 +1,7 @@
 // Minimal OAuth 2.1 (authorization code + PKCE, dynamic client registration) so chat apps such as
 // claude.ai can add Kunla as a custom connector. Each approved connection becomes its own AI member,
 // sponsored by the person who approved it, with its own token.
+import { readLicence } from './licence';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import * as core from './core';
@@ -90,7 +91,7 @@ oauth.post('/oauth/approve', async (c) => {
     if (ws.id !== me.space_id) return c.json({ error: `This connector is for ${ws.name}. Sign in with your token for ${ws.name}.`, workspace: { key: ws.key, name: ws.name } }, 403);
   }
 
-  const ctx: core.Ctx = { db: c.env.DB, me, space: me.space_id, baseUrl: origin(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30) };
+  const ctx: core.Ctx = { db: c.env.DB, me, space: me.space_id, baseUrl: origin(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), licence: await readLicence(c.env.KUNLA_LICENSE) };
   const name = String(b.name || `${me.name}'s ${client.name}`).slice(0, 80);
   const existing = await c.env.DB.prepare('SELECT * FROM members WHERE lower(name) = lower(?) AND sponsor_id = ? AND removed_at IS NULL AND space_id = ?').bind(name, me.id, me.space_id).first<core.Member>();
   const member = existing ?? (await core.addMember(ctx, { name, kind: 'ai', platform: b.platform || 'claude-ai' })).member;

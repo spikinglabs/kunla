@@ -16,6 +16,8 @@ import * as ghapp from './githubapp';
 import { VERSION } from './version';
 import * as transfer from './transfer';
 import * as waits from './waits';
+import { readLicence } from './licence';
+import { extensions, flushAudit } from './extensions';
 
 export interface Env {
   DB: D1Database;
@@ -23,6 +25,8 @@ export interface Env {
   LEASE_MINUTES?: string;
   SETUP_TOKEN?: string;
   PUBLIC_URL?: string;
+  /** Licence key for the Enterprise edition (KD-75); unset = Community. */
+  KUNLA_LICENSE?: string;
 }
 type Vars = { ctx: core.Ctx };
 type C = Context<{ Bindings: Env; Variables: Vars }>;
@@ -45,7 +49,7 @@ async function authenticate(c: C): Promise<core.Ctx | null> {
   const me = await core.memberForToken(c.env.DB, token);
   if (!me) return null;
   // The token decides the workspace: every read and write below is limited to it.
-  return { db: c.env.DB, me, space: me.space_id, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)),
+  return { db: c.env.DB, me, space: me.space_id, baseUrl: baseUrl(c), leaseMinutes: Number(c.env.LEASE_MINUTES || 30), licence: await readLicence(c.env.KUNLA_LICENSE), notify: (w) => sendLater(c, wake.deliver(c.env.DB, w)),
     defer: (job) => sendLater(c, job()) };
 }
 
@@ -87,6 +91,25 @@ app.post('/api/import', async (c) => {
   }
   const data = await c.req.json().catch(() => null);
   return c.json(await transfer.importWorkspace(c.env.DB, data, { fresh }));
+});
+// Which edition this Kunla runs and how people can sign in (KD-75). Public: the sign-in page needs it.
+app.get('/api/edition', async (c) => {
+  const l = await readLicence(c.env.KUNLA_LICENSE);
+  const signIn = extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }));
+  return c.json({ edition: l.edition, licensee: l.licensee, features: l.features, seats: l.seats, expires_at: l.expires_at, problem: l.problem, sign_in: signIn, version: VERSION });
+});
+// Sign-in providers registered by ee/ (SSO). A provider hands back a member; Kunla gives them a fresh token and
+// opens the web app with it, the same way switching workspace does.
+app.all('/auth/:id/*', async (c) => {
+  const l = await readLicence(c.env.KUNLA_LICENSE);
+  const p = extensions().signIn.find((x) => x.id === c.req.param('id') && l.features.includes(x.feature));
+  if (!p) return c.json({ error: 'No such sign-in on this Kunla.' }, 404);
+  const rest = new URL(c.req.url).pathname.slice(`/auth/${p.id}/`.length);
+  const r = await p.handle(c.req.raw, rest, c.env as unknown as Record<string, unknown>, c.env.DB);
+  if (r instanceof Response) return r;
+  if ((r as { removed_at?: string | null }).removed_at) return c.json({ error: 'This person was removed from Kunla.' }, 403);
+  const token = await core.issueToken(c.env.DB, r.id, `sign-in:${p.id}`);
+  return c.redirect(`/app/#/use/${encodeURIComponent(token)}`);
 });
 // GitHub calls this when a pull request or push happens; tasks cited by key update themselves.
 app.post('/hooks/github', async (c) => {
@@ -249,6 +272,8 @@ export async function scheduled(_e: unknown, env: Env, ctx: { waitUntil(p: Promi
   await continuous.newDay({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30), notify: (w) => { jobs.push(wake.deliver(env.DB, w).catch((e) => console.error('wake failed', e))); } });
   // Weekly digests whose day is today (KD-52).
   jobs.push(digest.sendDue({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30) }).catch((e) => console.error('digest failed', e)));
+  // Audit export to the company's log tools, when ee/ registered a sink and the licence has it (KD-75).
+  if (extensions().audit.length) jobs.push(flushAudit(env.DB, env as unknown as Record<string, unknown>, await readLicence(env.KUNLA_LICENSE)).catch((e) => console.error('audit failed', e)));
   ctx.waitUntil(Promise.all(jobs));
 }
 
