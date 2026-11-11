@@ -8,7 +8,7 @@ const MAX_ITEMS = 20;
 const parse = (s: string | null) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
 
 /** Event types that matter to the agent holding, or having filed, a task. */
-const TYPES = ['answered', 'approved', 'changes_requested', 'assigned', 'taken_over', 'accepted', 'declined', 'parked', 'unparked', 'lease_expired', 'decision_undone', 'rule_added', 'focus_on', 'focus_off'];
+const TYPES = ['answered', 'approved', 'changes_requested', 'assigned', 'taken_over', 'accepted', 'declined', 'parked', 'unparked', 'lease_expired', 'decision_undone', 'rule_added', 'focus_on', 'focus_off', 'unblocked', 'assumption_confirmed', 'assumption_corrected'];
 
 export interface CatchUpItem { what: string; key: string | null; title: string | null; line: string; by: string | null; at: string }
 export interface CatchUp { since: string | null; first_session: boolean; count: number; items: CatchUpItem[]; note: string }
@@ -36,6 +36,9 @@ function line(r: Row, me: string): string | null {
     case 'rule_added': return `New rule${r.project_key ? ` in ${r.project_key}` : ''} from ${by}: ${r.note ?? ''}`;
     case 'focus_on': return `${by} put ${r.note ?? 'a project'} in focus; next_task offers it first.`;
     case 'focus_off': return `${by} took ${r.note ?? 'a project'} out of focus.`;
+    case 'unblocked': return `${k} is no longer waiting: ${r.note ?? 'what it waited on happened'}.`.replace(/\.\.$/, '.');
+    case 'assumption_confirmed': return `${by} confirmed your assumption on ${k}: "${r.note ?? ''}".`;
+    case 'assumption_corrected': return `${by} corrected an assumption on ${k}${quote} Adjust the work.`;
     default: return null;
   }
 }

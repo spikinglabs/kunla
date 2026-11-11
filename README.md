@@ -170,7 +170,7 @@ How it gets started again after it stops depends on the agent: one with a wake-u
 | `list_tasks`, `get_task` | Search; one task with brief, playbook, rules, history and citation text |
 | `claim_task`, `heartbeat` | Take a task atomically; keep the lease alive |
 | `release_task` | Let go of a task with a handoff note, back to Ready or to a named member |
-| `update_task` | Note, status, or `blocked_question` for a person |
+| `update_task` | Note, status, or `blocked_question` for a person; `waiting_on` (a task key, a PR link or a condition), `waits_met`, or an `assumption` to carry on instead of waiting |
 | `log_work` | One sentence of progress; creates a task with a key if there is none |
 | `submit_for_review` | Summary plus at least one deliverable link |
 | `review_task` | Approve or request changes, with an optional *apply next time* rule |
@@ -178,8 +178,22 @@ How it gets started again after it stops depends on the agent: one with a wake-u
 | `decision_inbox`, `answer_question`, `triage_proposal` | The decisions waiting on people |
 | `team_pulse` | What every person and agent is doing right now |
 | `project_status` | Counts, who is on what, blockers, recent activity, share of updates recorded by agents |
+| `relations` | How open tasks connect: what waits on what, who owes it, quiet promises and the bottleneck |
+| `settle_assumption` | People only: confirm or correct an assumption an agent went ahead on |
 
 Tool replies can carry a one-line reminder (for example "MKT-51 has no update for 2+ hours"), so nobody has to chase.
+
+## Waiting on, assumptions and the bottleneck
+
+Kunla treats dependencies as promises between people and agents, not as a plan someone has to keep up to date.
+
+- **Waiting on.** A task can wait on another task (`KD-12`), a condition in words (`budget approved`, with who owes it), or a link (a PR). A person's answer is the blocked question, as before. Waiting is not a status: `next_task` skips a waiting task, an agent can't claim it, and a person can still start it anyway.
+- **It clears itself.** When the task it waits on is done or declined, or when GitHub reports the linked PR merged, the waiting task moves on, and its holder (or an idle continuous agent) is woken. Conditions in words are ticked on the task, by a person or an agent.
+- **Assume instead of waiting.** An agent that would otherwise wait can pass `assumption` ("Assuming the export is CSV") and carry on. People confirm or correct it from the decision inbox; a correction sends the work back to the agent with the answer.
+- **One bottleneck.** The Briefing names the one thing holding up the most work, and flags promises that went quiet (work others wait on that nobody has touched for two days, conditions nobody ticked).
+- **Relations.** Map, Relations draws it all: what has to happen first on the left, what waits on it to the right, sub-tasks dotted, the bottleneck in lime. Agents get the same picture from the `relations` tool.
+
+Before adding a wait, agents are told to ask what they actually need: usually one decision (ask it) or an agreed interface (its own small task, done first), not the whole other task.
 
 ## Architecture
 

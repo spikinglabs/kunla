@@ -17,6 +17,7 @@ Kunla records who (person or AI) did what, for which task, and how a person judg
   commit trailer, branch name, PR title, a `Source:` line under a document's title, a last line in a message.
 - After a meaningful step, call `log_work` with one sentence and the task key. Don't narrate every small step.
 - If you need a decision you can't make, call `update_task` with `blocked_question`. Don't guess on things the brief leaves to people.
+- If the task can't go on until other work lands (another task, a PR, a condition), say so with `update_task` `waiting_on` and take the next task; it comes back by itself. When you split work into sub-tasks, order them with `waiting_on`. For small details that would be cheap to redo, pass `assumption` ("Assuming X") and carry on; a person confirms or corrects it.
 - If you find follow-up work, propose it with `create_task` (it lands in the inbox for a person to accept).
 
 ## When you finish

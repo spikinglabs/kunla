@@ -2,6 +2,7 @@
 // so nobody (person or agent) has to call log_work for work GitHub already knows about.
 // One route, signature-verified, no polling: GitHub calls us only when something happens.
 import * as core from './core';
+import * as waits from './waits';
 import { onCheckSuite, canMerge } from './merge';
 import type { Status, Task } from './core';
 import * as ghapp from './githubapp';
@@ -177,7 +178,9 @@ async function onPullRequest(c: core.Ctx, p: any): Promise<Result> {
     }
     updated.push({ key: t.key, from: t.status, to });
   }
-  return { status: 200, body: { ok: true, keys, updated } };
+  // A task that waits on this PR being merged ("waiting_on": the PR link) goes ahead now (KD-84).
+  const cleared = move === 'merged' ? await waits.onPrMerged(c, pr.html_url) : 0;
+  return { status: 200, body: { ok: true, keys, updated, ...(cleared ? { waits_cleared: cleared } : {}) } };
 }
 
 async function onPush(c: core.Ctx, p: any): Promise<Result> {

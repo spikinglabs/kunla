@@ -21,7 +21,14 @@ const TABLES: [string, string][] = [
   ['rules', 'SELECT r.* FROM rules r JOIN projects p ON p.id = r.project_id WHERE p.space_id = ?1 ORDER BY r.created_at'],
   ['task_sessions', 'SELECT s.* FROM task_sessions s JOIN tasks t ON t.id = s.task_id WHERE t.space_id = ?1 ORDER BY s.created_at'],
   ['task_notes', 'SELECT n.* FROM task_notes n JOIN tasks t ON t.id = n.task_id WHERE t.space_id = ?1 ORDER BY n.created_at'],
+  ['waits', 'SELECT * FROM waits WHERE space_id = ?1 ORDER BY created_at'],
+  ['assumptions', 'SELECT * FROM assumptions WHERE space_id = ?1 ORDER BY created_at'],
 ];
+
+/** Tables that belong to the deployment, not a workspace, and so stay out of an export. A test makes every new
+ *  table land in one list or the other, so a migration can't quietly leave a team's data out of its export. */
+export const NOT_EXPORTED = ['settings', 'oauth_clients', 'oauth_codes', 'webhook_deliveries', 'webhook_log', 'd1_migrations', 'sqlite_sequence'];
+export const EXPORTED = TABLES.map(([name]) => name);
 
 export interface WorkspaceExport {
   format: typeof FORMAT;
@@ -68,7 +75,7 @@ export async function importWorkspace(db: D1Database, data: unknown, opts: { fre
   let space = d.workspace.id;
   const wsRow = t('projects').find((p) => p.id === space && p.kind === 'workspace');
   if (!wsRow) throw new KunlaError(400, 'The export has no workspace row.');
-  for (const name of ['projects', 'members', 'tasks', 'events']) {
+  for (const name of ['projects', 'members', 'tasks', 'events', 'waits', 'assumptions']) {
     if (t(name).some((r) => r.space_id !== space)) throw new KunlaError(400, `The export mixes workspaces (${name}).`);
   }
 

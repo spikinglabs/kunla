@@ -46,7 +46,7 @@ Work is tracked in Kunla (MCP server `kunla`).
 2. Claim before working (`claim_task`, pass `repo` = your git remote). Never work on a task someone else holds.
 3. Cite the key everywhere: commit trailer `Task: KEY <link>`, branch `key-slug`, PR title `KEY: title`.
 4. Record progress with `log_work` (one sentence). Finish with `submit_for_review` and the PR link.
-5. Stuck? `update_task` with `blocked_question`. Stopping partway? `release_task` with a handoff note.
+5. Stuck? `update_task` with `blocked_question`. Waiting on other work? `update_task` with `waiting_on` (task key, PR link or condition), or pass `assumption` and carry on if redoing would be cheap. Stopping partway? `release_task` with a handoff note.
 ```
 
 The server also sends the full agreement as MCP instructions when Codex connects.

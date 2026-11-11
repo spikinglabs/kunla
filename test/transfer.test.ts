@@ -98,3 +98,13 @@ describe('workspace import', () => {
     expect(await to.DB.prepare('SELECT COUNT(*) AS n FROM members').first('n')).toBe(0);
   });
 });
+
+describe('what an export covers', () => {
+  it('names every table: exported with the workspace, or kept by the deployment', async () => {
+    const { EXPORTED, NOT_EXPORTED } = await import('../src/transfer');
+    const db = makeD1();
+    const tables = (await db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '%_new'`).all<{ name: string }>()).results.map((r) => r.name);
+    const unlisted = tables.filter((t) => !EXPORTED.includes(t) && !NOT_EXPORTED.includes(t));
+    expect(unlisted, 'add new tables to TABLES or NOT_EXPORTED in src/transfer.ts').toEqual([]);
+  });
+});
