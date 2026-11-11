@@ -27,7 +27,7 @@ const TABLES: [string, string][] = [
 
 /** Tables that belong to the deployment, not a workspace, and so stay out of an export. A test makes every new
  *  table land in one list or the other, so a migration can't quietly leave a team's data out of its export. */
-export const NOT_EXPORTED = ['settings', 'oauth_clients', 'oauth_codes', 'webhook_deliveries', 'webhook_log', 'usage_pings', 'd1_migrations', 'sqlite_sequence'];
+export const NOT_EXPORTED = ['settings', 'oauth_clients', 'oauth_codes', 'login_links', 'webhook_deliveries', 'webhook_log', 'usage_pings', 'd1_migrations', 'sqlite_sequence'];
 export const EXPORTED = TABLES.map(([name]) => name);
 
 export interface WorkspaceExport {
