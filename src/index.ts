@@ -13,6 +13,7 @@ import * as wake from './wake';
 import * as merge from './merge';
 import * as continuous from './continuous';
 import * as ghapp from './githubapp';
+import { VERSION } from './version';
 
 export interface Env {
   DB: D1Database;
@@ -64,7 +65,7 @@ const requireAuth = async (c: C, next: () => Promise<void>) => {
 app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], maxAge: 86400 }));
 
 // ---------- public ----------
-app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: '0.1.0' }));
+app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: VERSION }));
 app.get('/api/setup', async (c) => c.json({ set_up: await core.isSetUp(c.env.DB), needs_setup_token: !!c.env.SETUP_TOKEN }));
 app.post('/api/setup', async (c) => {
   const body = await c.req.json<any>();

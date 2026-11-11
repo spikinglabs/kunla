@@ -1,0 +1,53 @@
+# Tags a release when a version bump lands on main (KD-64).
+# To release: run `node scripts/changelog.mjs prepare X.Y.Z`, edit CHANGELOG.md if you like, and merge that as a
+# PR titled "Release vX.Y.Z". This workflow then sees a package.json version with no tag yet, tags the merge
+# commit vX.Y.Z and publishes a GitHub Release with that version's CHANGELOG.md section as its notes.
+# Self-hosted copies follow these tags (see the README's Upgrading section).
+name: Release
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: { group: release, cancel-in-progress: false }
+jobs:
+  release:
+    if: github.repository == 'spikinglabs/kunla'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Is there a new version?
+        id: v
+        run: |
+          v=$(node -p "require('./package.json').version")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+            echo "v$v is already tagged; nothing to release."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.v.outputs.new == 'true'
+        with: { node-version: 22, cache: npm }
+      - name: Check before tagging
+        if: steps.v.outputs.new == 'true'
+        run: npm ci && npm run typecheck && npm test
+      - name: Write the notes
+        if: steps.v.outputs.new == 'true'
+        run: |
+          node scripts/changelog.mjs section "${{ steps.v.outputs.version }}" > notes.md
+          if [ ! -s notes.md ] || ! grep -q '[^[:space:]]' notes.md; then
+            node scripts/changelog.mjs notes > notes.md
+          fi
+          cat notes.md
+      - name: Tag and publish the release
+        if: steps.v.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: v${{ steps.v.outputs.version }}
+        run: |
+          prerelease=""
+          case "$V" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$V" --target "$GITHUB_SHA" --title "Kunla $V" --notes-file notes.md $prerelease

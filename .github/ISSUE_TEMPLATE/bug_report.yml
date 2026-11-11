@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in Kunla doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For a security problem, please don't use this form: see SECURITY.md and report it privately.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Tasks
+        2. ...
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      multiple: true
+      options:
+        - Web app
+        - Phone / installed app
+        - MCP server (an agent's tool call)
+        - Claude Code plugin
+        - kunla CLI
+        - GitHub App / webhooks
+        - Deploy or upgrade
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Kunla version or commit
+      description: The release tag or commit your copy runs, or "hosted" if you use someone else's Kunla.
+  - type: input
+    id: agent
+    attributes:
+      label: Agent or browser
+      description: For example Claude Code 2.x, claude.ai, Codex, Safari on iPhone.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error messages or logs
+      description: Remove tokens and anything private first.
+      render: text

@@ -12,7 +12,8 @@
     "dev": "wrangler d1 migrations apply DB --local && wrangler dev",
     "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release:prepare": "node scripts/changelog.mjs prepare"
   },
   "dependencies": {
     "hono": "^4.6.0"
