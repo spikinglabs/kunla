@@ -18,6 +18,7 @@ import * as transfer from './transfer';
 import * as waits from './waits';
 import { readLicence } from './licence';
 import { extensions, flushAudit } from './extensions';
+import * as ping from './ping';
 
 export interface Env {
   DB: D1Database;
@@ -27,6 +28,11 @@ export interface Env {
   PUBLIC_URL?: string;
   /** Licence key for the Enterprise edition (KD-75); unset = Community. */
   KUNLA_LICENSE?: string;
+  /** "on" sends the daily anonymous usage ping (KD-69); off by default. */
+  KUNLA_USAGE_PING?: string;
+  KUNLA_PING_URL?: string;
+  /** "true" on the Kunla that collects usage pings (Spiking Labs' own). */
+  KUNLA_COLLECT_PINGS?: string;
 }
 type Vars = { ctx: core.Ctx };
 type C = Context<{ Bindings: Env; Variables: Vars }>;
@@ -110,6 +116,11 @@ app.all('/auth/:id/*', async (c) => {
   if ((r as { removed_at?: string | null }).removed_at) return c.json({ error: 'This person was removed from Kunla.' }, 403);
   const token = await core.issueToken(c.env.DB, r.id, `sign-in:${p.id}`);
   return c.redirect(`/app/#/use/${encodeURIComponent(token)}`);
+});
+// Usage pings from copies that opted in (KD-69), accepted only where KUNLA_COLLECT_PINGS is "true".
+app.post('/api/ping', async (c) => {
+  if (c.env.KUNLA_COLLECT_PINGS !== 'true') return c.json({ error: 'This Kunla does not collect usage pings.' }, 404);
+  return c.json(await ping.receive(c.env.DB, await c.req.json().catch(() => null)));
 });
 // GitHub calls this when a pull request or push happens; tasks cited by key update themselves.
 app.post('/hooks/github', async (c) => {
@@ -218,6 +229,19 @@ api.get('/export', async (c) => {
   const name = `kunla-${data.workspace.key.toLowerCase()}-${data.exported_at.slice(0, 10)}.json`;
   return c.json(data, 200, { 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' });
 });
+// What this copy's usage ping sends (or would send), and whether it is on (KD-69). Admins only.
+api.get('/ping/preview', async (c) => {
+  const ctx = c.get('ctx');
+  if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only admins can see the usage ping.' }, 403);
+  return c.json({ on: (c.env.KUNLA_USAGE_PING || '').toLowerCase() === 'on', url: c.env.KUNLA_PING_URL || ping.DEFAULT_PING_URL, ping: await ping.build(c.env.DB, (ctx.licence?.edition) ?? 'community') });
+});
+// On the collecting Kunla: how many copies are alive and how big (KD-69). Admins only.
+api.get('/ping/summary', async (c) => {
+  const ctx = c.get('ctx');
+  if (c.env.KUNLA_COLLECT_PINGS !== 'true') return c.json({ error: 'This Kunla does not collect usage pings.' }, 404);
+  if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only admins can see usage pings.' }, 403);
+  return c.json(await ping.summary(c.env.DB));
+});
 api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ctx'), await c.req.json())));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
 api.get('/projects', async (c) => c.json(await core.listProjects(c.get('ctx'))));
@@ -272,6 +296,8 @@ export async function scheduled(_e: unknown, env: Env, ctx: { waitUntil(p: Promi
   await continuous.newDay({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30), notify: (w) => { jobs.push(wake.deliver(env.DB, w).catch((e) => console.error('wake failed', e))); } });
   // Weekly digests whose day is today (KD-52).
   jobs.push(digest.sendDue({ db: env.DB, baseUrl: base, leaseMinutes: Number(env.LEASE_MINUTES || 30) }).catch((e) => console.error('digest failed', e)));
+  // The anonymous usage ping, for copies that turned it on (KD-69).
+  jobs.push(readLicence(env.KUNLA_LICENSE).then((l) => ping.send(env.DB, env, l.edition)));
   // Audit export to the company's log tools, when ee/ registered a sink and the licence has it (KD-75).
   if (extensions().audit.length) jobs.push(flushAudit(env.DB, env as unknown as Record<string, unknown>, await readLicence(env.KUNLA_LICENSE)).catch((e) => console.error('audit failed', e)));
   ctx.waitUntil(Promise.all(jobs));
