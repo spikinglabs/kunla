@@ -11,6 +11,14 @@
 // Permissions are the fewest that work: metadata, pull requests and checks read; contents read, or
 // write only when the admin lets Kunla merge approved PRs (GitHub's merge API needs contents write).
 // This is the only way to connect GitHub: hand-made webhook secrets and personal tokens are gone.
+//
+// Shared app (KD-71, for Kunla Cloud): when GITHUB_APP_ID and friends are set, every team uses one public Kunla
+// app instead of creating its own. Teams only install it. Its setup URL and webhook point at the Kunla Cloud
+// router, which sends each team's traffic to that team's Kunla: the install redirect by the team name at the start
+// of `state` (KUNLA_TENANT), webhooks by installation id, which each Kunla reports once it has checked the
+// install is really its admin's (KUNLA_CLOUD_HOOK). Because strangers share the app, an install is linked only
+// after GitHub confirms, through the user sign-in GitHub runs during installation, that the person installing
+// can see that installation.
 import { KunlaError, type Ctx } from './core';
 
 const APP_KEY = 'github_app';                 // deployment-wide: {id, slug, pem, webhook_secret, ...}
@@ -35,7 +43,29 @@ async function get<T>(db: D1Database, key: string): Promise<T | null> {
   try { return JSON.parse(r.value) as T; } catch { return null; }
 }
 
-export const getApp = (db: D1Database) => get<AppCreds>(db, APP_KEY);
+export interface SharedEnv {
+  GITHUB_APP_ID?: string; GITHUB_APP_SLUG?: string; GITHUB_APP_PRIVATE_KEY?: string; GITHUB_APP_WEBHOOK_SECRET?: string;
+  GITHUB_APP_CLIENT_ID?: string; GITHUB_APP_CLIENT_SECRET?: string; GITHUB_APP_MERGE?: string;
+  KUNLA_TENANT?: string; KUNLA_CLOUD_HOOK?: string; KUNLA_CLOUD_SECRET?: string;
+}
+interface Shared { app: AppCreds; clientId: string; clientSecret: string; tenant: string; hook: string; hookSecret: string }
+let shared: Shared | null = null;
+
+/** Read the shared app's settings from the environment (called on every request; cheap). */
+export function configure(env: SharedEnv) {
+  const id = Number(env.GITHUB_APP_ID);
+  if (!id || !env.GITHUB_APP_SLUG || !env.GITHUB_APP_PRIVATE_KEY || !env.GITHUB_APP_WEBHOOK_SECRET || !env.GITHUB_APP_CLIENT_ID || !env.GITHUB_APP_CLIENT_SECRET) { shared = null; return; }
+  const slug = env.GITHUB_APP_SLUG;
+  shared = {
+    app: { id, slug, name: slug, pem: env.GITHUB_APP_PRIVATE_KEY.replace(/\\n/g, '\n'), webhook_secret: env.GITHUB_APP_WEBHOOK_SECRET, html_url: `https://github.com/apps/${slug}`,
+      owner: '', owner_is_org: true, merge: env.GITHUB_APP_MERGE !== 'false', created_at: '' },
+    clientId: env.GITHUB_APP_CLIENT_ID, clientSecret: env.GITHUB_APP_CLIENT_SECRET,
+    tenant: (env.KUNLA_TENANT || '').trim(), hook: (env.KUNLA_CLOUD_HOOK || '').trim(), hookSecret: env.KUNLA_CLOUD_SECRET || '',
+  };
+}
+export const isShared = () => !!shared;
+
+export const getApp = async (db: D1Database) => shared?.app ?? get<AppCreds>(db, APP_KEY);
 
 /** What GitHub asks for, and nothing more. */
 export function permissions(merge: boolean) {
@@ -63,9 +93,11 @@ async function newState(db: D1Database, data: { space: string; kind: 'manifest' 
   const s = [...crypto.getRandomValues(new Uint8Array(18))].map((b) => b.toString(16).padStart(2, '0')).join('');
   await put(db, STATE_PREFIX + s, JSON.stringify({ ...data, exp: Date.now() + STATE_MINUTES * 60_000 }));
   await db.prepare('DELETE FROM settings WHERE key LIKE ? AND updated_at < ?').bind(STATE_PREFIX + '%', new Date(Date.now() - STATE_MINUTES * 60_000).toISOString()).run();
-  return s;
+  // With the shared app, the Kunla Cloud router reads the team name in front of the dot to send the admin home.
+  return shared?.tenant ? `${shared.tenant}.${s}` : s;
 }
-async function takeState(db: D1Database, s: string | undefined | null, kind: 'manifest' | 'install') {
+async function takeState(db: D1Database, raw: string | undefined | null, kind: 'manifest' | 'install') {
+  const s = raw && shared?.tenant && raw.startsWith(`${shared.tenant}.`) ? raw.slice(shared.tenant.length + 1) : raw;
   if (!s || !/^[0-9a-f]{36}$/.test(s)) return null;
   const v = await get<{ space: string; kind: string; merge?: boolean; exp: number }>(db, STATE_PREFIX + s);
   await db.prepare('DELETE FROM settings WHERE key = ?').bind(STATE_PREFIX + s).run();
@@ -91,6 +123,7 @@ export async function start(c: Ctx, input: { org?: string; merge?: boolean; name
 
 /** GitHub sends the admin back with a code: trade it for the app's credentials, then go install it. */
 export async function created(db: D1Database, code: string | undefined, state: string | undefined, fetcher: typeof fetch = fetch): Promise<string> {
+  if (shared) return '/app/#/team/github?gh=exists';
   const st = await takeState(db, state, 'manifest');
   if (!st) return '/app/#/team/github?gh=expired';
   if (await getApp(db)) return '/app/#/team/github?gh=exists';
@@ -105,19 +138,54 @@ export async function created(db: D1Database, code: string | undefined, state: s
 }
 
 /** Back from the install page: link the installation to the workspace that started it. */
-export async function installed(db: D1Database, installationId: string | undefined, state: string | undefined, fetcher: typeof fetch = fetch): Promise<string> {
+export async function installed(db: D1Database, installationId: string | undefined, state: string | undefined, fetcher: typeof fetch = fetch, code?: string): Promise<string> {
   const id = Number(installationId);
   const st = await takeState(db, state, 'install');
   const app = await getApp(db);
   if (!app || !Number.isInteger(id) || id <= 0) return '/app/#/team/github?gh=failed';
   const known = await getInstallation(db, id);
   if (!st) return known ? '/app/#/team/github?gh=updated' : '/app/#/team/github?gh=expired';
+  // Shared app: anyone could paste another team's installation id here, so GitHub must confirm that the person
+  // who just installed can see it. Before the id is trusted, the sign-in code becomes a user token, which lists their installations.
+  if (shared && !(await userCanSee(id, code, fetcher))) return '/app/#/team/github?gh=failed';
   // Ask GitHub, as the app, that this installation is really ours, and whose it is.
   const r = await fetcher(`${API}/app/installations/${id}`, { headers: ghHeaders(await appJwt(app)) });
   const d: any = await r.json().catch(() => ({}));
   if (!r.ok) return '/app/#/team/github?gh=failed';
+  if (shared && known && known.space !== st.space) return '/app/#/team/github?gh=failed'; // already another workspace's
   await put(db, INSTALL_PREFIX + id, JSON.stringify({ space: st.space, account: d.account?.login ?? '', account_is_org: d.account?.type === 'Organization' }));
+  await tellCloud('linked', id, fetcher);
   return '/app/#/team/github?gh=connected';
+}
+
+async function userCanSee(id: number, code: string | undefined, fetcher: typeof fetch): Promise<boolean> {
+  if (!shared || !code || !/^[\w-]{1,100}$/.test(code)) return false;
+  const t = await fetcher('https://github.com/login/oauth/access_token', { method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'Kunla' },
+    body: JSON.stringify({ client_id: shared.clientId, client_secret: shared.clientSecret, code }) });
+  const tok: any = await t.json().catch(() => ({}));
+  if (!t.ok || !tok.access_token) return false;
+  for (let page = 1; page <= 10; page++) {
+    const r = await fetcher(`${API}/user/installations?per_page=100&page=${page}`, { headers: ghHeaders(tok.access_token) });
+    const d: any = await r.json().catch(() => ({}));
+    if (!r.ok) return false;
+    const list: any[] = d.installations ?? [];
+    if (list.some((i) => i.id === id)) return true;
+    if (list.length < 100) return false;
+  }
+  return false;
+}
+
+/**
+ * Shared app: tell the Kunla Cloud router which installations this Kunla owns, so it forwards their webhooks
+ * here. Signed with KUNLA_CLOUD_SECRET (HMAC-SHA256 of the body, header x-kunla-signature-256). Best effort.
+ */
+export async function tellCloud(action: 'linked' | 'unlinked', id: number, fetcher: typeof fetch = fetch) {
+  if (!shared?.hook || !shared.hookSecret) return;
+  const body = JSON.stringify({ action, installation_id: id, tenant: shared.tenant, at: new Date().toISOString() });
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(shared.hookSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = [...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  try { await fetcher(shared.hook, { method: 'POST', headers: { 'content-type': 'application/json', 'x-kunla-signature-256': `sha256=${sig}` }, body }); } catch { /* the router can re-sync later */ }
 }
 
 export async function getInstallation(db: D1Database, id: number | string): Promise<Installation | null> {
@@ -133,15 +201,16 @@ export async function installations(db: D1Database, space: string): Promise<Inst
 }
 
 /** GitHub says the app was uninstalled: forget the link. */
-export async function forget(db: D1Database, id: number | string) {
+export async function forget(db: D1Database, id: number | string, fetcher: typeof fetch = fetch) {
   await db.prepare('DELETE FROM settings WHERE key = ?').bind(INSTALL_PREFIX + id).run();
+  await tellCloud('unlinked', Number(id), fetcher);
 }
 
 export async function info(c: Ctx) {
   const app = await getApp(c.db);
   if (!app) return { registered: false };
   return {
-    registered: true, name: app.name, slug: app.slug, owner: app.owner, html_url: app.html_url, merge: app.merge,
+    registered: true, shared: !!shared, name: app.name, slug: app.slug, owner: app.owner, html_url: app.html_url, merge: app.merge,
     settings_url: `https://github.com/${app.owner_is_org ? `organizations/${app.owner}/settings` : 'settings'}/apps/${app.slug}`,
     install_url: `${app.html_url}/installations/new`,
     installations: (await installations(c.db, c.space)).map((i) => ({ id: i.id, account: i.account,

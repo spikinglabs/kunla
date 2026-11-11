@@ -240,6 +240,10 @@ async function viewGate() {
   const gate = $('gate');
   gate.hidden = false;
   const s = await api('GET', '/api/setup');
+  // Sign in with Google or Microsoft (KD-68) when this Kunla offers it; a failed attempt comes back with ?signin_error.
+  const providers = s.set_up ? ((await api('GET', '/api/edition').catch(() => null))?.sign_in || []) : [];
+  const q = new URLSearchParams(location.search), signInErr = q.get('signin_error');
+  if (signInErr) history.replaceState(null, '', location.pathname + location.hash);
   gate.innerHTML = !s.set_up ? html`<div class="gate-card">${raw(WORD)}
       <div class="stack" style="gap:6px"><h1>Start your team's record of work</h1>
       <p class="muted">You're the first member. Your agents join next, each under its own name, sponsored by you.</p></div>
@@ -252,7 +256,7 @@ async function viewGate() {
         <button class="primary">Create workspace</button>
       </form></div>`
     : html`<div class="gate-card">${raw(WORD)}
-      <div class="stack" style="gap:6px"><h1>Sign in</h1><p class="muted">Paste your personal token. Whoever added you to Kunla has it.</p></div>
+      <div class="stack" style="gap:6px"><h1>Sign in</h1>${raw(signInErr ? html`<p role="alert" style="color:var(--warn)">${signInErr}</p>` : '')}${raw(providers.length ? html`<div class="stack" style="gap:8px">${raw(providers.map((p) => html`<a class="btn go" href="${p.url}">${p.label}</a>`).join(''))}</div><p class="muted">Or paste your personal token. Whoever added you to Kunla has it.</p>` : '<p class="muted">Paste your personal token. Whoever added you to Kunla has it.</p>')}</div>
       <form class="stack" data-act="submit:signin">
         <div class="field"><label for="g-token">Token</label><input id="g-token" name="token" required placeholder="kun_…" type="password" autocomplete="current-password"></div>
         <button class="primary">Sign in</button>
@@ -1549,7 +1553,16 @@ function showConnect(kind) {
     : html`<div class="sheet-body stack"><h2>Add a person</h2>
       <form class="stack" data-act="submit:create"><input type="hidden" name="kind" value="human">
       <div class="field"><label for="cp-n">Name</label><input id="cp-n" name="name" required></div>
+      <div class="field"><label for="cp-e">Work email (optional)</label><input id="cp-e" name="email" type="email" autocomplete="off" placeholder="name@company.com"></div>
+      <span class="muted" style="font-size:12px;margin-top:-8px">If this Kunla has Google or Microsoft sign-in, they sign in with this account instead of pasting a token.</span>
+      <span class="muted" id="cp-plan" style="font-size:12px" hidden></span>
       <div class="row"><button class="btn go">Add</button><button class="btn quiet" type="button" data-act="click:close">Cancel</button></div></form></div>`;
+  // Kunla Cloud: say how many seats the plan has left (KD-72). Agents never use one.
+  if (kind !== 'ai') api('GET', '/api/edition').then((e) => {
+    const el = $('cp-plan'); if (!el || !e.plan || e.plan.seats == null) return;
+    const people = members.filter((x) => x.kind === 'human').length;
+    el.textContent = `Your ${e.plan.name} plan covers ${e.plan.seats} people; this workspace has ${people}. Agents are always free.`; el.hidden = false;
+  }).catch(() => {});
   openSheet(inner, {
     claudeai: showClaudeAi,
     create: async (f) => {
@@ -1695,6 +1708,9 @@ function showManage(m) {
     <div><h2>${m.name}</h2><p class="muted">${kindLine(m)}</p></div>
     <form class="stack" data-act="submit:rename"><div class="field"><label for="mm-n">Name</label><input id="mm-n" name="name" required value="${m.name}" maxlength="80"></div>
       <div><button class="btn">Save name</button></div></form>
+    ${raw(m.kind === 'human' && me.roles?.includes('admin') ? html`<form class="stack" style="gap:6px" data-act="submit:email"><div class="field"><label for="mm-e">Work email</label><input id="mm-e" name="email" type="email" autocomplete="off" placeholder="name@company.com" value="${m.email || ''}"></div>
+      <p class="muted" style="font-size:13.5px">${self ? 'You' : m.name} can sign in with the Google or Microsoft account for this email, when this Kunla has that sign-in set up.</p>
+      <div><button class="btn">Save email</button></div></form>` : '')}
     <div class="stack" style="gap:6px"><div class="label">Token</div>
       <p class="muted" style="font-size:13.5px">${self ? 'Get a new personal token. Your old one stops working everywhere, and this browser switches to the new one.' : 'Get a new token if the old one leaked or you set it up somewhere else. Every old token for this agent stops working at once.'}</p>
       <div><button class="btn" data-act="click:rotate">New token</button></div></div>
@@ -1729,6 +1745,11 @@ function showManage(m) {
       toast(r.ok ? `Test call delivered (HTTP ${r.status}).` : `Test call failed: ${r.error}.`);
     },
     wakeOff: async () => { await api('DELETE', `/api/members/${m.id}/wake`); m.wake = null; toast(`${m.name} no longer gets wake-up calls.`); closeSheet(true); viewTeam(); },
+    email: async (f) => {
+      const r = await api('PATCH', `/api/members/${m.id}`, { email: formData(f).email.trim() || null });
+      m.email = r.email; const x = members.find((y) => y.id === m.id); if (x) x.email = r.email;
+      toast(r.email ? `${m.name} can sign in as ${r.email}.` : `Email removed for ${m.name}.`);
+    },
     rename: async (f) => {
       const r = await api('PATCH', `/api/members/${m.id}`, { name: formData(f).name });
       toast(`Renamed to ${r.name}.`); closeSheet(true); if (self) me.name = r.name; viewTeam();
