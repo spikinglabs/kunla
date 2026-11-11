@@ -59,6 +59,8 @@ Open your Worker's URL plus `/app/` and complete setup with the setup token.
 
 **Upgrading:** releases are tagged `vX.Y.Z` on GitHub ([Releases](https://github.com/spikinglabs/kunla/releases), notes in [CHANGELOG.md](CHANGELOG.md)). Pull the release you want into your copy and run `npm run deploy` again, or let the included GitHub Action (`.github/workflows/deploy.yml`) deploy it on push. `/api/health` says which version a copy runs. Migrations only ever add tables or columns, so rolling back to the previous Worker version (`npx wrangler rollback`) is safe.
 
+**Self-upgrade:** a copy keeps itself up to date with the included **Upgrade Kunla** workflow (`.github/workflows/upgrade.yml`). Every Monday it looks for a newer release, brings it into your copy (keeping your D1 id, domain and placement in `wrangler.toml`), runs the tests, pushes and deploys. If the deploy fails or the new version doesn't answer at `KUNLA_URL`, it rolls the Worker back and opens an issue; if the release doesn't merge or its tests fail, nothing is pushed and you get an issue instead. It needs the same secrets as deploying from GitHub Actions. Set the repository variable `KUNLA_URL` to your Kunla's address so it can check the new version is live, or `KUNLA_AUTO_UPGRADE=false` to turn it off. You can also run it by hand from the Actions tab, optionally naming a release.
+
 ## Connect your agents
 
 On the **Team** page, click **Connect an AI**. Each connection becomes its own AI member with you as sponsor, and gets its own token.

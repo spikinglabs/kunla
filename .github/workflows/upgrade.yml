@@ -1,0 +1,184 @@
+# Keeps your copy of Kunla up to date by itself (KD-67): "your Cloudflare, our updates".
+#
+# Every Monday it looks for a newer release (a vX.Y.Z tag on spikinglabs/kunla), brings it into your copy, runs the
+# tests, pushes it to your default branch and deploys it with the Deploy workflow. If the deploy fails, or the
+# deployed copy doesn't answer with the new version, it rolls the Worker back (`wrangler rollback`) and opens an issue.
+# Nothing is pushed when the release doesn't merge cleanly or its tests fail; you get an issue instead.
+#
+# Setup: the same secrets and variables as the Deploy workflow (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID,
+# KUNLA_D1_ID, ...). Your copy's own settings in wrangler.toml (D1 id, custom domain, placement) are kept.
+# Optional variables:
+#   KUNLA_AUTO_UPGRADE=false   turn self-upgrade off
+#   KUNLA_URL                  your Kunla's address (e.g. https://kunla.example.com), checked after deploying;
+#                              defaults to https://$KUNLA_DOMAIN when that is set
+#   KUNLA_UPSTREAM             where releases come from (default https://github.com/spikinglabs/kunla)
+# Optional secret KUNLA_UPGRADE_TOKEN: a fine-grained token on your copy with Contents and Workflows read/write.
+#   Only needed for releases that change files in .github/workflows, which GitHub's built-in token may not push.
+name: Upgrade Kunla
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release to upgrade to, e.g. v0.2.0 (default the newest)
+        required: false
+permissions:
+  contents: write
+  issues: write
+concurrency: { group: upgrade, cancel-in-progress: false }
+env:
+  UPSTREAM: ${{ vars.KUNLA_UPSTREAM || 'https://github.com/spikinglabs/kunla' }}
+jobs:
+  upgrade:
+    if: github.repository != 'spikinglabs/kunla' && vars.KUNLA_AUTO_UPGRADE != 'false'
+    runs-on: ubuntu-latest
+    outputs:
+      upgraded: ${{ steps.push.outputs.upgraded }}
+      sha: ${{ steps.push.outputs.sha }}
+      from: ${{ steps.find.outputs.from }}
+      to: ${{ steps.find.outputs.to }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.KUNLA_UPGRADE_TOKEN || github.token }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - name: Find a newer release
+        id: find
+        env:
+          WANT: ${{ inputs.version }}
+        run: |
+          from=$(node -p "require('./package.json').version")
+          tags=$(git ls-remote --tags --refs "$UPSTREAM" 'v*' | sed 's#.*refs/tags/##')
+          to=${WANT:-$(node scripts/upgrade.mjs latest $tags)}
+          echo "from=v$from" >> "$GITHUB_OUTPUT"
+          echo "to=$to" >> "$GITHUB_OUTPUT"
+          if [ -z "$to" ] || ! node scripts/upgrade.mjs newer "$from" "$to"; then
+            echo "Kunla v$from is up to date (newest release: ${to:-none})."
+            echo "newer=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Upgrading Kunla v$from to $to."
+            echo "newer=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Bring the release in
+        id: merge
+        if: steps.find.outputs.newer == 'true'
+        env:
+          TO: ${{ steps.find.outputs.to }}
+        run: |
+          git config user.name "kunla-upgrade[bot]"
+          git config user.email "kunla-upgrade@users.noreply.github.com"
+          git fetch --no-tags "$UPSTREAM" "refs/tags/$TO:refs/tags/$TO"
+          if git merge-base HEAD "$TO" >/dev/null; then
+            # A fork or clone that shares history with Kunla: a normal merge keeps your own changes.
+            if ! git merge --no-edit -m "Upgrade Kunla to $TO" "$TO"; then
+              git merge --abort
+              echo "reason=The release doesn't merge cleanly with your changes." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            # A copy made by the Deploy to Cloudflare button has its own history: take the release's files,
+            # keep this copy's settings in wrangler.toml.
+            cp wrangler.toml "$RUNNER_TEMP/wrangler.toml"
+            git checkout "$TO" -- .
+            node scripts/upgrade.mjs carry "$RUNNER_TEMP/wrangler.toml" wrangler.toml
+            git add -A
+            git commit -q -m "Upgrade Kunla to $TO"
+          fi
+      - name: Test the upgraded copy
+        id: test
+        if: steps.find.outputs.newer == 'true'
+        run: |
+          npm ci
+          if ! (npm run typecheck && npm test); then
+            echo "reason=The tests failed on the upgraded copy." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+      - name: Push it
+        id: push
+        if: steps.find.outputs.newer == 'true'
+        env:
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if ! git push origin "HEAD:$BRANCH"; then
+            echo "reason=Pushing to $BRANCH was refused. If the release changes .github/workflows, add the KUNLA_UPGRADE_TOKEN secret (see upgrade.yml)." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "upgraded=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Open an issue when it can't upgrade
+        if: failure() && steps.find.outputs.newer == 'true'
+        env:
+          TO: ${{ steps.find.outputs.to }}
+          FROM: ${{ steps.find.outputs.from }}
+          REASON: ${{ steps.merge.outputs.reason || steps.test.outputs.reason || steps.push.outputs.reason || 'A step failed.' }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create --title "Kunla couldn't upgrade to $TO" --body "$(printf '%s\n\n%s\n\n%s' \
+            "Self-upgrade from $FROM to $TO stopped before anything was pushed or deployed: $REASON" \
+            "Your Kunla keeps running $FROM. Details: $RUN" \
+            "Release notes: $UPSTREAM/releases/tag/$TO. To try again, run **Upgrade Kunla** from the Actions tab.")"
+
+  deploy:
+    needs: upgrade
+    if: needs.upgrade.outputs.upgraded == 'true'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      ref: ${{ needs.upgrade.outputs.sha }}
+    secrets: inherit
+
+  check:
+    needs: [upgrade, deploy]
+    if: always() && needs.upgrade.outputs.upgraded == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TO: ${{ needs.upgrade.outputs.to }}
+      FROM: ${{ needs.upgrade.outputs.from }}
+      URL: ${{ vars.KUNLA_URL || (vars.KUNLA_DOMAIN != '' && format('https://{0}', vars.KUNLA_DOMAIN)) || '' }}
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Is the new version live?
+        id: health
+        if: needs.deploy.result == 'success' && env.URL != ''
+        run: |
+          want="${TO#v}"
+          for i in $(seq 1 12); do
+            got=$(curl -fsS "$URL/api/health" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).version||"")}catch{console.log("")}})' || true)
+            if [ "$got" = "$want" ]; then echo "Kunla at $URL answers $got."; exit 0; fi
+            sleep 10
+          done
+          echo "Kunla at $URL answered '${got:-nothing}', not $want."
+          exit 1
+      - uses: actions/checkout@v4
+        if: failure() && steps.health.outcome == 'failure'
+        with: { ref: "${{ needs.upgrade.outputs.sha }}" }
+      - uses: actions/setup-node@v4
+        if: failure() && steps.health.outcome == 'failure'
+        with: { node-version: 22 }
+      - name: Roll the Worker back
+        id: rollback
+        if: failure() && steps.health.outcome == 'failure'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4 rollback --message "Kunla $TO failed its health check; back to $FROM"
+      - name: Open an issue
+        if: always() && (needs.deploy.result != 'success' || steps.health.outcome == 'failure')
+        env:
+          ROLLED: ${{ steps.rollback.outcome }}
+        run: |
+          if [ "$ROLLED" = "success" ]; then
+            what="Kunla $TO was deployed but didn't answer with the new version at $URL, so the Worker was rolled back to $FROM."
+          elif [ "${{ needs.deploy.result }}" != "success" ]; then
+            what="Deploying $TO failed, so your Kunla keeps running $FROM (database migrations only add, so that is safe)."
+          else
+            what="Kunla $TO failed its health check at $URL and rolling back failed too. Check the Worker in the Cloudflare dashboard."
+          fi
+          gh issue create --title "Kunla upgrade to $TO needs a look" --body "$(printf '%s\n\n%s\n\n%s' "$what" \
+            "Your default branch already has the $TO commit. When the cause is fixed, run **Deploy** from the Actions tab; to stay on $FROM, revert that commit. Details: $RUN" \
+            "Release notes: $UPSTREAM/releases/tag/$TO")"

@@ -8,18 +8,27 @@
 # Optional variable KUNLA_PLACEMENT_REGION (e.g. aws:us-east-1): run the Worker next to that cloud region, where
 # your D1 database lives, instead of letting Smart Placement find it. ENAM databases sit near aws:us-east-1,
 # WEUR near aws:eu-west-1 or aws:eu-central-1.
+# The self-upgrade workflow (upgrade.yml) also calls this one to deploy the release it just merged.
 name: Deploy
 on:
   workflow_dispatch:
   push: { branches: [main] }
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to deploy
+        type: string
+        required: true
+concurrency: { group: deploy, cancel-in-progress: false }
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || vars.KUNLA_AUTO_DEPLOY == 'true'
+    if: github.event_name != 'push' || vars.KUNLA_AUTO_DEPLOY == 'true'
     runs-on: ubuntu-latest
     env:
       KUNLA_SETUP_TOKEN: ${{ secrets.KUNLA_SETUP_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with: { ref: "${{ inputs.ref || github.sha }}" }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
