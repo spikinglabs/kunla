@@ -62,6 +62,13 @@ async function hmac(secret: string, text: string) {
   return [...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(text)))].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** Headers for a call this Kunla makes to the control plane, signed the same way. */
+export async function signedHeaders(body: string, now = Date.now()): Promise<Record<string, string>> {
+  if (!cfg) throw new Error('Not hosted.');
+  const ts = Math.floor(now / 1000);
+  return { 'x-kunla-timestamp': String(ts), 'x-kunla-signature-256': `sha256=${await hmac(cfg.secret, `${ts}.${body}`)}` };
+}
+
 /** Check a control-plane call. Returns an error message, or null when it is genuine. */
 export async function verify(req: Request, body: string, now = Date.now()): Promise<string | null> {
   if (!cfg) return 'This Kunla is not hosted by Kunla Cloud.';

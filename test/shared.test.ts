@@ -1,6 +1,6 @@
 // KD-70: a shared Kunla Cloud host (pilot teams as workspaces in one Kunla), workspace-level admins with a Kunla
 // owner, and task keys that are short inside a workspace (MKT-42) and full across workspaces (ACME-MKT-42).
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { createHmac } from 'node:crypto';
 import app from '../src/index';
 import { findKeys } from '../src/github';
@@ -64,6 +64,20 @@ describe('a shared Kunla Cloud host', () => {
     expect((await call('GET', '/api/edition')).body.plan).toBeNull();
     expect((await call('GET', '/api/edition', acme)).body.plan).toEqual({ name: 'team', seats: null });
     expect((await call('GET', '/api/edition', owner)).body.plan).toEqual({ name: 'free', seats: 2 });
+  });
+
+  it('opens the admin\'s billing page at Kunla Cloud, for their own workspace', async () => {
+    Object.assign(env, { KUNLA_TENANT: 'pilot', KUNLA_CLOUD_HOOK: 'https://cloud.test/hooks/kunla' });
+    const acme = (await signUp('Acme', 'ACME')).body.token;
+    let asked: Request | null = null;
+    vi.stubGlobal('fetch', async (r: string, init: RequestInit) => { asked = new Request(r, init); return Response.json({ url: 'https://cloud.test/manage/acme?k=x' }); });
+    expect((await call('GET', '/api/billing', acme)).body.url).toBe('https://cloud.test/manage/acme?k=x');
+    expect(asked!.url).toBe('https://cloud.test/api/teams/pilot/billing-link?workspace=ACME');
+    const ts = asked!.headers.get('x-kunla-timestamp');
+    expect(asked!.headers.get('x-kunla-signature-256')).toBe(`sha256=${createHmac('sha256', 'cloud-secret').update(`${ts}.`).digest('hex')}`);
+    const bo = (await call('POST', '/api/members', acme, { name: 'Bo', kind: 'human' })).body.token;
+    expect((await call('GET', '/api/billing', bo)).status).toBe(403);
+    vi.unstubAllGlobals();
   });
 
   it('is not offered by a Kunla that holds one team', async () => {

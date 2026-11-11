@@ -1488,7 +1488,7 @@ async function viewTeam(sub) {
   members = record;
   const ps = new Map(pulse.map((p) => [p.id, p]));
   $app.innerHTML = html`<div class="head"><div><h1>Team</h1><p class="sub">People and agents side by side. Each agent works under its own name, with a person who sponsors it. Lanes keep each one on the projects you choose.</p></div>
-      <div class="row"><button class="btn go" data-act="click:connect">Connect an agent</button><button class="btn" data-act="click:claudeai">Use in claude.ai</button><button class="btn" data-act="click:addPerson">Add a person</button>${raw(me.roles?.includes('admin') ? '<button class="btn" data-act="click:github">Connect GitHub</button>' : '')}</div></div>
+      <div class="row"><button class="btn go" data-act="click:connect">Connect an agent</button><button class="btn" data-act="click:claudeai">Use in claude.ai</button><button class="btn" data-act="click:addPerson">Add a person</button>${raw(me.roles?.includes('admin') ? '<button class="btn" data-act="click:github">Connect GitHub</button>' : '')}<button class="btn" data-act="click:billing" id="billing-btn" hidden>Plan and billing</button></div></div>
     <div class="people-grid">${join(record.map((m) => { const p = ps.get(m.id) || {}; return html`<div class="card pad member">
       <div class="row" style="flex-wrap:nowrap">${raw(av(m, 'lg', p.live))}<div class="grow"><div class="nm">${m.name}</div><div class="muted" style="font-size:13px">${kindLine(m)}</div></div><span class="state ${p.state || 'idle'}">${p.state || 'idle'}</span></div>
       <div style="font-size:14px;color:var(--ink-2);min-height:21px">${raw(p.task ? html`<a href="#/t/${p.task.key}">${p.line}</a>` : esc(m.last_active ? `Last active ${agoLong(m.last_active)}` : 'Not active yet'))}</div>
@@ -1499,6 +1499,8 @@ async function viewTeam(sub) {
       ${raw(canManage(m) ? html`<div><button class="btn sm" data-act="click:manage" data-id="${m.id}">Manage</button></div>` : '')}</div>`; }))}</div>`;
   bind($app, {
     connect: () => showConnect('ai'), addPerson: () => showConnect('human'), claudeai: showClaudeAi, github: showGitHub,
+    // Kunla Cloud: the admin's billing page at the control plane (upgrade, card, invoices, cancel).
+    billing: async () => { const w = window.open('', '_blank'); try { const r = await api('GET', '/api/billing'); if (w) w.location = r.url; else location.href = r.url; } catch (e) { w?.close(); toast(e.message); } },
     contOffer: (el) => showContinuousOffer(el.dataset.id),
     manage: (el) => showManage(record.find((x) => x.id === el.dataset.id)),
     lane: async (el) => {
@@ -1511,6 +1513,8 @@ async function viewTeam(sub) {
       viewTeam();
     },
   });
+  // Only a hosted Kunla has a plan to pay for, and only admins manage it.
+  if (me.roles?.includes('admin')) api('GET', '/api/edition').then((e) => { const b = $('billing-btn'); if (b && e.plan) b.hidden = false; }).catch(() => {});
   // Open a linked dialog once, then drop it from the URL so a background refresh doesn't reopen it.
   const [subView, subQuery = ''] = (sub || '').split('?');
   if (sub && $('sheet').hidden) { if (subView === 'connect') showConnect('ai'); if (subView === 'claude-ai') showClaudeAi(); if (subView === 'github') showGitHub(undefined, new URLSearchParams(subQuery).get('gh')); }

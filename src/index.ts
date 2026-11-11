@@ -353,6 +353,19 @@ api.get('/ping/summary', async (c) => {
   if (!core.isOwner(ctx.me)) return c.json({ error: "Only this Kunla's owner can see usage pings." }, 403);
   return c.json(await ping.summary(c.env.DB));
 });
+// Kunla Cloud (KD-70): an admin's private billing page (plan, card, invoices, cancel) from the control plane. On a
+// shared host it names the workspace, since each pilot team there pays on its own.
+api.get('/billing', async (c) => {
+  const ctx = c.get('ctx');
+  if (!core.isAdmin(ctx.me)) return c.json({ error: 'Only admins manage the plan.' }, 403);
+  const hook = c.env.KUNLA_CLOUD_HOOK, tenant = c.env.KUNLA_TENANT;
+  if (!plan.hosted() || !hook || !tenant) return c.json({ error: 'This Kunla is not on Kunla Cloud, so it has no plan to pay for.' }, 404);
+  const ws = plan.shared() ? `?workspace=${encodeURIComponent((await core.getWorkspace(ctx)).key)}` : '';
+  const res = await fetch(`${new URL(hook).origin}/api/teams/${encodeURIComponent(tenant)}/billing-link${ws}`, { method: 'POST', headers: await plan.signedHeaders('') });
+  const d = await res.json().catch(() => ({})) as { url?: string; error?: string };
+  if (!res.ok || !d.url) return c.json({ error: `Kunla Cloud did not answer: ${d.error ?? res.status}. Try again in a minute.` }, 502);
+  return c.json({ url: d.url });
+});
 api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ctx'), await c.req.json())));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
 api.get('/projects', async (c) => c.json(await core.listProjects(c.get('ctx'))));

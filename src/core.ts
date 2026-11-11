@@ -81,7 +81,7 @@ const id = () => crypto.randomUUID();
 const nowIso = (c: Ctx) => (c.now ? c.now() : new Date()).toISOString();
 // Admins run their own workspace. The owner (who set this Kunla up, and admins from before KD-70) also runs the
 // Kunla as a whole: new or imported workspaces, the GitHub App registration, usage counts across workspaces.
-const isAdmin = (m: Member) => JSON.parse(m.roles || '[]').includes('admin');
+export const isAdmin = (m: Member) => JSON.parse(m.roles || '[]').includes('admin');
 export const isOwner = (m: Member | null | undefined) => !!m && m.kind === 'human' && JSON.parse(m.roles || '[]').includes('owner');
 const parseList = (s: string | null | undefined): string[] => { try { return JSON.parse(s || '[]'); } catch { return []; } };
 
