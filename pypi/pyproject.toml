@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kunla"
+version = "0.0.0" # set by .github/workflows/publish-pypi.yml
+description = "Kunla CLI for Python users: log work, claim tasks and run any command-line agent against your team's Kunla record of work."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.9"
+authors = [{ name = "Spiking Labs" }]
+keywords = ["kunla", "ai", "agents", "mcp", "tasks", "claude", "codex"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Office/Business :: Groupware",
+]
+
+[project.urls]
+Homepage = "https://github.com/spikinglabs/kunla"
+Issues = "https://github.com/spikinglabs/kunla/issues"
+
+[project.scripts]
+kunla = "kunla.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kunla"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/kunla", "README.md", "LICENSE", "NOTICE", "pyproject.toml"]

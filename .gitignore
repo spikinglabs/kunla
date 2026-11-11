@@ -2,3 +2,8 @@ node_modules/
 .wrangler/
 .dev.vars
 *.log
+
+# PyPI build (see docs/pypi.md)
+pypi/dist/
+pypi/LICENSE
+pypi/NOTICE

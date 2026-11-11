@@ -91,7 +91,7 @@ kunla run MKT-42 -- codex                # passes the brief as the prompt, recor
 kunla submit "Drafted the page" --link https://github.com/org/repo/pull/7
 ```
 
-Maintainers: the CLI is published to npm as `@spikinglabs/kunla` by a GitHub Action; see [docs/npm.md](docs/npm.md).
+Maintainers: the CLI is published to npm as `@spikinglabs/kunla` by a GitHub Action (see [docs/npm.md](docs/npm.md)), and a Python wrapper is published to PyPI as `kunla` (see [docs/pypi.md](docs/pypi.md)).
 
 ## Connect GitHub
 
