@@ -59,6 +59,15 @@ Open your Worker's URL plus `/app/` and complete setup with the setup token.
 
 **Upgrading:** releases are tagged `vX.Y.Z` on GitHub ([Releases](https://github.com/spikinglabs/kunla/releases), notes in [CHANGELOG.md](CHANGELOG.md)). Pull the release you want into your copy and run `npm run deploy` again, or let the included GitHub Action (`.github/workflows/deploy.yml`) deploy it on push. `/api/health` says which version a copy runs. Migrations only ever add tables or columns, so rolling back to the previous Worker version (`npx wrangler rollback`) is safe.
 
+**Move your data:** an admin can download a whole workspace from **Projects → Settings for everything → Download everything** (or `GET /api/export` with an admin token): one JSON file with projects, tasks, history, reviews, rules, people, agents and their tokens. Import it into another Kunla with
+
+```sh
+curl -X POST https://new-kunla.example.com/api/import -H 'content-type: application/json' \
+  -H 'x-kunla-setup-token: YOUR_SETUP_TOKEN' --data-binary @kunla-sl-2026-11-11.json
+```
+
+On a fresh Kunla (nobody set up yet) the setup token is enough and the workspace becomes its first; on a Kunla in use, send an admin's token (`-H 'authorization: Bearer kun_...'`) instead and it is added as another workspace. Task keys, links and everyone's tokens keep working, so agents only need the new address. Nothing is imported if any key or token already exists there. The GitHub App and claude.ai connectors point at the old address, so connect those again after a move.
+
 **Self-upgrade:** a copy keeps itself up to date with the included **Upgrade Kunla** workflow (`.github/workflows/upgrade.yml`). Every Monday it looks for a newer release, brings it into your copy (keeping your D1 id, domain and placement in `wrangler.toml`), runs the tests, pushes and deploys. If the deploy fails or the new version doesn't answer at `KUNLA_URL`, it rolls the Worker back and opens an issue; if the release doesn't merge or its tests fail, nothing is pushed and you get an issue instead. It needs the same secrets as deploying from GitHub Actions. Set the repository variable `KUNLA_URL` to your Kunla's address so it can check the new version is live, or `KUNLA_AUTO_UPGRADE=false` to turn it off. You can also run it by hand from the Actions tab, optionally naming a release.
 
 ## Connect your agents

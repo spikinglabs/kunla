@@ -14,6 +14,7 @@ import * as merge from './merge';
 import * as continuous from './continuous';
 import * as ghapp from './githubapp';
 import { VERSION } from './version';
+import * as transfer from './transfer';
 
 export interface Env {
   DB: D1Database;
@@ -71,6 +72,20 @@ app.post('/api/setup', async (c) => {
   const body = await c.req.json<any>();
   if (c.env.SETUP_TOKEN && body.setup_token !== c.env.SETUP_TOKEN) return c.json({ error: 'Wrong setup token.' }, 403);
   return c.json(await core.setup(c.env.DB, body));
+});
+// Import a workspace export (KD-74). On a fresh Kunla it needs the setup token (header X-Kunla-Setup-Token) when
+// one is set, and the workspace becomes this Kunla's first; on a set-up Kunla an admin adds it as another workspace.
+app.post('/api/import', async (c) => {
+  const fresh = !(await core.isSetUp(c.env.DB));
+  if (fresh) {
+    if (c.env.SETUP_TOKEN && c.req.header('x-kunla-setup-token') !== c.env.SETUP_TOKEN) return c.json({ error: 'Wrong setup token.' }, 403);
+  } else {
+    const ctx = await authenticate(c as C);
+    if (!ctx) return c.json({ error: 'Sign in with a Kunla token (Authorization: Bearer kun_...).' }, 401);
+    if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only admins can import a workspace.' }, 403);
+  }
+  const data = await c.req.json().catch(() => null);
+  return c.json(await transfer.importWorkspace(c.env.DB, data, { fresh }));
 });
 // GitHub calls this when a pull request or push happens; tasks cited by key update themselves.
 app.post('/hooks/github', async (c) => {
@@ -170,6 +185,11 @@ api.post('/members/:id/wake/test', async (c) => {
 api.put('/members/:id/continuous', async (c) => c.json(await core.setContinuous(c.get('ctx'), c.req.param('id'), await c.req.json())));
 api.post('/members/:id/token', async (c) => c.json(await core.rotateToken(c.get('ctx'), c.req.param('id'))));
 api.delete('/members/:id', async (c) => c.json(await core.removeMember(c.get('ctx'), c.req.param('id'))));
+api.get('/export', async (c) => {
+  const data = await transfer.exportWorkspace(c.get('ctx'));
+  const name = `kunla-${data.workspace.key.toLowerCase()}-${data.exported_at.slice(0, 10)}.json`;
+  return c.json(data, 200, { 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' });
+});
 api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ctx'), await c.req.json())));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
 api.get('/projects', async (c) => c.json(await core.listProjects(c.get('ctx'))));
