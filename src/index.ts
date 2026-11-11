@@ -19,6 +19,7 @@ import * as waits from './waits';
 import { readLicence } from './licence';
 import { extensions, flushAudit } from './extensions';
 import * as ping from './ping';
+import * as oidc from './oidc';
 
 export interface Env {
   DB: D1Database;
@@ -33,6 +34,9 @@ export interface Env {
   KUNLA_PING_URL?: string;
   /** "true" on the Kunla that collects usage pings (Spiking Labs' own). */
   KUNLA_COLLECT_PINGS?: string;
+  /** Sign in with Google or Microsoft (KD-68); see src/oidc.ts. */
+  GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string;
+  MICROSOFT_CLIENT_ID?: string; MICROSOFT_CLIENT_SECRET?: string; MICROSOFT_TENANT?: string;
 }
 type Vars = { ctx: core.Ctx };
 type C = Context<{ Bindings: Env; Variables: Vars }>;
@@ -101,8 +105,19 @@ app.post('/api/import', async (c) => {
 // Which edition this Kunla runs and how people can sign in (KD-75). Public: the sign-in page needs it.
 app.get('/api/edition', async (c) => {
   const l = await readLicence(c.env.KUNLA_LICENSE);
-  const signIn = extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }));
+  const signIn = [...oidc.options(c.env), ...extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }))];
   return c.json({ edition: l.edition, licensee: l.licensee, features: l.features, seats: l.seats, expires_at: l.expires_at, problem: l.problem, sign_in: signIn, version: VERSION });
+});
+// Sign in with a work Google or Microsoft account (KD-68): free in the core. Errors go back to the sign-in page.
+const signInError = (c: C, e: unknown) => c.redirect(`/app/?signin_error=${encodeURIComponent(e instanceof Error ? e.message : 'Sign-in failed.')}`);
+app.get('/auth/:id{google|microsoft}/start', async (c) => {
+  try { return await oidc.start(c.env, c.req.param('id'), baseUrl(c)); } catch (e) { return signInError(c, e); }
+});
+app.get('/auth/:id{google|microsoft}/callback', async (c) => {
+  try {
+    const r = await oidc.callback(c.env, c.env.DB, c.req.param('id'), c.req.raw, baseUrl(c));
+    return new Response(null, { status: 302, headers: { location: `/app/#/use/${encodeURIComponent(r.token)}`, 'set-cookie': r.clearCookie } });
+  } catch (e) { return signInError(c, e); }
 });
 // Sign-in providers registered by ee/ (SSO). A provider hands back a member; Kunla gives them a fresh token and
 // opens the web app with it, the same way switching workspace does.

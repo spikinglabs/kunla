@@ -335,7 +335,7 @@ export async function getMember(c: Ctx, idOrName: string): Promise<Member> {
  * Connecting an agent again under the same name reuses that member and gives it a new token,
  * so a second click or a second laptop does not create a duplicate.
  */
-export async function addMember(c: Ctx, input: { name: string; kind: Kind; platform?: string; roles?: string[] }) {
+export async function addMember(c: Ctx, input: { name: string; kind: Kind; platform?: string; roles?: string[]; email?: string | null }) {
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can add members.');
   if (input.kind === 'human' && !isAdmin(c.me)) throw new KunlaError(403, 'Only admins can add people.');
   const name = required(input.name, 'name').trim();
@@ -351,12 +351,23 @@ export async function addMember(c: Ctx, input: { name: string; kind: Kind; platf
     if (same) return { member: safeMember(same), token: await issueToken(c.db, same.id, input.platform || 'ai'), reconnected: true };
   }
   await assertNameFree(c, name);
+  const email = input.kind === 'ai' ? null : await cleanEmail(c, input.email);
   const mid = id();
-  await c.db.prepare('INSERT INTO members (id, name, kind, platform, sponsor_id, roles, space_id, created_at) VALUES (?,?,?,?,?,?,?,?)').bind(
+  await c.db.prepare('INSERT INTO members (id, name, kind, platform, sponsor_id, roles, space_id, created_at, email) VALUES (?,?,?,?,?,?,?,?,?)').bind(
     mid, name, input.kind === 'ai' ? 'ai' : 'human', input.platform ?? null,
-    input.kind === 'ai' ? c.me.id : null, JSON.stringify(input.roles ?? []), c.space, nowIso(c)).run();
+    input.kind === 'ai' ? c.me.id : null, JSON.stringify(input.roles ?? []), c.space, nowIso(c), email).run();
   const token = await issueToken(c.db, mid, input.platform || input.kind);
   return { member: safeMember(await getMember(c, mid)), token, reconnected: false };
+}
+
+/** A work email for signing in with Google or Microsoft (KD-68): one person per email in a workspace. */
+async function cleanEmail(c: Ctx, raw: string | null | undefined, except?: string): Promise<string | null> {
+  const email = String(raw ?? '').trim().toLowerCase();
+  if (!email) return null;
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new KunlaError(400, 'That is not an email address.');
+  const taken = await c.db.prepare('SELECT name FROM members WHERE lower(email) = ? AND id != ? AND space_id = ? AND removed_at IS NULL').bind(email, except ?? '', c.space).first<{ name: string }>();
+  if (taken) throw new KunlaError(409, `${taken.name} already signs in with ${email}.`);
+  return email;
 }
 
 async function assertNameFree(c: Ctx, name: string, except?: string) {
@@ -371,9 +382,17 @@ function assertCanManage(c: Ctx, m: Member) {
 }
 
 /** Rename a member and/or change its lane. */
-export async function updateMember(c: Ctx, memberId: string, input: { name?: string; scope?: string[]; github_login?: string | null }) {
+export async function updateMember(c: Ctx, memberId: string, input: { name?: string; scope?: string[]; github_login?: string | null; email?: string | null }) {
   const m = await getMember(c, memberId);
   assertCanManage(c, m);
+  if (input.email !== undefined) {
+    // Signing in by email hands out a token, so only admins set it (people could otherwise claim an admin's email).
+    if (m.kind !== 'human') throw new KunlaError(400, 'Only people sign in with an email; agents keep their tokens.');
+    if (!isAdmin(c.me)) throw new KunlaError(403, 'Only admins set the email people sign in with.');
+    const email = await cleanEmail(c, input.email, m.id);
+    await c.db.prepare('UPDATE members SET email = ? WHERE id = ?').bind(email, m.id).run();
+    return { id: m.id, name: m.name, email };
+  }
   if (input.github_login !== undefined) {
     const login = String(input.github_login ?? '').trim().replace(/^@/, '');
     if (m.kind !== 'human') throw new KunlaError(400, 'Only people link a GitHub account; agents merge on their behalf.');

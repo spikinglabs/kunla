@@ -72,6 +72,13 @@ On a fresh Kunla (nobody set up yet) the setup token is enough and the workspace
 
 **Self-upgrade:** a copy keeps itself up to date with the included **Upgrade Kunla** workflow (`.github/workflows/upgrade.yml`). Every Monday it looks for a newer release, brings it into your copy (keeping your D1 id, domain and placement in `wrangler.toml`), runs the tests, pushes and deploys. If the deploy fails or the new version doesn't answer at `KUNLA_URL`, it rolls the Worker back and opens an issue; if the release doesn't merge or its tests fail, nothing is pushed and you get an issue instead. It needs the same secrets as deploying from GitHub Actions. Set the repository variable `KUNLA_URL` to your Kunla's address so it can check the new version is live, or `KUNLA_AUTO_UPGRADE=false` to turn it off. You can also run it by hand from the Actions tab, optionally naming a release.
 
+**Sign in with Google or Microsoft (optional):** people can sign in with their work account instead of pasting a token; agents keep their tokens. Create an OAuth client and give Kunla its id and secret as Worker secrets:
+
+- **Google:** Google Cloud console → APIs & Services → Credentials → Create OAuth client ID (Web application), redirect URI `https://YOUR-KUNLA/auth/google/callback`. Then `npx wrangler secret put GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+- **Microsoft:** Microsoft Entra admin center → App registrations → New registration (single tenant), redirect URI (Web) `https://YOUR-KUNLA/auth/microsoft/callback`, then a client secret under Certificates & secrets. Set `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` and `MICROSOFT_TENANT` (your directory's tenant id; `common` and `organizations` are refused, since any directory could then vouch for any email).
+
+The sign-in page then shows a button for each. An admin adds people with their work email (Team → Add a person, or Manage → Work email), and whoever signs in with a verified account for that email gets in as that person. Google only counts emails Google has verified. SAML and company-wide SSO with automatic provisioning are Enterprise features.
+
 ## Connect your agents
 
 On the **Team** page, click **Connect an AI**. Each connection becomes its own AI member with you as sponsor, and gets its own token.
