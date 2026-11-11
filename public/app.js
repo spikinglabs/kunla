@@ -1106,7 +1106,7 @@ async function viewTask(key) {
   const subDone = subs.filter((x) => ['done', 'declined'].includes(x.status)).length;
   $app.innerHTML = html`<div class="task"><article>
       <div class="crumbs"><a href="#/tasks">${t.workspace.name}</a>${raw(t.project ? html`<span>/</span><a href="#/tasks/${p.key}">${p.name}</a>` : '')}
-        ${raw(t.parent ? html`<span>/</span><a href="#/t/${t.parent.key}">${t.parent.key} ${t.parent.title}</a>` : '')}<span>/</span><span class="mono">${t.key}</span></div>
+        ${raw(t.parent ? html`<span>/</span><a href="#/t/${t.parent.key}">${t.parent.key} ${t.parent.title}</a>` : '')}<span>/</span><span class="mono" title="${t.full_key ? `${t.full_key} from other workspaces` : ''}">${t.key}</span></div>
       <h1>${t.title}</h1>
       <div class="row">${raw(me.kind === 'human' ? statusPick(t) : html`<span class="pill ${statusTone(t.status)}">${STATUS[t.status]}</span>`)}${raw(hint(STATUS_HINT[t.status], `What ${STATUS[t.status]} means`))}
         <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join([...(t.kinds_here || []), ...((t.kinds_here || []).some((x) => x.key === t.kind) ? [] : [{ key: t.kind, label: kindName(t.kind) }])].map((x) => html`<option value="${x.key}" ${t.kind === x.key ? 'selected' : ''}>${x.label}</option>`))}</select></label>
@@ -1143,8 +1143,8 @@ async function viewTask(key) {
         ${raw(t.playbook ? html`<details class="playbook"><summary>Playbook</summary><pre>${t.playbook}</pre></details>` : '')}</div>
       ${raw(t.how_to_finish && OPEN.has(t.status) ? html`<div class="card pad finish"><h3>Finished looks like</h3><p>${t.how_to_finish.hand_in.replace(/^./, (x) => x.toUpperCase())}</p><p class="muted">${t.how_to_finish.approval}</p></div>` : '')}
       <div class="card pad"><h3>Cite it anywhere</h3><div class="cite">${join((t.kind === 'code'
-        ? [['Commit trailer', t.references.commit_trailer], ['Branch', t.references.branch], ['Doc source line', t.references.doc_source_line], ['Link', t.references.link]]
-        : [['Doc source line', t.references.doc_source_line], ['In a message', t.references.message_line], ['Link', t.references.link], ['Commit trailer', t.references.commit_trailer]]).map(([l, v]) => html`<button type="button" data-act="click:copy" data-v="${v}"><small>${l}</small><code>${v}</code></button>`))}</div></div>
+        ? [['Commit trailer', t.references.commit_trailer], ['Branch', t.references.branch], ['Doc source line', t.references.doc_source_line], ['Link', t.references.link], ['Key from another workspace', t.full_key]]
+        : [['Doc source line', t.references.doc_source_line], ['In a message', t.references.message_line], ['Link', t.references.link], ['Commit trailer', t.references.commit_trailer], ['Key from another workspace', t.full_key]]).filter(([, v]) => v).map(([l, v]) => html`<button type="button" data-act="click:copy" data-v="${v}"><small>${l}</small><code>${v}</code></button>`))}</div></div>
     </aside></div>`;
   const reload = () => viewTask(key);
   const text = () => $app.querySelector('.composer textarea').value.trim();

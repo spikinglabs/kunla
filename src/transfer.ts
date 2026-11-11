@@ -166,3 +166,33 @@ function chunks(rows: Record<string, unknown>[], limit: number) {
   if (cur.length) out.push(cur);
   return out;
 }
+
+/**
+ * Delete a workspace and everything in it, for good (Kunla Cloud, when a pilot team leaves; KD-70). Children go
+ * first so every foreign key holds; one D1 batch, so it all happens or nothing does. Its settings (plan, GitHub
+ * links) are keyed by its id. The export above is how a team keeps a copy first.
+ */
+export async function deleteWorkspaceData(db: D1Database, space: string) {
+  const ws = await db.prepare(`SELECT id, key FROM projects WHERE id = ? AND kind = 'workspace'`).bind(space).first<{ id: string; key: string }>();
+  if (!ws) throw new KunlaError(404, 'No such workspace.');
+  const inTasks = 'task_id IN (SELECT id FROM tasks WHERE space_id = ?1)';
+  const inMembers = 'member_id IN (SELECT id FROM members WHERE space_id = ?1)';
+  const sql = [
+    `DELETE FROM deliverables WHERE ${inTasks}`,
+    `DELETE FROM reviews WHERE ${inTasks}`,
+    `DELETE FROM task_sessions WHERE ${inTasks}`,
+    `DELETE FROM task_notes WHERE ${inTasks}`,
+    'DELETE FROM waits WHERE space_id = ?1',
+    'DELETE FROM assumptions WHERE space_id = ?1',
+    'DELETE FROM events WHERE space_id = ?1',
+    'DELETE FROM rules WHERE project_id IN (SELECT id FROM projects WHERE space_id = ?1)',
+    'DELETE FROM tasks WHERE space_id = ?1',
+    `DELETE FROM tokens WHERE ${inMembers}`,
+    `DELETE FROM oauth_codes WHERE ${inMembers}`,
+    'DELETE FROM members WHERE space_id = ?1',
+    'DELETE FROM projects WHERE space_id = ?1',
+    "DELETE FROM settings WHERE key LIKE '%' || ?1 || '%'",
+  ];
+  await db.batch(sql.map((q) => db.prepare(q).bind(space)));
+  return { deleted: ws.key };
+}

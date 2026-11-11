@@ -157,6 +157,18 @@ app.post('/api/cloud/workspaces', async (c) => {
   try { d = JSON.parse(body); } catch { return c.json({ error: 'Body is not JSON.' }, 400); }
   return c.json(await core.insertWorkspace(c.env.DB, { name: String(d.name ?? ''), key: d.key, admin: String(d.admin_name ?? ''), email: d.admin_email ?? null }));
 });
+// A pilot team leaving Kunla Cloud: its workspace and everything in it are deleted for good (KD-70). Signed; only on a
+// shared host, where the control plane made the workspace. A team with its own Kunla is deleted with its database.
+app.delete('/api/cloud/workspaces/:key', async (c) => {
+  const err = await plan.verify(c.req.raw, '');
+  if (err) return c.json({ error: err }, plan.hosted() ? 401 : 404);
+  if (!plan.shared()) return c.json({ error: 'This Kunla holds one team; delete its database instead.' }, 409);
+  const ws = await core.workspaceByKey(c.env.DB, c.req.param('key'));
+  if (!ws) return c.json({ error: 'No such workspace.' }, 404);
+  const owners = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM members WHERE space_id = ? AND roles LIKE '%"owner"%' AND removed_at IS NULL`).bind(ws.id).first<number>('n');
+  if (owners) return c.json({ error: "This workspace holds the Kunla's owner; it isn't a customer's." }, 409);
+  return c.json(await transfer.deleteWorkspaceData(c.env.DB, ws.id));
+});
 // Kunla Cloud runs each team on Workers for Platforms, where a team Worker has no cron of its own, so the control
 // plane calls this once a day instead (KD-70). Signed like the plan calls; the jobs run after the reply.
 app.post('/api/cloud/tick', async (c) => {

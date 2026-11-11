@@ -80,6 +80,28 @@ describe('a shared Kunla Cloud host', () => {
     vi.unstubAllGlobals();
   });
 
+  it('deletes a pilot workspace and everything in it, leaving the others alone', async () => {
+    const r = (await signUp('Acme', 'ACME')).body;
+    const acme = r.token;
+    await call('POST', '/api/projects', acme, { key: 'MKT', name: 'Marketing' });
+    const t = (await call('POST', '/api/tasks', acme, { project: 'MKT', title: 'Launch' })).body;
+    await call('POST', '/api/tasks', acme, { project: 'MKT', title: 'Sub', parent: t.key, waiting_on: [t.key] });
+    await call('POST', `/api/tools/log_work`, acme, { task: t.key, summary: 'Drafted', deliverables: [{ url: 'https://x.test/doc' }] });
+    await call('POST', '/api/members', acme, { name: 'Bot', kind: 'ai' });
+    await signed('PUT', '/api/cloud/plan?workspace=ACME', JSON.stringify({ name: 'team', seats: null }));
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM deliverables').first('n')).toBe(1);
+    const del = (key: string) => signed('DELETE', `/api/cloud/workspaces/${key}`);
+    expect((await call('DELETE', '/api/cloud/workspaces/ACME', owner)).status).toBe(401);
+    expect((await del('WS')).status).toBe(409); // the owner's own workspace
+    expect((await del('ACME')).body).toEqual({ deleted: 'ACME' });
+    expect((await call('GET', '/api/me', acme)).status).toBe(401);
+    expect((await del('ACME')).status).toBe(404);
+    for (const tb of ['projects', 'members', 'tasks', 'events', 'waits']) expect(await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${tb} WHERE space_id = ?`).bind(r.workspace.id).first('n')).toBe(0);
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM deliverables').first('n')).toBe(0); // only Acme had any
+    expect(await env.DB.prepare(`SELECT COUNT(*) AS n FROM settings WHERE key LIKE ?`).bind(`%${r.workspace.id}%`).first('n')).toBe(0);
+    expect((await call('GET', '/api/me', owner)).status).toBe(200);
+  });
+
   it('is not offered by a Kunla that holds one team', async () => {
     await setup({ KUNLA_CLOUD_SECRET: 'cloud-secret' });
     expect((await signUp('Acme', 'ACME')).status).toBe(409);
