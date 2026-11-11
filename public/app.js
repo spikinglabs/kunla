@@ -1091,7 +1091,22 @@ const FILTER_HINT = 'Open: everything not finished (Proposed, Ready, In progress
 const GROUPS = { project: 'Project', person: 'Person', status: 'Status', kind: 'Kind' };
 const STATUS_ORDER = ['blocked', 'review', 'in_progress', 'ready', 'inbox', 'parked', 'done', 'declined'];
 
+// Tasks narrowed to one project (KD-82), like the Briefing (KD-81): a picker beside "All kinds".
+// The project lives in the address (#/tasks/KD) so saved views and links keep working; the last pick is
+// remembered per workspace, so opening Tasks again lands on it. Picking All projects forgets it.
+const TASKS_PROJECT_KEY = 'kunla.tasksProject';
+const tasksProject = {
+  get: () => { try { return JSON.parse(localStorage.getItem(TASKS_PROJECT_KEY) || '{}')[me.workspace.key] || ''; } catch { return ''; } },
+  set: (k) => { try { const all = JSON.parse(localStorage.getItem(TASKS_PROJECT_KEY) || '{}'); if (k) all[me.workspace.key] = k; else delete all[me.workspace.key]; localStorage.setItem(TASKS_PROJECT_KEY, JSON.stringify(all)); } catch {} },
+};
+const projectChoices = () => [...projects.filter((x) => x.key !== me.workspace.key).map((x) => [x.key, x.name]), [me.workspace.key, 'No project']];
+
 async function viewTasks(project) {
+  if (!project) {
+    const kept = tasksProject.get();
+    if (kept && projectChoices().some(([k]) => k === kept)) { history.replaceState(null, '', `#/tasks/${kept}`); project = kept; }
+    else if (kept) tasksProject.set('');
+  } else if (projectChoices().some(([k]) => k === project)) tasksProject.set(project);
   renderShell('tasks');
   const all = await api('GET', `/api/tasks?limit=1000${project ? '&project=' + project : ''}`);
   if (me.kind === 'human' && !members.length) members = await api('GET', '/api/members').catch(() => []);
@@ -1111,11 +1126,12 @@ async function viewTasks(project) {
         <div class="row">${join(Object.entries(FILTERS).map(([k, [label]]) => html`<button class="pill ${tv.filter === k ? 'on' : ''}" data-act="click:filter" data-k="${k}">${label} <span class="mono" style="opacity:.6">${counts[k]}</span></button>`))}${raw(hint(FILTER_HINT, 'What these filters mean'))}</div>
         <div class="row" style="margin-left:auto">
           <input class="search" placeholder="Filter by words, key or person" value="${tv.q}" data-act="input:q" aria-label="Filter">
+          <select data-act="change:projf" aria-label="Project"><option value="">All projects</option>${join(projectChoices().map(([k, n]) => html`<option value="${k}" ${project === k ? 'selected' : ''}>${n}</option>`))}</select>
           <select data-act="change:kindf" aria-label="Kind of work"><option value="">All kinds</option>${join(Object.entries(KIND).filter(([k]) => all.some((t) => t.kind === k)).sort((a, b) => a[1].localeCompare(b[1])).map(([k, l]) => html`<option value="${k}" ${tv.kind === k ? 'selected' : ''}>${l} · ${all.filter((t) => t.kind === k && FILTERS[tv.filter][1](t)).length}</option>`))}</select>
           ${raw(tv.mode === 'list' ? html`<select data-act="change:group" aria-label="Group by">${join(Object.entries(GROUPS).map(([k, l]) => html`<option value="${k}" ${tv.group === k ? 'selected' : ''}>Group by ${l.toLowerCase()}</option>`))}</select>` : '')}
           <div class="seg-toggle"><button class="${tv.mode === 'list' ? 'on' : ''}" data-act="click:mode" data-m="list">List</button><button class="${tv.mode === 'board' ? 'on' : ''}" data-act="click:mode" data-m="board">Board</button></div>
         </div></div>
-      <div class="row" style="margin:-4px 0 18px">${raw(!project ? '' : html`<a class="pill" href="#/tasks">← All tasks</a>`)}
+      <div class="row" style="margin:-4px 0 18px">${raw(!project ? '' : html`<button class="pill" data-act="click:allProjects">← All tasks</button>`)}
         ${join(views.map((v, i) => html`<span class="pill saved"><a href="${v.hash}" data-act="click:view" data-i="${i}">${v.name}</a><button data-act="click:unsave" data-i="${i}" aria-label="Forget ${v.name}">×</button></span>`))}
         <button class="pill" data-act="click:save" style="border-style:dashed">+ Save this view</button>
         ${raw(me.kind === 'human' ? html`<button class="pill ${sel.on ? 'on' : ''}" data-act="click:selectMode">${sel.on ? 'Done selecting' : 'Select to hand over'}</button>` : '')}</div>
@@ -1174,6 +1190,8 @@ async function viewTasks(project) {
       mode: (el) => { tv.mode = el.dataset.m; saveTv(); draw(); },
       group: (el) => { tv.group = el.value; saveTv(); draw(); },
       kindf: (el) => { tv.kind = el.value; saveTv(); draw(); },
+      projf: (el) => { tasksProject.set(el.value); location.hash = el.value ? `#/tasks/${el.value}` : '#/tasks'; },
+      allProjects: () => { tasksProject.set(''); location.hash = '#/tasks'; },
       q: (el) => { tv.q = el.value; clearTimeout(draw.t); draw.t = setTimeout(() => { draw(); const i = $app.querySelector('.search'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 180); },
       save: () => {
         const name = prompt('Name this view', `${FILTERS[tv.filter][0]}${tv.kind ? ' · ' + KIND[tv.kind] : ''}${p ? ' · ' + p.name : ''}${tv.q ? ' · ' + tv.q : ''}`);
@@ -1182,7 +1200,7 @@ async function viewTasks(project) {
         try { localStorage.setItem(VIEWS_KEY, JSON.stringify(list)); } catch {}
         toast(`Saved “${name}”.`); draw();
       },
-      view: (el) => { const v = savedViews()[Number(el.dataset.i)]; Object.assign(tv, { mode: v.mode, group: v.group, filter: v.filter, q: v.q || '', kind: v.kind || '' }); saveTv(); if (location.hash === v.hash) draw(); else location.hash = v.hash; },
+      view: (el) => { const v = savedViews()[Number(el.dataset.i)]; tasksProject.set(v.hash.split('/')[2] || ''); Object.assign(tv, { mode: v.mode, group: v.group, filter: v.filter, q: v.q || '', kind: v.kind || '' }); saveTv(); if (location.hash === v.hash) draw(); else location.hash = v.hash; },
       unsave: (el) => { const list = savedViews(); list.splice(Number(el.dataset.i), 1); try { localStorage.setItem(VIEWS_KEY, JSON.stringify(list)); } catch {} draw(); },
     });
   };
