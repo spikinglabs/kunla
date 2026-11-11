@@ -90,7 +90,8 @@ export async function importWorkspace(db: D1Database, data: unknown, opts: { fre
     t = (name: string) => (Array.isArray(remapped[name]) ? remapped[name] : []);
   }
 
-  // Nothing may clash: keys stay unique across a Kunla, and ids and token hashes are global too.
+  // Nothing may clash: workspace keys, ids and token hashes are unique across a Kunla. Project and task keys only
+  // need to be unique inside their workspace, and the imported one is a workspace of its own (KD-70).
   const clash = async (sql: string, values: unknown[]) => {
     if (!values.length) return null;
     const q = db.prepare(sql.replace('$', 'SELECT value FROM json_each(?1)'));
@@ -98,11 +99,10 @@ export async function importWorkspace(db: D1Database, data: unknown, opts: { fre
     return row ? Object.values(row)[0] : null;
   };
   const checks: [string, string, unknown[]][] = [
-    ['project key', 'SELECT key FROM projects WHERE key IN ($) AND id != ?2', t('projects').map((p) => p.key)],
+    ['workspace key', `SELECT key FROM projects WHERE kind = 'workspace' AND key IN ($) AND id != ?2`, t('projects').filter((p) => p.kind === 'workspace').map((p) => p.key)],
     ['project', 'SELECT id FROM projects WHERE id IN ($)', t('projects').map((p) => p.id).filter((x) => x !== starter)],
     ['member', 'SELECT id FROM members WHERE id IN ($)', t('members').map((m) => m.id)],
     ['task', 'SELECT key FROM tasks WHERE id IN ($)', t('tasks').map((x) => x.id)],
-    ['task key', 'SELECT key FROM tasks WHERE key IN ($)', t('tasks').map((x) => x.key)],
     ['token', 'SELECT id FROM tokens WHERE token_hash IN ($)', t('tokens').map((x) => x.token_hash)],
   ];
   for (const [what, sql, values] of checks) {

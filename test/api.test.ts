@@ -73,7 +73,7 @@ describe('the record of work', () => {
 
     const next = await tool(ai, 'next_task');
     expect(next.data.reason).toBe('open');
-    expect(next.data.task.references.commit_trailer).toBe('Task: MKT-1 https://kunla.test/t/MKT-1');
+    expect(next.data.task.references.commit_trailer).toBe('Task: MKT-1 https://kunla.test/t/WS-MKT-1');
 
     const claimed = await tool(ai, 'claim_task', { key: 'MKT-1' });
     expect(claimed.data.status).toBe('in_progress');
@@ -392,11 +392,13 @@ describe('several workspaces in one Kunla', () => {
     expect(ws.workspace).toMatchObject({ key: 'COM', name: 'Community' });
     expect(ws.token).toMatch(/^kun_/);
     const me = await call('GET', '/api/me', ws.token);
-    expect(me.body).toMatchObject({ name: 'L', kind: 'human', roles: ['admin'], workspace: { key: 'COM', name: 'Community' }, projects: [] });
+    expect(me.body).toMatchObject({ name: 'L', kind: 'human', roles: ['admin', 'owner'], workspace: { key: 'COM', name: 'Community' }, projects: [] });
     // Keys never repeat on one Kunla, so a second "Community" gets another one.
     expect((await newSpace('Community')).workspace.key).toBe('COM2');
     expect((await newSpace('My startup')).workspace.key).toBe('MS');
-    expect((await call('POST', '/api/workspaces', human, { name: 'X', key: 'MKT' })).status).toBe(409);
+    expect((await call('POST', '/api/workspaces', human, { name: 'X', key: 'COM' })).status).toBe(409);
+    // Project keys only need to be unique inside their workspace, so a workspace may share one with a project elsewhere.
+    expect((await call('POST', '/api/workspaces', human, { name: 'X', key: 'MKT' })).status).toBe(200);
   });
 
   it('only people who are admins can create workspaces', async () => {

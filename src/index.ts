@@ -108,7 +108,8 @@ app.post('/api/import', async (c) => {
   } else {
     const ctx = await authenticate(c as C);
     if (!ctx) return c.json({ error: 'Sign in with a Kunla token (Authorization: Bearer kun_...).' }, 401);
-    if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only admins can import a workspace.' }, 403);
+    if (plan.shared()) return c.json({ error: 'On Kunla Cloud, workspaces are created at sign-up.' }, 403);
+    if (!core.isOwner(ctx.me)) return c.json({ error: "Only this Kunla's owner can import a workspace." }, 403);
   }
   const data = await c.req.json().catch(() => null);
   return c.json(await transfer.importWorkspace(c.env.DB, data, { fresh }));
@@ -117,7 +118,9 @@ app.post('/api/import', async (c) => {
 app.get('/api/edition', async (c) => {
   const l = await readLicence(c.env.KUNLA_LICENSE);
   const signIn = [...oidc.options(c.env), ...extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }))];
-  const p = await plan.current(c.env.DB);
+  // On a shared Kunla Cloud host each workspace has its own plan, so it is shown to signed-in people only.
+  const space = plan.shared() ? (c.req.header('authorization') ? (await authenticate(c as C))?.space ?? null : null) : undefined;
+  const p = plan.shared() && !space ? null : await plan.current(c.env.DB, space);
   return c.json({ edition: l.edition, licensee: l.licensee, features: l.features, seats: l.seats, expires_at: l.expires_at, problem: l.problem, sign_in: signIn, version: VERSION,
     plan: p ? { name: p.name, seats: p.seats } : null });
 });
@@ -126,15 +129,31 @@ app.get('/api/edition', async (c) => {
 app.get('/api/cloud/plan', async (c) => {
   const err = await plan.verify(c.req.raw, '');
   if (err) return c.json({ error: err }, plan.hosted() ? 401 : 404);
-  return c.json({ plan: await plan.current(c.env.DB), ...(await plan.headcount(c.env.DB)) });
+  const w = await plan.workspaceOf(c.env.DB, c.req.raw);
+  if (w.error) return c.json({ error: w.error }, 400);
+  return c.json({ plan: await plan.current(c.env.DB, w.space), ...(await plan.headcount(c.env.DB, w.space)) });
 });
 app.put('/api/cloud/plan', async (c) => {
   const body = await c.req.text();
   const err = await plan.verify(c.req.raw, body);
   if (err) return c.json({ error: err }, plan.hosted() ? 401 : 404);
+  const w = await plan.workspaceOf(c.env.DB, c.req.raw);
+  if (w.error) return c.json({ error: w.error }, 400);
   let input: unknown; try { input = JSON.parse(body); } catch { return c.json({ error: 'Body is not JSON.' }, 400); }
-  try { return c.json({ plan: await plan.set(c.env.DB, input), ...(await plan.headcount(c.env.DB)) }); }
+  try { return c.json({ plan: await plan.set(c.env.DB, input, w.space), ...(await plan.headcount(c.env.DB, w.space)) }); }
   catch (e) { return c.json({ error: (e as Error).message }, 400); }
+});
+// A shared Kunla Cloud host (KUNLA_CLOUD_SHARED=true) gets each new customer's workspace from the control plane at
+// sign-up: {name, key?, admin_name, admin_email?}. The reply carries the admin's first web token, which the control
+// plane hands to them once. Signed like the plan calls.
+app.post('/api/cloud/workspaces', async (c) => {
+  const body = await c.req.text();
+  const err = await plan.verify(c.req.raw, body);
+  if (err) return c.json({ error: err }, plan.hosted() ? 401 : 404);
+  if (!plan.shared()) return c.json({ error: 'This Kunla holds one team; it is not a shared host.' }, 409);
+  let d: { name?: string; key?: string; admin_name?: string; admin_email?: string };
+  try { d = JSON.parse(body); } catch { return c.json({ error: 'Body is not JSON.' }, 400); }
+  return c.json(await core.insertWorkspace(c.env.DB, { name: String(d.name ?? ''), key: d.key, admin: String(d.admin_name ?? ''), email: d.admin_email ?? null }));
 });
 // Kunla Cloud runs each team on Workers for Platforms, where a team Worker has no cron of its own, so the control
 // plane calls this once a day instead (KD-70). Signed like the plan calls; the jobs run after the reply.
@@ -284,14 +303,14 @@ api.get('/export', async (c) => {
 // What this copy's usage ping sends (or would send), and whether it is on (KD-69). Admins only.
 api.get('/ping/preview', async (c) => {
   const ctx = c.get('ctx');
-  if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only admins can see the usage ping.' }, 403);
+  if (!core.isOwner(ctx.me)) return c.json({ error: "Only this Kunla's owner can see the usage ping." }, 403);
   return c.json({ on: (c.env.KUNLA_USAGE_PING || '').toLowerCase() === 'on', url: c.env.KUNLA_PING_URL || ping.DEFAULT_PING_URL, ping: await ping.build(c.env.DB, (ctx.licence?.edition) ?? 'community') });
 });
 // On the collecting Kunla: how many copies are alive and how big (KD-69). Admins only.
 api.get('/ping/summary', async (c) => {
   const ctx = c.get('ctx');
   if (c.env.KUNLA_COLLECT_PINGS !== 'true') return c.json({ error: 'This Kunla does not collect usage pings.' }, 404);
-  if (ctx.me.kind !== 'human' || !JSON.parse(ctx.me.roles || '[]').includes('admin')) return c.json({ error: 'Only admins can see usage pings.' }, 403);
+  if (!core.isOwner(ctx.me)) return c.json({ error: "Only this Kunla's owner can see usage pings." }, 403);
   return c.json(await ping.summary(c.env.DB));
 });
 api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ctx'), await c.req.json())));

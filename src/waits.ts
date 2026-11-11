@@ -20,7 +20,8 @@ const nowMs = (c: Ctx) => (c.now ? c.now() : new Date()).getTime();
 const FINISHED = `('done','declined')`;
 export const QUIET_PROMISE_DAYS = 2;
 const RECENT_MET_DAYS = 3;
-const KEY_RE = /^[A-Za-z][A-Za-z0-9]{0,9}-\d+$/;
+// MKT-42, or the full key ACME-MKT-42 (KD-70).
+const KEY_RE = /^[A-Za-z][A-Za-z0-9]{0,9}(-[A-Za-z][A-Za-z0-9]{0,9})?-\d+$/;
 
 /** SQL: the task aliased `t` waits on something that hasn't happened yet. */
 export const WAITING_SQL = (alias = 't') =>

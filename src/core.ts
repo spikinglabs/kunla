@@ -76,7 +76,10 @@ async function checkPolicy(c: Ctx, action: PolicyAction) {
 
 const id = () => crypto.randomUUID();
 const nowIso = (c: Ctx) => (c.now ? c.now() : new Date()).toISOString();
+// Admins run their own workspace. The owner (who set this Kunla up, and admins from before KD-70) also runs the
+// Kunla as a whole: new or imported workspaces, the GitHub App registration, usage counts across workspaces.
 const isAdmin = (m: Member) => JSON.parse(m.roles || '[]').includes('admin');
+export const isOwner = (m: Member | null | undefined) => !!m && m.kind === 'human' && JSON.parse(m.roles || '[]').includes('owner');
 const parseList = (s: string | null | undefined): string[] => { try { return JSON.parse(s || '[]'); } catch { return []; } };
 
 // ---------- members, tokens, projects ----------
@@ -126,7 +129,7 @@ export async function setup(db: D1Database, input: { name: string; workspace_nam
   const ws = await db.prepare(`SELECT * FROM projects WHERE kind = 'workspace' ORDER BY created_at LIMIT 1`).first<Project>();
   if (!ws) throw new KunlaError(500, 'Workspace row missing; run the migrations.');
   await db.prepare('INSERT INTO members (id, name, kind, roles, space_id, created_at) VALUES (?,?,?,?,?,?)')
-    .bind(memberId, required(input.name, 'name'), 'human', '["admin"]', ws.id, t).run();
+    .bind(memberId, required(input.name, 'name'), 'human', '["admin","owner"]', ws.id, t).run();
   const wsKey = input.workspace_key?.trim() ? checkKey(input.workspace_key) : ws.key;
   await db.prepare('UPDATE projects SET name = ?, key = ?, space_id = ? WHERE id = ?').bind(input.workspace_name?.trim() || ws.name, wsKey, ws.id, ws.id).run();
   if (input.project_key?.trim() && input.project_name?.trim()) await insertProject(db, ws.id, input.project_key, input.project_name);
@@ -145,16 +148,20 @@ function checkKey(key: string) {
   return k;
 }
 
-// Keys stay unique across the whole deployment (not just the workspace), so a task key such as KD-12
-// in a commit, a link or a chat always means one task. The message doesn't say where the key is used.
-async function assertKeyFree(db: D1Database, k: string) {
-  const exists = await db.prepare('SELECT 1 FROM projects WHERE key = ?').bind(k).first();
-  if (exists) throw new KunlaError(409, `The key ${k} is already taken on this Kunla. Pick another.`);
+// Keys are short inside a workspace and full across workspaces (KD-70): a project key only has to be unique in its
+// workspace (MKT-42 there), and its full key carries the workspace key (ACME-MKT-42). Workspace keys stay unique
+// across the whole Kunla, since they start every full key and name the workspace's connector address (/mcp/ACME).
+// space null checks a workspace key.
+async function assertKeyFree(db: D1Database, k: string, space: string | null) {
+  const exists = space
+    ? await db.prepare('SELECT 1 FROM projects WHERE key = ? AND space_id = ?').bind(k, space).first()
+    : await db.prepare(`SELECT 1 FROM projects WHERE key = ? AND kind = 'workspace'`).bind(k).first();
+  if (exists) throw new KunlaError(409, space ? `The key ${k} is already used in this workspace. Pick another.` : `The workspace key ${k} is taken. Pick another.`);
 }
 
 async function insertProject(db: D1Database, space: string, key: string, name: string) {
   const k = checkKey(key);
-  await assertKeyFree(db, k);
+  await assertKeyFree(db, k, space);
   const pid = id();
   await db.prepare('INSERT INTO projects (id, key, name, space_id, created_at) VALUES (?,?,?,?,?)')
     .bind(pid, k, required(name, 'project name'), space, new Date().toISOString()).run();
@@ -169,7 +176,7 @@ async function keyFromName(db: D1Database, name: string) {
   if (!/^[A-Z][A-Z0-9]+$/.test(base)) base = 'WS';
   for (let i = 1; i < 100; i++) {
     const k = i === 1 ? base : `${base.slice(0, 8)}${i}`;
-    if (!(await db.prepare('SELECT 1 FROM projects WHERE key = ?').bind(k).first())) return k;
+    if (!(await db.prepare(`SELECT 1 FROM projects WHERE key = ? AND kind = 'workspace'`).bind(k).first())) return k;
   }
   throw new KunlaError(409, 'Pick a key for the workspace.');
 }
@@ -180,21 +187,32 @@ async function keyFromName(db: D1Database, name: string) {
  * only works there. Nothing links the two memberships on the server; the browser remembers both.
  */
 export async function createWorkspace(c: Ctx, input: { name: string; key?: string }) {
-  if (c.me.kind !== 'human' || !isAdmin(c.me)) throw new KunlaError(403, 'Only admins can create workspaces.');
+  // A shared Kunla Cloud host holds other customers' workspaces; new ones come from sign-up, where billing starts.
+  if (plan.shared()) throw new KunlaError(403, 'On Kunla Cloud, new workspaces are created at sign-up.');
+  if (!isOwner(c.me)) throw new KunlaError(403, "Only this Kunla's owner can create workspaces.");
   const name = required(input.name, 'name').slice(0, 80);
   await checkPolicy(c, { type: 'create_workspace', name });
-  const key = input.key?.trim() ? checkKey(input.key) : await keyFromName(c.db, name);
-  await assertKeyFree(c.db, key);
+  return insertWorkspace(c.db, { name, key: input.key, admin: c.me.name, at: nowIso(c), owner: true });
+}
+
+/** A new workspace with its first admin, who gets a web token. */
+export async function insertWorkspace(db: D1Database, input: { name: string; key?: string; admin: string; email?: string | null; at?: string; owner?: boolean }) {
+  const name = required(input.name, 'name').slice(0, 80);
+  const key = input.key?.trim() ? checkKey(input.key) : await keyFromName(db, name);
+  await assertKeyFree(db, key, null);
+  const email = input.email ? String(input.email).trim().toLowerCase() : null;
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new KunlaError(400, 'That email does not look right.');
+  if (email && await db.prepare('SELECT 1 FROM members WHERE email = ? AND removed_at IS NULL').bind(email).first()) throw new KunlaError(409, 'Someone here already signs in with that email.');
   const wsId = id();
   const memberId = id();
-  const t = nowIso(c);
-  await c.db.batch([
-    c.db.prepare(`INSERT INTO projects (id, key, name, kind, require_human_review, space_id, created_at) VALUES (?,?,?,'workspace',1,?,?)`)
+  const t = input.at ?? new Date().toISOString();
+  await db.batch([
+    db.prepare(`INSERT INTO projects (id, key, name, kind, require_human_review, space_id, created_at) VALUES (?,?,?,'workspace',1,?,?)`)
       .bind(wsId, key, name, wsId, t),
-    c.db.prepare('INSERT INTO members (id, name, kind, roles, space_id, created_at) VALUES (?,?,?,?,?,?)')
-      .bind(memberId, c.me.name, 'human', '["admin"]', wsId, t),
+    db.prepare('INSERT INTO members (id, name, kind, roles, space_id, created_at, email) VALUES (?,?,?,?,?,?,?)')
+      .bind(memberId, required(input.admin, 'admin').slice(0, 80), 'human', input.owner ? '["admin","owner"]' : '["admin"]', wsId, t, email),
   ]);
-  const token = await issueToken(c.db, memberId, 'web');
+  const token = await issueToken(db, memberId, 'web');
   return { workspace: { id: wsId, key, name }, member_id: memberId, token };
 }
 
@@ -213,7 +231,7 @@ export async function createProject(c: Ctx, input: { key: string; name: string; 
 export async function proposeProject(c: Ctx, input: { key: string; name: string; why?: string; playbook?: string }) {
   if (c.me.kind === 'human') return { created: true, project: await createProject(c, input) };
   const k = checkKey(input.key);
-  await assertKeyFree(c.db, k);
+  await assertKeyFree(c.db, k, c.space);
   const name = required(input.name, 'project name').trim().slice(0, 120);
   const open = (await c.db.prepare(`SELECT t.key, e.data FROM tasks t JOIN events e ON e.task_id = t.id AND e.type = 'project_proposed'
      WHERE t.space_id = ? AND t.status = 'inbox'`).bind(c.space).all<{ key: string; data: string }>()).results
@@ -339,16 +357,22 @@ export async function getMember(c: Ctx, idOrName: string): Promise<Member> {
 export async function addMember(c: Ctx, input: { name: string; kind: Kind; platform?: string; roles?: string[]; email?: string | null }) {
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people can add members.');
   if (input.kind === 'human' && !isAdmin(c.me)) throw new KunlaError(403, 'Only admins can add people.');
+  // Roles: only admins hand out admin (and only to people); only the owner hands out owner.
+  const roles = (Array.isArray(input.roles) ? input.roles : []).map(String);
+  if (roles.includes('admin') && (input.kind === 'ai' || !isAdmin(c.me))) throw new KunlaError(403, 'Only admins can make another person an admin.');
+  if (roles.includes('owner') && (input.kind === 'ai' || !isOwner(c.me))) throw new KunlaError(403, "Only this Kunla's owner can share ownership.");
   const name = required(input.name, 'name').trim();
   await checkPolicy(c, { type: 'add_member', kind: input.kind === 'ai' ? 'ai' : 'human', name, platform: input.platform ?? null });
   if (input.kind !== 'ai') {
     // Seats: people count against the licence (self-host) or the Kunla Cloud plan (KD-72) across the whole
     // Kunla; AI members are free.
-    const planSeats = await plan.seatLimit(c.db);
+    // On a shared Kunla Cloud host, each workspace has its own plan and only its own people count.
+    const planSeats = await plan.seatLimit(c.db, c.space);
     if (c.licence?.seats != null || planSeats != null) {
       const n = (await c.db.prepare(`SELECT COUNT(*) AS n FROM members WHERE kind = 'human' AND removed_at IS NULL`).first<number>('n')) ?? 0;
+      const inPlan = plan.shared() ? (await plan.headcount(c.db, c.space)).people : n;
       if (c.licence?.seats != null && n >= c.licence.seats) throw new KunlaError(403, `This Kunla's licence covers ${c.licence.seats} people, and all seats are taken. Remove someone or ask about more seats.`);
-      if (planSeats != null && n >= planSeats) throw new KunlaError(402, `Your plan covers ${planSeats} ${planSeats === 1 ? 'person' : 'people'}, and all seats are taken. Agents are always free. Remove someone or upgrade the plan to add more people.`);
+      if (planSeats != null && inPlan >= planSeats) throw new KunlaError(402, `Your plan covers ${planSeats} ${planSeats === 1 ? 'person' : 'people'}, and all seats are taken. Agents are always free. Remove someone or upgrade the plan to add more people.`);
     }
   }
   if (input.kind === 'ai') {
@@ -361,7 +385,7 @@ export async function addMember(c: Ctx, input: { name: string; kind: Kind; platf
   const mid = id();
   await c.db.prepare('INSERT INTO members (id, name, kind, platform, sponsor_id, roles, space_id, created_at, email) VALUES (?,?,?,?,?,?,?,?,?)').bind(
     mid, name, input.kind === 'ai' ? 'ai' : 'human', input.platform ?? null,
-    input.kind === 'ai' ? c.me.id : null, JSON.stringify(input.roles ?? []), c.space, nowIso(c), email).run();
+    input.kind === 'ai' ? c.me.id : null, JSON.stringify(roles), c.space, nowIso(c), email).run();
   const token = await issueToken(c.db, mid, input.platform || input.kind);
   return { member: safeMember(await getMember(c, mid)), token, reconnected: false };
 }
@@ -486,7 +510,10 @@ export async function removeMember(c: Ctx, memberId: string) {
 // ---------- tasks ----------
 
 export async function getTask(c: Ctx, key: string): Promise<Task> {
-  const t = await c.db.prepare('SELECT * FROM tasks WHERE (key = ? OR id = ?) AND space_id = ?').bind(String(key).toUpperCase(), key, c.space).first<Task>();
+  // MKT-42, or the full ACME-MKT-42 when ACME is this workspace.
+  const sk = splitKey(key);
+  const t = await c.db.prepare(`SELECT * FROM tasks WHERE (key = ? OR id = ?) AND space_id = ? AND (? IS NULL OR ? = (SELECT key FROM projects WHERE id = tasks.space_id))`)
+    .bind(sk.key, key, c.space, sk.ws, sk.ws).first<Task>();
   if (!t) throw new KunlaError(404, `No task ${key}.`);
   return t;
 }
@@ -824,7 +851,7 @@ export async function takeOverTask(c: Ctx, key: string, input: { note?: string; 
  */
 export async function assignMany(c: Ctx, input: { keys?: string[]; to?: string; continuous?: boolean; note?: string }) {
   if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people hand out work in a batch. Use next_task.');
-  const keys = [...new Set((input.keys ?? []).map((k) => String(k).toUpperCase()))];
+  const keys = [...new Set((input.keys ?? []).map((k) => splitKey(String(k)).key))];
   if (!keys.length) throw new KunlaError(400, 'Pick at least one task.');
   if (keys.length > 200) throw new KunlaError(400, 'Hand over at most 200 tasks at once.');
   if (!input.to) throw new KunlaError(400, 'Say who should do them.');
@@ -1234,8 +1261,21 @@ export async function undoDecision(c: Ctx, key: string) {
 
 // ---------- reads ----------
 
-export function references(baseUrl: string, t: Pick<Task, 'key' | 'title'>, projectName: string) {
-  const link = `${baseUrl}/t/${t.key}`;
+/** ACME-MKT-42 -> { ws: 'ACME', key: 'MKT-42' }; MKT-42 or ACME-7 -> { ws: null, key } (KD-70). */
+export function splitKey(raw: string): { ws: string | null; key: string } {
+  const k = String(raw ?? '').trim().toUpperCase();
+  const m = k.match(/^([A-Z][A-Z0-9]{1,9})-([A-Z][A-Z0-9]{1,9}-\d+)$/);
+  return m ? { ws: m[1], key: m[2] } : { ws: null, key: k };
+}
+
+/** The full key, which means one task across the whole Kunla: ACME-MKT-42. Workspace-level tasks (ACME-7) already are. */
+export function fullKey(wsKey: string, key: string): string {
+  return key.startsWith(`${wsKey}-`) && /^[A-Z][A-Z0-9]*-\d+$/.test(key) ? key : `${wsKey}-${key}`;
+}
+
+export function references(baseUrl: string, t: Pick<Task, 'key' | 'title'>, projectName: string, wsKey?: string) {
+  // The short key is what people type; the link carries the full key, so it opens the right task from anywhere.
+  const link = `${baseUrl}/t/${wsKey ? fullKey(wsKey, t.key) : t.key}`;
   const slug = t.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
   return {
     link,
@@ -1299,7 +1339,8 @@ export async function taskDetail(c: Ctx, key: string) {
     ...deps,
     sessions: sessions.results.map((s: any) => ({ ...s, url: /^https?:\/\//i.test(s.ref) ? s.ref : null })),
     history: events.results.map((e: any) => ({ ...e, data: JSON.parse(e.data || '{}') })),
-    references: references(c.baseUrl, t, p.name),
+    full_key: fullKey(ws.key, t.key),
+    references: references(c.baseUrl, t, p.name, ws.key),
   };
 }
 
