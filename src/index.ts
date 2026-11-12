@@ -245,6 +245,8 @@ app.post('/hooks/github', async (c) => {
 app.get('/hooks/github/app/created', async (c) => c.redirect(await ghapp.created(c.env.DB, c.req.query('code'), c.req.query('state'))));
 app.get('/hooks/github/app/installed', async (c) => c.redirect(await ghapp.installed(c.env.DB, c.req.query('installation_id'), c.req.query('state'), fetch, c.req.query('code'))));
 app.get('/t/:key', (c) => c.redirect(`/app/#/t/${encodeURIComponent(c.req.param('key').toUpperCase())}`));
+// A team's own link (KD-85): /w/ACME opens the app on workspace ACME, or its sign-in.
+app.get('/w/:key', (c) => c.redirect(`/app/#/w/${encodeURIComponent(c.req.param('key').toUpperCase().replace(/[^A-Z0-9]/g, ''))}`));
 
 // ---------- MCP ----------
 // /mcp takes a token from any workspace. /mcp/<KEY> is the same server for one workspace only, so a
