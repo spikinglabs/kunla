@@ -242,6 +242,7 @@ async function viewGate() {
   const s = await api('GET', '/api/setup');
   // Sign in with Google or Microsoft (KD-68) when this Kunla offers it; a failed attempt comes back with ?signin_error.
   const providers = s.set_up ? ((await api('GET', '/api/edition').catch(() => null))?.sign_in || []) : [];
+  const links = providers.filter((p) => p.id !== 'email'), byEmail = providers.some((p) => p.id === 'email');
   const q = new URLSearchParams(location.search), signInErr = q.get('signin_error');
   if (signInErr) history.replaceState(null, '', location.pathname + location.hash);
   gate.innerHTML = !s.set_up ? html`<div class="gate-card">${raw(WORD)}
@@ -256,7 +257,7 @@ async function viewGate() {
         <button class="primary">Create workspace</button>
       </form></div>`
     : html`<div class="gate-card">${raw(WORD)}
-      <div class="stack" style="gap:6px"><h1>Sign in</h1>${raw(signInErr ? html`<p role="alert" style="color:var(--warn)">${signInErr}</p>` : '')}${raw(providers.length ? html`<div class="stack" style="gap:8px">${raw(providers.map((p) => html`<a class="btn go" href="${p.url}">${p.label}</a>`).join(''))}</div><p class="muted">Or paste your personal token. Whoever added you to Kunla has it.</p>` : '<p class="muted">Paste your personal token. Whoever added you to Kunla has it.</p>')}</div>
+      <div class="stack" style="gap:6px"><h1>Sign in</h1>${raw(signInErr ? html`<p role="alert" style="color:var(--warn)">${signInErr}</p>` : '')}${raw(links.length ? html`<div class="stack" style="gap:8px">${raw(links.map((p) => html`<a class="btn go" href="${p.url}">${p.label}</a>`).join(''))}</div>` : '')}${raw(byEmail ? html`<form class="stack" data-act="submit:emaillink" style="gap:8px"><div class="field"><label for="g-email">Work email</label><input id="g-email" name="email" type="email" required autocomplete="email" placeholder="you@company.com"></div><button class="btn go">Email me a sign-in link</button><p class="muted" id="g-sent" role="status" style="font-size:13px"></p></form>` : '')}<p class="muted">${providers.length ? 'Or paste your personal token.' : 'Paste your personal token.'} Whoever added you to Kunla has it.</p></div>
       <form class="stack" data-act="submit:signin">
         <div class="field"><label for="g-token">Token</label><input id="g-token" name="token" required placeholder="kun_…" type="password" autocomplete="current-password"></div>
         <button class="primary">Sign in</button>
@@ -270,6 +271,10 @@ async function viewGate() {
         <div class="secret">${token}</div>
         <button class="primary" data-act="click:go">Next: connect your first agent</button></div>`;
       bind(gate, { go: () => { location.hash = '#/team/connect'; route(); } });
+    },
+    emaillink: async (f) => {
+      const r = await api('POST', '/auth/email/start', formData(f)).catch((e) => ({ message: e.message }));
+      $('g-sent').textContent = r.message;
     },
     signin: async (f) => {
       token = formData(f).token.trim();

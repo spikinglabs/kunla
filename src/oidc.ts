@@ -135,22 +135,29 @@ export async function callback(env: OidcEnv, db: D1Database, id: string, req: Re
   return finish(db, p, [email], '');
 
   async function finish(db: D1Database, p: Provider, emails: string[], ghLogin: string) {
-    // Email linking (KD-29): the provider just proved this person owns these emails (and, for GitHub, the login), so
-    // they are every member with one of them, in every workspace here. They get a fresh token for each; the one used
-    // last opens, the others join the workspace menu, and the claude.ai approval page can offer them all.
-    const ms = (await db.prepare(`SELECT id, name, space_id FROM members WHERE kind = 'human' AND removed_at IS NULL
-        AND (lower(email) IN (SELECT value FROM json_each(?)) OR (? != '' AND lower(github_login) = lower(?)))
-        ORDER BY seen_at IS NULL, seen_at DESC, created_at LIMIT 20`).bind(JSON.stringify(emails), ghLogin, ghLogin).all<{ id: string; name: string; space_id: string }>()).results;
-    // One per workspace, the most recently used.
-    const seen = new Set<string>();
-    const mine = ms.filter((m) => !seen.has(m.space_id) && seen.add(m.space_id));
-    const who = emails[0] ?? `@${ghLogin}`;
-    if (!mine.length) throw new KunlaError(403, `Nobody with ${who} is on this Kunla yet. Ask an admin to add you with that email (Team → Add a person), then sign in again.`);
-    const tokens: string[] = [];
-    for (const m of mine) tokens.push(await issueToken(db, m.id, `sign-in:${p.id}`));
-    return { member: mine[0], token: tokens[0], tokens, back: back(req), clearCookie: `${COOKIE}=; Path=/auth/${p.id}; Max-Age=0; HttpOnly; Secure; SameSite=Lax` };
+    const r = await membersFor(db, emails, ghLogin, p.id);
+    return { ...r, back: back(req), clearCookie: `${COOKIE}=; Path=/auth/${p.id}; Max-Age=0; HttpOnly; Secure; SameSite=Lax` };
   }
 }
+/**
+ * Email linking (KD-29): the person just proved they own these emails (and, for GitHub, the login), so they are
+ * every member with one of them, in every workspace here. They get a fresh token for each; the one used last
+ * opens, the others join the workspace menu, and the claude.ai approval page can offer them all.
+ */
+export async function membersFor(db: D1Database, emails: string[], ghLogin: string, via: string) {
+  const ms = (await db.prepare(`SELECT id, name, space_id FROM members WHERE kind = 'human' AND removed_at IS NULL
+      AND (lower(email) IN (SELECT value FROM json_each(?)) OR (? != '' AND lower(github_login) = lower(?)))
+      ORDER BY seen_at IS NULL, seen_at DESC, created_at LIMIT 20`).bind(JSON.stringify(emails), ghLogin, ghLogin).all<{ id: string; name: string; space_id: string }>()).results;
+  // One per workspace, the most recently used.
+  const seen = new Set<string>();
+  const mine = ms.filter((m) => !seen.has(m.space_id) && seen.add(m.space_id));
+  const who = emails[0] ?? `@${ghLogin}`;
+  if (!mine.length) throw new KunlaError(403, `Nobody with ${who} is on this Kunla yet. Ask an admin to add you with that email (Team → Add a person), then sign in again.`);
+  const tokens: string[] = [];
+  for (const m of mine) tokens.push(await issueToken(db, m.id, `sign-in:${via}`));
+  return { member: mine[0], token: tokens[0], tokens };
+}
+
 // Where to land after signing in: the web app, or the claude.ai approval page that sent the person (KD-29).
 // Only that page may be a destination, so a sign-in link can't be made to hand tokens to another page.
 export const safeReturn = (r: string | null | undefined) => (r && /^\/oauth\/authorize\?[^#]*$/.test(r) ? r : null);

@@ -17,6 +17,8 @@ import { VERSION } from './version';
 import * as transfer from './transfer';
 import * as waits from './waits';
 import { readLicence } from './licence';
+import * as emaillogin from './emaillogin';
+import type { MailEnv } from './mail';
 import { extensions, flushAudit } from './extensions';
 import * as ping from './ping';
 import * as oidc from './oidc';
@@ -44,6 +46,9 @@ export interface Env {
   /** People on Kunla Cloud's free plan (KD-72); 5 when unset. */
   KUNLA_FREE_SEATS?: string;
   MICROSOFT_CLIENT_ID?: string; MICROSOFT_CLIENT_SECRET?: string; MICROSOFT_TENANT?: string;
+  GITHUB_LOGIN_CLIENT_ID?: string; GITHUB_LOGIN_CLIENT_SECRET?: string;
+  /** Email sign-in links: Kunla Cloud relay, a Cloudflare Email Service binding, or Resend; see src/mail.ts. */
+  EMAIL?: MailEnv['EMAIL']; RESEND_API_KEY?: string; MAIL_FROM?: string; KUNLA_CLOUD_MAIL?: string;
 }
 type Vars = { ctx: core.Ctx };
 type C = Context<{ Bindings: Env; Variables: Vars }>;
@@ -119,7 +124,7 @@ app.post('/api/import', async (c) => {
 // Which edition this Kunla runs and how people can sign in (KD-75). Public: the sign-in page needs it.
 app.get('/api/edition', async (c) => {
   const l = await readLicence(c.env.KUNLA_LICENSE);
-  const signIn = [...oidc.options(c.env), ...extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }))];
+  const signIn = [...oidc.options(c.env), ...emaillogin.option(c.env), ...extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }))];
   // On a shared Kunla Cloud host each workspace has its own plan, so it is shown to signed-in people only.
   const space = plan.shared() ? (c.req.header('authorization') ? (await authenticate(c as C))?.space ?? null : null) : undefined;
   const p = plan.shared() && !space ? null : await plan.current(c.env.DB, space);
@@ -194,6 +199,19 @@ app.get('/auth/:id{google|microsoft|github}/callback', async (c) => {
     h.append('set-cookie', `kunla_oidc_back=; Path=/auth/${c.req.param('id')}; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
     return new Response(null, { status: 302, headers: h });
   } catch (e) { return signInError(c, e); }
+});
+// Sign in with an emailed link (KD-70): ask for it, open it (a page with a button: mail scanners open links), use it.
+app.post('/auth/email/start', async (c) => {
+  try { return c.json(await emaillogin.start(c.env, c.env.DB, await c.req.json().catch(() => ({})), baseUrl(c))); }
+  catch (e) { return c.json({ error: e instanceof Error ? e.message : 'Could not send the link.' }, e instanceof core.KunlaError ? (e.status as 400) : 500); }
+});
+app.get('/auth/email/open', (c) => c.html(emaillogin.openPage(c.req.query('t') || '')));
+app.post('/auth/email/open', async (c) => {
+  try {
+    const r = await emaillogin.finish(c.env.DB, String((await c.req.parseBody()).t ?? ''));
+    const also = r.tokens.slice(1).map(encodeURIComponent).join(',');
+    return c.redirect(r.back ? `${r.back}#signin=${r.tokens.map(encodeURIComponent).join(',')}` : `/app/#/use/${encodeURIComponent(r.token)}${also ? `/also/${also}` : ''}`, 303);
+  } catch (e) { return c.redirect(`/app/?signin_error=${encodeURIComponent(e instanceof Error ? e.message : 'Sign-in failed.')}`, 303); }
 });
 // Sign-in providers registered by ee/ (SSO). A provider hands back a member; Kunla gives them a fresh token and
 // opens the web app with it, the same way switching workspace does.
