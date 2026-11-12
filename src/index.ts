@@ -124,7 +124,7 @@ app.post('/api/import', async (c) => {
 // Which edition this Kunla runs and how people can sign in (KD-75). Public: the sign-in page needs it.
 app.get('/api/edition', async (c) => {
   const l = await readLicence(c.env.KUNLA_LICENSE);
-  const signIn = [...oidc.options(c.env), ...emaillogin.option(c.env), ...extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }))];
+  const signIn = [...(await oidc.options(c.env, c.env.DB)), ...emaillogin.option(c.env), ...extensions().signIn.filter((p) => l.features.includes(p.feature)).map((p) => ({ id: p.id, label: p.label, url: `/auth/${p.id}/start` }))];
   // On a shared Kunla Cloud host each workspace has its own plan, so it is shown to signed-in people only.
   const space = plan.shared() ? (c.req.header('authorization') ? (await authenticate(c as C))?.space ?? null : null) : undefined;
   const p = plan.shared() && !space ? null : await plan.current(c.env.DB, space);
@@ -395,6 +395,13 @@ api.get('/billing', async (c) => {
   const d = await res.json().catch(() => ({})) as { url?: string; error?: string };
   if (!res.ok || !d.url) return c.json({ error: `Kunla Cloud did not answer: ${d.error ?? res.status}. Try again in a minute.` }, 502);
   return c.json({ url: d.url });
+});
+// Which Microsoft directories may sign in to this workspace (KD-70), when Microsoft sign-in has no fixed directory.
+api.get('/signin/microsoft', async (c) => c.json(await oidc.tenants(c.env, c.env.DB, c.get('ctx').space)));
+api.put('/signin/microsoft', async (c) => {
+  const ctx = c.get('ctx');
+  if (ctx.me.kind !== 'human' || !core.isAdmin(ctx.me)) throw new core.KunlaError(403, 'Only admins choose who can sign in.');
+  return c.json(await oidc.setTenants(c.env, c.env.DB, ctx.space, ((await c.req.json().catch(() => ({}))) as { tenants?: unknown }).tenants));
 });
 api.post('/workspaces', async (c) => c.json(await core.createWorkspace(c.get('ctx'), await c.req.json())));
 api.post('/members', async (c) => c.json(await core.addMember(c.get('ctx'), await c.req.json())));
