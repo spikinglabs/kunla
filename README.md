@@ -59,7 +59,7 @@ Open your Worker's URL plus `/app/` and complete setup with the setup token.
 
 **Mark a test copy:** set the variable `KUNLA_ENV=staging` (or any name) and the deployed copy shows a small "Staging" ribbon on every page and answers `"env": "staging"` at `/api/health`.
 
-**How Spiking Labs runs it (KD-85):** every merge to main deploys kunla.lab.spikinglabs.com, which is staging (and where the Kunla team does its own work, so changes meet us first). Production is Kunla Cloud at kunla.spikinglabs.com, which only takes releases: its control plane pins a `vX.Y.Z` tag and rolls it out to teams.
+**How Spiking Labs runs it (KD-85):** every merge to main deploys kunla.lab.spikinglabs.com, which is staging (and where the Kunla team does its own work, so changes meet us first). Production is Kunla Cloud at kunla.app, which only takes releases: its control plane pins a `vX.Y.Z` tag and rolls it out to teams.
 
 **Upgrading:** releases are tagged `vX.Y.Z` on GitHub ([Releases](https://github.com/spikinglabs/kunla/releases), notes in [CHANGELOG.md](CHANGELOG.md)). Pull the release you want into your copy and run `npm run deploy` again, or let the included GitHub Action (`.github/workflows/deploy.yml`) deploy it on push. `/api/health` says which version a copy runs. Migrations only ever add tables or columns, so rolling back to the previous Worker version (`npx wrangler rollback`) is safe.
 

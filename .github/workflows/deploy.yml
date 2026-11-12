@@ -12,7 +12,7 @@
 # WEUR near aws:eu-west-1 or aws:eu-central-1.
 # Optional variable KUNLA_ENV (e.g. staging): marks this copy as a test copy, with a small ribbon on every page and
 # "env" in /api/health (KD-85). Defaults to staging on spikinglabs/kunla, whose main deploys kunla.lab.spikinglabs.com
-# as staging; Kunla Cloud (kunla.spikinglabs.com) is production and only takes releases. Set it to "production" to
+# as staging; Kunla Cloud (kunla.app) is production and only takes releases. Set it to "production" to
 # turn the ribbon off.
 # The self-upgrade workflow (upgrade.yml) also calls this one to deploy the release it just merged.
 name: Deploy
