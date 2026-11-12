@@ -60,6 +60,8 @@ jobs:
           label="$(printf '%s' "$KUNLA_ENV" | tr -cd 'A-Za-z0-9 _-' | sed 's/./\U&/')"
           ribbon='<div role="note" style="position:fixed;z-index:2147483647;left:50%;bottom:0;transform:translateX(-50%);padding:2px 10px;border-radius:6px 6px 0 0;background:#b45309;color:#fff;font:600 11px/1.6 system-ui,sans-serif;letter-spacing:.04em;pointer-events:none;opacity:.85">'"$label"' · '"$(git rev-parse --short HEAD)"'</div>'
           for f in public/index.html public/authorize.html; do sed -i "s|<body\([^>]*\)>|&\n$ribbon|" "$f"; done
+          # A test copy stays out of search results (the page's canonical link already points at kunla.app).
+          sed -i 's|<meta charset="utf-8">|&\n<meta name="robots" content="noindex, nofollow">|' public/index.html
           grep -c "$label ·" public/index.html
           grep '^KUNLA_ENV' wrangler.toml
       - name: Pin where the Worker runs

@@ -1,0 +1,7 @@
+# The intro page is public; the app, its API and agent endpoints are not for search engines.
+User-agent: *
+Disallow: /app/
+Disallow: /api/
+Disallow: /mcp
+Disallow: /oauth/
+Disallow: /t/
