@@ -1791,6 +1791,8 @@ async function viewMe() {
   const [p, edition] = await Promise.all([api('GET', '/api/profile'), api('GET', '/api/edition').catch(() => null)]);
   const admin = p.roles.includes('admin');
   const ways = (edition?.sign_in || []).map((x) => SIGNIN_NAME[x.id] || x.label);
+  // With GitHub sign-in on, the account is linked by proving it, not typed in (L's ask on KD-86).
+  const ghSignIn = (edition?.sign_in || []).find((x) => x.id === 'github');
   const waysLine = ways.length ? `You can sign in here with ${ways.length > 1 ? ways.slice(0, -1).join(', ') + ' or ' + ways.at(-1) : ways[0]}${p.email ? `, using ${p.email}` : ''}, or with your personal token.` : 'This Kunla signs people in with a personal token.';
   const others = otherSpaces();
   const signRow = (t) => html`<div class="pfrow"><div class="grow"><div class="t">${t.how}${raw(t.current ? ' <span class="pill on sm">This browser</span>' : '')}</div>
@@ -1807,9 +1809,13 @@ async function viewMe() {
         <form class="stack" style="gap:6px" data-act="submit:rename"><div class="field"><label for="pf-n">Name</label><input id="pf-n" name="name" required maxlength="80" value="${p.name}" autocomplete="name"></div>
           <p class="muted hintline">How people and agents see you in ${me.workspace?.name}.</p><div><button class="btn sm">Save name</button></div></form>
         <form class="stack" style="gap:6px" data-act="submit:email"><div class="field"><label for="pf-e">Work email</label><input id="pf-e" name="email" type="email" autocomplete="email" placeholder="${admin ? 'name@company.com' : 'Not set'}" value="${p.email || ''}" ${admin ? '' : 'readonly'}></div>
-          <p class="muted hintline">${admin ? 'Google, Microsoft and emailed sign-in links match this address.' : 'Google, Microsoft and emailed sign-in links match this address. Only an admin can change it, so nobody can take over someone else’s.'}</p>${raw(admin ? '<div><button class="btn sm">Save email</button></div>' : '')}</form>
-        <form class="stack" style="gap:6px" data-act="submit:github"><div class="field"><label for="pf-g">GitHub username</label><input id="pf-g" name="login" autocomplete="off" placeholder="e.g. octocat" value="${p.github_login || ''}"></div>
-          <p class="muted hintline">When a PR is merged from this account, Kunla counts it as your approval of the task.</p><div><button class="btn sm">Save</button></div></form>
+          <p class="muted hintline">${admin ? 'Signing in with Google, Microsoft, GitHub or an emailed link matches this address.' : 'Signing in with Google, Microsoft, GitHub or an emailed link matches this address. Only an admin can change it, so nobody can take over someone else’s.'}</p>${raw(admin ? '<div><button class="btn sm">Save email</button></div>' : '')}</form>
+        ${raw(ghSignIn ? html`<div class="stack" style="gap:6px"><div class="label">GitHub account</div>
+          <div class="row" style="flex-wrap:nowrap;gap:10px"><span class="grow">${raw(p.github_login ? html`<b>@${p.github_login}</b> <span class="muted">· linked</span>` : '<span class="muted">Not linked</span>')}</span>
+            <a class="btn sm ${p.github_login ? 'quiet' : 'go'}" href="${ghSignIn.url}">${p.github_login ? 'Use a different account' : 'Link with GitHub'}</a></div>
+          <p class="muted hintline">Linked by signing in with GitHub, so nobody types a username. You can then sign in with it, and when a PR is merged from it, Kunla counts that as your approval.</p></div>`
+        : html`<form class="stack" style="gap:6px" data-act="submit:github"><div class="field"><label for="pf-g">GitHub username</label><input id="pf-g" name="login" autocomplete="off" placeholder="e.g. octocat" value="${p.github_login || ''}"></div>
+          <p class="muted hintline">When a PR is merged from this account, Kunla counts it as your approval of the task. If this Kunla turns on GitHub sign-in, you link it by signing in instead.</p><div><button class="btn sm">Save</button></div></form>`)}
       </div>
       <div class="stack" style="gap:14px">
         <div class="card pad stack">
@@ -1898,16 +1904,10 @@ async function showGitHub(_unused, back) {
     <div><h2>Connect GitHub</h2><p class="muted">Pull requests and commits that mention a task key (like ${projects[0]?.key || 'MKT'}-12 in the title, branch, description or a commit message) then show up on the task without anyone logging them. An opened PR sends the task to Review with the PR attached; a merged PR finishes it, or waits for a person's review if the project asks for one.</p></div>
     ${raw(hookStatus(info))}
     ${raw(appBlock)}
-    <form class="stack" style="gap:6px" data-act="submit:login"><div class="label">Your GitHub account</div>
-      <p class="muted" style="font-size:13.5px">When a PR is merged from this account, Kunla counts it as your approval of the task, so you don't approve twice.</p>
-      <div class="field"><label for="gh-login">GitHub username</label><input id="gh-login" name="login" autocomplete="off" placeholder="e.g. octocat" value="${me.github_login || ''}"></div><div class="row"><button class="btn">Save</button></div></form>
+    <div class="stack" style="gap:6px"><div class="label">Your GitHub account</div>
+      <p class="muted" style="font-size:13.5px">${raw(me.github_login ? html`<b>@${me.github_login}</b>. Merges from it count as your approval.` : 'Not linked yet. Link it so merges from your account count as your approval.')} <a href="#/me" data-act="click:toProfile">Change it on your profile</a>.</p></div>
     <div class="row"><button class="btn quiet" data-act="click:close">Close</button></div></div>`, {
-    login: async (f) => {
-      const v = formData(f).login.trim();
-      const r = await api('PATCH', `/api/members/${me.id}`, { github_login: v });
-      me.github_login = r.github_login;
-      toast(r.github_login ? `Saved. Merges from @${r.github_login} now count as your approval.` : 'Removed. Merges no longer count as your approval.');
-    },
+    toProfile: () => { closeSheet(true); location.hash = '#/me'; },
     connectApp: async (f) => {
       const d = f?.tagName === 'FORM' ? formData(f) : {};
       const r = await api('POST', '/api/integrations/github/app', { org: d.org || '', merge: f?.tagName === 'FORM' ? !!d.merge : undefined });
