@@ -28,7 +28,7 @@ export interface Env {
   DB: D1Database;
   ASSETS?: Fetcher;
   LEASE_MINUTES?: string;
-  /** "staging" on the staging copy the Deploy workflow makes (KD-85); production when unset. */
+  /** Set by the Deploy workflow from the KUNLA_ENV variable (e.g. "staging") to mark a test copy (KD-85); production when unset. */
   KUNLA_ENV?: string;
   SETUP_TOKEN?: string;
   PUBLIC_URL?: string;

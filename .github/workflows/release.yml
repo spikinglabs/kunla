@@ -3,9 +3,6 @@
 # PR titled "Release vX.Y.Z". This workflow then sees a package.json version with no tag yet, tags the merge
 # commit vX.Y.Z and publishes a GitHub Release with that version's CHANGELOG.md section as its notes.
 # Self-hosted copies follow these tags (see the README's Upgrading section).
-# In staging + releases mode (see deploy.yml; on for spikinglabs/kunla) the new tag is then deployed to production:
-# merges to main only reach staging, a release is what reaches production (KD-85). Pre-releases (v1.2.0-rc.1)
-# stay on staging.
 name: Release
 on:
   push: { branches: [main] }
@@ -17,9 +14,6 @@ jobs:
   release:
     if: github.repository == 'spikinglabs/kunla'
     runs-on: ubuntu-latest
-    outputs:
-      new: ${{ steps.v.outputs.new }}
-      tag: v${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -57,14 +51,3 @@ jobs:
           prerelease=""
           case "$V" in *-*) prerelease="--prerelease" ;; esac
           gh release create "$V" --target "$GITHUB_SHA" --title "Kunla $V" --notes-file notes.md $prerelease
-
-  production:
-    needs: release
-    if: needs.release.outputs.new == 'true' && !contains(needs.release.outputs.tag, '-') && vars.KUNLA_STAGING != 'false'
-    permissions:
-      contents: read
-    uses: ./.github/workflows/deploy.yml
-    with:
-      ref: ${{ needs.release.outputs.tag }}
-      target: production
-    secrets: inherit

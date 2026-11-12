@@ -57,7 +57,9 @@ Open your Worker's URL plus `/app/` and complete setup with the setup token.
 
 **Deploy from GitHub Actions instead:** add secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `KUNLA_SETUP_TOKEN`, and variables `KUNLA_D1_ID`, `KUNLA_AUTO_DEPLOY=true` and optionally `KUNLA_DOMAIN`. Every push to main then deploys.
 
-**Staging first, production on release (optional):** set the variable `KUNLA_STAGING=true` instead of `KUNLA_AUTO_DEPLOY`. Every push to main then deploys a separate staging copy (Worker `kunla-staging`, at `kunla-staging.<your-subdomain>.workers.dev` or `KUNLA_STAGING_DOMAIN`) with its own D1 database `kunla-staging`, which the workflow creates in the EU jurisdiction the first time (or set `KUNLA_STAGING_D1_ID`). Staging shows a small "Staging" ribbon and `/api/health` answers `"env": "staging"`. Production only changes when you deploy a release: run the Deploy workflow by hand, pick production and a tag such as `v0.2.0` (the same way you roll back). spikinglabs/kunla itself works this way, and there the Release workflow deploys each new release to production by itself.
+**Mark a test copy:** set the variable `KUNLA_ENV=staging` (or any name) and the deployed copy shows a small "Staging" ribbon on every page and answers `"env": "staging"` at `/api/health`.
+
+**How Spiking Labs runs it (KD-85):** every merge to main deploys kunla.lab.spikinglabs.com, which is staging (and where the Kunla team does its own work, so changes meet us first). Production is Kunla Cloud at kunla.spikinglabs.com, which only takes releases: its control plane pins a `vX.Y.Z` tag and rolls it out to teams.
 
 **Upgrading:** releases are tagged `vX.Y.Z` on GitHub ([Releases](https://github.com/spikinglabs/kunla/releases), notes in [CHANGELOG.md](CHANGELOG.md)). Pull the release you want into your copy and run `npm run deploy` again, or let the included GitHub Action (`.github/workflows/deploy.yml`) deploy it on push. `/api/health` says which version a copy runs. Migrations only ever add tables or columns, so rolling back to the previous Worker version (`npx wrangler rollback`) is safe.
 
@@ -243,7 +245,7 @@ In-chat interactive views (MCP Apps), Tiny Foundation and other knowledge provid
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as described in [SECURITY.md](SECURITY.md).
 
-Maintainers release by running `npm run release:prepare -- X.Y.Z` (sets the version and adds a CHANGELOG.md section from the PRs merged since the last tag), then merging that as a PR titled `Release vX.Y.Z`. The Release workflow tags the merge, publishes the GitHub Release and deploys it to production. Every other merge to main only reaches staging (KD-85). Pre-releases (`X.Y.Z-rc.1`) stay on staging. To roll production back, run the Deploy workflow by hand with target production and the older tag; migrations only add tables or columns, and each production deploy writes the time to restore the database to (D1 Time Travel) in its summary.
+Maintainers release by running `npm run release:prepare -- X.Y.Z` (sets the version and adds a CHANGELOG.md section from the PRs merged since the last tag), then merging that as a PR titled `Release vX.Y.Z`. The Release workflow tags the merge and publishes the GitHub Release. Kunla Cloud (production) then gets a "Pin Kunla vX.Y.Z" PR in spikinglabs/kunla-cloud; merging it rolls the release out to teams. Every other merge to main only reaches staging, kunla.lab.spikinglabs.com (KD-85).
 
 ## License
 
