@@ -10,6 +10,10 @@
 # Optional variable KUNLA_PLACEMENT_REGION (e.g. aws:us-east-1): run the Worker next to that cloud region, where
 # your D1 database lives, instead of letting Smart Placement find it. ENAM databases sit near aws:us-east-1,
 # WEUR near aws:eu-west-1 or aws:eu-central-1.
+# Optional variable KUNLA_ENV (e.g. staging): marks this copy as a test copy, with a small ribbon on every page and
+# "env" in /api/health (KD-85). Defaults to staging on spikinglabs/kunla, whose main deploys kunla.lab.spikinglabs.com
+# as staging; Kunla Cloud (kunla.app) is production and only takes releases. Set it to "production" to
+# turn the ribbon off.
 # The self-upgrade workflow (upgrade.yml) also calls this one to deploy the release it just merged.
 name: Deploy
 on:
@@ -47,6 +51,19 @@ jobs:
           [ -n "${{ vars.KUNLA_USAGE_PING }}" ] && sed -i '/^\[vars\]$/a KUNLA_USAGE_PING = "${{ vars.KUNLA_USAGE_PING }}"' wrangler.toml
           [ -n "${{ vars.KUNLA_COLLECT_PINGS }}" ] && sed -i '/^\[vars\]$/a KUNLA_COLLECT_PINGS = "${{ vars.KUNLA_COLLECT_PINGS }}"' wrangler.toml
           grep -A4 '^\[vars\]' wrangler.toml
+      - name: Mark a test copy
+        env:
+          KUNLA_ENV: ${{ vars.KUNLA_ENV || (github.repository == 'spikinglabs/kunla' && 'staging') || '' }}
+        if: env.KUNLA_ENV != '' && env.KUNLA_ENV != 'production'
+        run: |
+          sed -i "/^\[vars\]$/a KUNLA_ENV = \"$KUNLA_ENV\"" wrangler.toml
+          label="$(printf '%s' "$KUNLA_ENV" | tr -cd 'A-Za-z0-9 _-' | sed 's/./\U&/')"
+          ribbon='<div role="note" style="position:fixed;z-index:2147483647;left:50%;bottom:0;transform:translateX(-50%);padding:2px 10px;border-radius:6px 6px 0 0;background:#b45309;color:#fff;font:600 11px/1.6 system-ui,sans-serif;letter-spacing:.04em;pointer-events:none;opacity:.85">'"$label"' · '"$(git rev-parse --short HEAD)"'</div>'
+          for f in public/index.html public/authorize.html; do sed -i "s|<body\([^>]*\)>|&\n$ribbon|" "$f"; done
+          # A test copy stays out of search results (the page's canonical link already points at kunla.app).
+          sed -i 's|<meta charset="utf-8">|&\n<meta name="robots" content="noindex, nofollow">|' public/index.html
+          grep -c "$label ·" public/index.html
+          grep '^KUNLA_ENV' wrangler.toml
       - name: Pin where the Worker runs
         if: vars.KUNLA_PLACEMENT_REGION != ''
         run: sed -i 's/^mode = "smart"$/region = "${{ vars.KUNLA_PLACEMENT_REGION }}"/' wrangler.toml

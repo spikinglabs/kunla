@@ -28,6 +28,8 @@ export interface Env {
   DB: D1Database;
   ASSETS?: Fetcher;
   LEASE_MINUTES?: string;
+  /** Set by the Deploy workflow from the KUNLA_ENV variable (e.g. "staging") to mark a test copy (KD-85); production when unset. */
+  KUNLA_ENV?: string;
   SETUP_TOKEN?: string;
   PUBLIC_URL?: string;
   /** Licence key for the Enterprise edition (KD-75); unset = Community. */
@@ -99,7 +101,7 @@ const requireAuth = async (c: C, next: () => Promise<void>) => {
 app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], maxAge: 86400 }));
 
 // ---------- public ----------
-app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: VERSION }));
+app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: VERSION, env: c.env.KUNLA_ENV || 'production' }));
 app.get('/api/setup', async (c) => c.json({ set_up: await core.isSetUp(c.env.DB), needs_setup_token: !!c.env.SETUP_TOKEN }));
 app.post('/api/setup', async (c) => {
   const body = await c.req.json<any>();
@@ -243,6 +245,8 @@ app.post('/hooks/github', async (c) => {
 app.get('/hooks/github/app/created', async (c) => c.redirect(await ghapp.created(c.env.DB, c.req.query('code'), c.req.query('state'))));
 app.get('/hooks/github/app/installed', async (c) => c.redirect(await ghapp.installed(c.env.DB, c.req.query('installation_id'), c.req.query('state'), fetch, c.req.query('code'))));
 app.get('/t/:key', (c) => c.redirect(`/app/#/t/${encodeURIComponent(c.req.param('key').toUpperCase())}`));
+// A team's own link (KD-85): /w/ACME opens the app on workspace ACME, or its sign-in.
+app.get('/w/:key', (c) => c.redirect(`/app/#/w/${encodeURIComponent(c.req.param('key').toUpperCase().replace(/[^A-Z0-9]/g, ''))}`));
 
 // ---------- MCP ----------
 // /mcp takes a token from any workspace. /mcp/<KEY> is the same server for one workspace only, so a

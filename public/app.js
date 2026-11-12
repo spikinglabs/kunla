@@ -308,7 +308,7 @@ const isHere = (x) => x.url === location.origin && (!x.ws || x.ws === me?.worksp
 const sameSpace = (a, b) => a.url === b.url && (a.ws ?? null) === (b.ws ?? null);
 function rememberSpace() {
   const list = loadSpaces().filter((x) => !isHere(x));
-  list.unshift({ url: location.origin, ws: me.workspace?.id, token, name: me.workspace?.name ?? location.host });
+  list.unshift({ url: location.origin, ws: me.workspace?.id, key: me.workspace?.key, token, name: me.workspace?.name ?? location.host });
   saveSpaces(list);
 }
 const otherSpaces = () => loadSpaces().filter((x) => !isHere(x));
@@ -2215,6 +2215,23 @@ async function route() {
     }));
     try { localStorage.setItem(TOKEN_KEY, token); } catch {}
     history.replaceState(null, '', location.pathname + '#/');
+  }
+  // A team's own link (/w/ACME, KD-85): open that workspace if this browser is signed in to it.
+  const wsLink = (location.hash || '').match(/^#\/w\/([A-Za-z0-9]+)$/);
+  if (wsLink) {
+    const want = wsLink[1].toUpperCase();
+    history.replaceState(null, '', location.pathname + '#/');
+    const here = loadSpaces().filter((x) => x.url === location.origin);
+    let hit = here.find((x) => x.key === want);
+    // Entries saved before keys were remembered: ask each one which workspace it is.
+    if (!hit) for (const x of here.filter((y) => !y.key)) {
+      try { const m = await (await fetch('/api/me', { headers: { authorization: `Bearer ${x.token}` } })).json(); if (m.workspace?.key === want) { hit = x; break; } } catch {}
+    }
+    if (hit && hit.token !== token) return switchTo(hit);
+    if (!hit) {
+      if (!token) return viewGate().catch((e) => toast(e.message));
+      setTimeout(() => toast(`You're not signed in to ${want} in this browser. Sign out and sign in with your ${want} account, or ask its admin for an invite.`), 300);
+    }
   }
   if (!token) return viewGate().catch((e) => toast(e.message));
   if (!me) {

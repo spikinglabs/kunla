@@ -57,6 +57,10 @@ Open your Worker's URL plus `/app/` and complete setup with the setup token.
 
 **Deploy from GitHub Actions instead:** add secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `KUNLA_SETUP_TOKEN`, and variables `KUNLA_D1_ID`, `KUNLA_AUTO_DEPLOY=true` and optionally `KUNLA_DOMAIN`. Every push to main then deploys.
 
+**Mark a test copy:** set the variable `KUNLA_ENV=staging` (or any name) and the deployed copy shows a small "Staging" ribbon on every page and answers `"env": "staging"` at `/api/health`.
+
+**How Spiking Labs runs it (KD-85):** every merge to main deploys kunla.lab.spikinglabs.com, which is staging (and where the Kunla team does its own work, so changes meet us first). Production is Kunla Cloud at kunla.app, which only takes releases: its control plane pins a `vX.Y.Z` tag and rolls it out to teams.
+
 **Upgrading:** releases are tagged `vX.Y.Z` on GitHub ([Releases](https://github.com/spikinglabs/kunla/releases), notes in [CHANGELOG.md](CHANGELOG.md)). Pull the release you want into your copy and run `npm run deploy` again, or let the included GitHub Action (`.github/workflows/deploy.yml`) deploy it on push. `/api/health` says which version a copy runs. Migrations only ever add tables or columns, so rolling back to the previous Worker version (`npx wrangler rollback`) is safe.
 
 **Move your data:** an admin can download a whole workspace from **Projects → Settings for everything → Download everything** (or `GET /api/export` with an admin token): one JSON file with projects, tasks, history, reviews, rules, people, agents and their tokens. Import it into another Kunla with
@@ -241,7 +245,7 @@ In-chat interactive views (MCP Apps), Tiny Foundation and other knowledge provid
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as described in [SECURITY.md](SECURITY.md).
 
-Maintainers release by running `npm run release:prepare -- X.Y.Z` (sets the version and adds a CHANGELOG.md section from the PRs merged since the last tag), then merging that as a PR titled `Release vX.Y.Z`. The Release workflow tags the merge and publishes the GitHub Release.
+Maintainers release by running `npm run release:prepare -- X.Y.Z` (sets the version and adds a CHANGELOG.md section from the PRs merged since the last tag), then merging that as a PR titled `Release vX.Y.Z`. The Release workflow tags the merge and publishes the GitHub Release. Kunla Cloud (production) then gets a "Pin Kunla vX.Y.Z" PR in spikinglabs/kunla-cloud; merging it rolls the release out to teams. Every other merge to main only reaches staging, kunla.lab.spikinglabs.com (KD-85).
 
 ## License
 

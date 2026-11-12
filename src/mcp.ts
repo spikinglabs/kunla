@@ -46,6 +46,16 @@ const assumption = {
 };
 const notes_title = { type: 'string', description: 'Optional heading for the notes, e.g. "Decisions", "Paper notes", "Findings"' };
 
+// Human titles for each tool, shown by clients and required for Claude's connector directory (KD-87).
+export const TITLES: Record<string, string> = {
+  whoami: 'Who am I', next_task: 'Get the next task', list_tasks: 'Search tasks', get_task: 'Read a task',
+  claim_task: 'Claim a task', heartbeat: 'Keep a claim alive', release_task: 'Release a task', update_task: 'Update a task',
+  log_work: 'Log work', submit_for_review: 'Submit for review', review_task: 'Review a task', record_decision: 'Record a decision',
+  create_task: 'Create a task', create_project: 'Create a project', decision_inbox: 'Decision inbox', answer_question: 'Answer a question',
+  triage_proposal: 'Triage a proposal', team_pulse: 'Team pulse', project_status: 'Project status', relations: 'Task relations',
+  settle_assumption: 'Settle an assumption',
+};
+
 type Tool = { name: string; description: string; inputSchema: object; run: (c: Ctx, a: any) => Promise<unknown>; readOnly?: boolean; ui?: string };
 
 export const TOOLS: Tool[] = [
@@ -321,9 +331,9 @@ export async function handleRpc(c: Ctx, msg: Rpc): Promise<object | null> {
       const ws = { type: 'string', description: `Workspace key to act in: ${g.map((w) => w.key).join(', ')}. Leave out for ${g.find((w) => w.default)?.key ?? 'your default'}. Each call acts in one workspace.` };
       return ok(msg.id, {
         tools: TOOLS.map((t) => ({
-          name: t.name, description: t.description,
+          name: t.name, title: TITLES[t.name], description: t.description,
           inputSchema: multi ? { ...t.inputSchema, properties: { ...((t.inputSchema as any).properties ?? {}), workspace: ws } } : t.inputSchema,
-          annotations: { readOnlyHint: !!t.readOnly, destructiveHint: false, openWorldHint: false },
+          annotations: { title: TITLES[t.name], readOnlyHint: !!t.readOnly, destructiveHint: false, openWorldHint: false },
           // Clients with MCP Apps (claude.ai) render this view; others ignore it and show the text (KD-10).
           ...(t.ui ? { _meta: { ui: { resourceUri: t.ui } } } : {}),
         })),
