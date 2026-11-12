@@ -178,8 +178,9 @@ describe('sign in with GitHub', () => {
     const { start, res } = await github({ login: 'bobgh' }, [{ email: 'old@x.com', verified: true, primary: true }, { email: 'BOB@acme.com', verified: true, primary: false }]);
     expect(new URL(start.location).searchParams.get('scope')).toBe('read:user user:email');
     expect(res.location).toMatch(/^\/app\/#\/use\//);
-    expect((await github({ login: 'bobgh' }, [{ email: 'bob@acme.com', verified: false, primary: true }])).res.location).toMatch(/signin_error=/);
-    expect((await call(env, 'PATCH', `/api/members/${bob.id}`, admin, { github_login: 'bobgh' })).status).toBe(200);
+    expect((await github({ login: 'stranger' }, [{ email: 'bob@acme.com', verified: false, primary: true }])).res.location).toMatch(/signin_error=/);
+    // Signing in with GitHub linked the login (KD-86), so next time the login alone is enough.
+    expect((await env.DB.prepare('SELECT github_login FROM members WHERE id = ?').bind(bob.id).first()).github_login).toBe('bobgh');
     expect((await github({ login: 'BobGH' }, [])).res.location).toMatch(/^\/app\/#\/use\//);
   });
 

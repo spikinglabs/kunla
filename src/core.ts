@@ -1651,6 +1651,63 @@ export async function whoami(c: Ctx) {
   };
 }
 
+// ---------- your profile (KD-86) ----------
+
+/** Words for where a token came from, from its label. */
+function signInLabel(label: string): string {
+  if (label.startsWith('sign-in:')) {
+    const via = label.slice(8);
+    return via === 'email' ? 'Emailed sign-in link' : `Signed in with ${via[0].toUpperCase()}${via.slice(1)}`;
+  }
+  if (label.startsWith('oauth:')) return 'Chat connector';
+  if (label === 'web') return 'Personal token';
+  return label === 'human' ? 'Personal token' : label;
+}
+
+/**
+ * The signed-in person's own page: who they are here, how they sign in, where they are signed in (one row per
+ * live token, never the token itself), the agents they sponsor and their own numbers. `currentHash` is
+ * sha256 of the caller's token, so the page can say which row is this browser.
+ */
+export async function profile(c: Ctx, currentHash: string) {
+  if (c.me.kind !== 'human') throw new KunlaError(403, 'Profiles are for people; agents see themselves with whoami.');
+  const [me, tokens, agents, stats] = await Promise.all([
+    c.db.prepare('SELECT email, created_at FROM members WHERE id = ?').bind(c.me.id).first<{ email: string | null; created_at: string }>(),
+    c.db.prepare(`SELECT id, label, created_at, last_used_at, token_hash FROM tokens WHERE member_id = ? AND revoked_at IS NULL ORDER BY COALESCE(last_used_at, created_at) DESC`)
+      .bind(c.me.id).all<{ id: string; label: string; created_at: string; last_used_at: string | null; token_hash: string }>(),
+    c.db.prepare(`SELECT m.id, m.name, m.platform, m.continuous, m.created_at,
+         (SELECT MAX(e.created_at) FROM events e WHERE e.actor_id = m.id) AS last_active,
+         (SELECT COUNT(*) FROM tokens t WHERE t.member_id = m.id AND t.revoked_at IS NULL) AS connections,
+         (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status = 'done') AS done,
+         (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id = m.id AND t.status IN ('in_progress','blocked','review')) AS active
+       FROM members m WHERE m.sponsor_id = ? AND m.kind = 'ai' AND m.removed_at IS NULL AND m.space_id = ? ORDER BY m.created_at`)
+      .bind(c.me.id, c.space).all<any>(),
+    c.db.prepare(`SELECT
+         (SELECT COUNT(*) FROM tasks WHERE assignee_id = ?1 AND status = 'done' AND space_id = ?2) AS done,
+         (SELECT COUNT(*) FROM tasks WHERE assignee_id = ?1 AND status IN ('in_progress','blocked','review') AND space_id = ?2) AS active,
+         (SELECT COUNT(*) FROM reviews r JOIN tasks t ON t.id = r.task_id WHERE r.reviewer_id = ?1 AND t.space_id = ?2) AS reviewed,
+         (SELECT COUNT(*) FROM tasks WHERE created_by = ?1 AND space_id = ?2) AS created`)
+      .bind(c.me.id, c.space).first<{ done: number; active: number; reviewed: number; created: number }>(),
+  ]);
+  return {
+    id: c.me.id, name: c.me.name, roles: parseList(c.me.roles), email: me?.email ?? null, github_login: c.me.github_login ?? null,
+    member_since: me?.created_at ?? c.me.created_at,
+    sign_ins: tokens.results.map((t) => ({ id: t.id, how: signInLabel(t.label), created_at: t.created_at, last_used_at: t.last_used_at, current: t.token_hash === currentHash })),
+    agents: agents.results.map(({ continuous: cont, ...a }) => ({ ...a, continuous: !!continuous.parseSettings(cont)?.on })),
+    stats: stats ?? { done: 0, active: 0, reviewed: 0, created: 0 },
+  };
+}
+
+/** Sign out one place: revoke one of your own tokens. The one this browser uses is signed out with Sign out instead. */
+export async function revokeSignIn(c: Ctx, tokenId: string, currentHash: string) {
+  if (c.me.kind !== 'human') throw new KunlaError(403, 'Only people manage their sign-ins.');
+  const t = await c.db.prepare('SELECT id, token_hash FROM tokens WHERE id = ? AND member_id = ? AND revoked_at IS NULL').bind(tokenId, c.me.id).first<{ id: string; token_hash: string }>();
+  if (!t) throw new KunlaError(404, 'No such sign-in.');
+  if (t.token_hash === currentHash) throw new KunlaError(400, 'That is this browser. Use Sign out instead.');
+  await c.db.prepare('UPDATE tokens SET revoked_at = ? WHERE id = ?').bind(nowIso(c), t.id).run();
+  return { id: t.id, revoked: true };
+}
+
 /** Continuous status for the calling agent with what it needs to word it (sponsor, platform, wake-up). */
 export async function myContinuous(c: Ctx) {
   if (c.me.kind !== 'ai' || !continuous.parseSettings(c.me.continuous)?.on) return null;

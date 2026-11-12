@@ -322,6 +322,8 @@ api.post('/tools/:name', async (c) => {
 });
 
 api.get('/me', async (c) => c.json(await core.whoami(c.get('ctx'))));
+api.get('/profile', async (c) => c.json(await core.profile(c.get('ctx'), await core.sha256(bearer(c)))));
+api.delete('/profile/sign-ins/:id', async (c) => c.json(await core.revokeSignIn(c.get('ctx'), c.req.param('id'), await core.sha256(bearer(c)))));
 api.get('/inbox', async (c) => c.json(await core.inbox(c.get('ctx'))));
 api.get('/next', async (c) => c.json(await core.nextTask(c.get('ctx'), c.req.query('project'))));
 api.get('/status', async (c) => c.json(await core.projectStatus(c.get('ctx'), c.req.query('project'))));

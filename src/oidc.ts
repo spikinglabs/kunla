@@ -206,6 +206,12 @@ export async function membersFor(db: D1Database, emails: string[], ghLogin: stri
   const mine = ms.filter((m) => !seen.has(m.space_id) && seen.add(m.space_id));
   const who = emails[0] ?? `@${ghLogin}`;
   if (!mine.length) throw new KunlaError(403, `Nobody with ${who} is on this Kunla yet. Ask an admin to add you with that email (Team → Add a person), then sign in again.`);
+  // Signing in with GitHub proves the login, so it links the account (KD-86): nobody types their GitHub username.
+  // Merges from it then count as their approval. Skipped where someone else in that workspace already has it.
+  if (via === 'github' && ghLogin) await db.batch(mine.map((m) => db.prepare(
+    `UPDATE members SET github_login = ? WHERE id = ? AND (github_login IS NULL OR github_login != ?)
+       AND NOT EXISTS (SELECT 1 FROM members o WHERE o.space_id = ? AND o.id != ? AND o.removed_at IS NULL AND lower(o.github_login) = lower(?))`)
+    .bind(ghLogin, m.id, ghLogin, m.space_id, m.id, ghLogin)));
   const tokens: string[] = [];
   for (const m of mine) tokens.push(await issueToken(db, m.id, `sign-in:${via}`));
   return { member: mine[0], token: tokens[0], tokens };
