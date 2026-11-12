@@ -291,7 +291,7 @@ function renderShell(view) {
   $('nav').innerHTML = NAV.map(link).join('');
   $('tabbar').innerHTML = NAV.map(link).join('');
   $('me').innerHTML = av({ name: me.name, kind: 'human' });
-  $('me').title = `${me.name}: workspaces, appearance and sign out`;
+  $('me').title = `${me.name}: your profile, workspaces and sign out`;
   $('space').innerHTML = html`<span class="sp-dot"></span><span class="sp-name">${me.workspace?.name ?? 'Workspace'}</span><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
 }
 
@@ -329,7 +329,7 @@ const switchTo = (sp) => { closePalette(); location.href = `${sp.url === locatio
 async function openSpaces() {
   const box = $('palette');
   box.hidden = false;
-  box.innerHTML = html`<div class="pal spaces" role="dialog" aria-label="Workspaces"><div class="pad stack" style="gap:6px"><span class="eyebrow">Workspaces</span>
+  box.innerHTML = html`<div class="pal spaces" role="dialog" aria-label="Workspaces">${raw(me.kind === 'human' ? html`<a class="pad row me-link" href="#/me" data-act="click:profile">${raw(av({ name: me.name, kind: 'human' }))}<div class="grow"><div class="t">${me.name}</div><small class="muted">Your profile: name, sign-ins, agents</small></div><span aria-hidden="true">›</span></a>` : '')}<div class="pad stack" style="gap:6px"><span class="eyebrow">Workspaces</span>
       <p class="muted" style="font-size:13.5px">Each one keeps its own people, agents and data. Only this browser knows you belong to all of them.</p></div>
     <div class="opts" id="sp-list"><div class="opt on"><span class="ic">${initials(me.workspace?.name)}</span><div class="grow"><div class="t">${me.workspace?.name}</div><small>${me.workspace?.key} · this one · ${plural(projects.length, 'project')} · ${plural(decisionCount, 'decision')}</small></div></div></div>
     ${raw(me.roles?.includes('admin') ? html`<form class="pad stack" data-act="submit:create" style="border-top:1px solid var(--rule)"><div class="label">New workspace</div>
@@ -370,6 +370,7 @@ async function openSpaces() {
       });
     },
     out: () => { saveSpaces(loadSpaces().filter((x) => !isHere(x))); box.hidden = true; signOut(); },
+    profile: () => { closePalette(); if (location.hash === '#/me') route(); else location.hash = '#/me'; },
   });
   const rows = await spaceCounts();
   const list = $('sp-list');
@@ -1714,6 +1715,8 @@ const nudgeHandlers = (readyFree, again) => ({
 
 function showManage(m) {
   const self = m.id === me.id;
+  // Opened from Team or from your profile (KD-86): redraw the page it came from.
+  const again = () => (location.hash.startsWith('#/me') ? viewMe() : viewTeam());
   openSheet(html`<div class="sheet-body stack">
     <div><h2>${m.name}</h2><p class="muted">${kindLine(m)}</p></div>
     <form class="stack" data-act="submit:rename"><div class="field"><label for="mm-n">Name</label><input id="mm-n" name="name" required value="${m.name}" maxlength="80"></div>
@@ -1747,14 +1750,14 @@ function showManage(m) {
       const on = !!f.querySelector('[name=on]').checked;
       const r = await api('PUT', `/api/members/${m.id}/continuous`, limitBody(f, on));
       toast(r.continuous.on ? `${m.name} now works through Ready tasks one by one. Kunla tells it so in every reply.` : `Continuous mode is off for ${m.name}.`);
-      closeSheet(true); viewTeam();
+      closeSheet(true); again();
     },
     setupWake: () => { const el = $('mw-u'); el?.scrollIntoView({ block: 'center' }); el?.focus(); },
     wakeTest: async () => {
       const r = await api('POST', `/api/members/${m.id}/wake/test`);
       toast(r.ok ? `Test call delivered (HTTP ${r.status}).` : `Test call failed: ${r.error}.`);
     },
-    wakeOff: async () => { await api('DELETE', `/api/members/${m.id}/wake`); m.wake = null; toast(`${m.name} no longer gets wake-up calls.`); closeSheet(true); viewTeam(); },
+    wakeOff: async () => { await api('DELETE', `/api/members/${m.id}/wake`); m.wake = null; toast(`${m.name} no longer gets wake-up calls.`); closeSheet(true); again(); },
     email: async (f) => {
       const r = await api('PATCH', `/api/members/${m.id}`, { email: formData(f).email.trim() || null });
       m.email = r.email; const x = members.find((y) => y.id === m.id); if (x) x.email = r.email;
@@ -1762,7 +1765,7 @@ function showManage(m) {
     },
     rename: async (f) => {
       const r = await api('PATCH', `/api/members/${m.id}`, { name: formData(f).name });
-      toast(`Renamed to ${r.name}.`); closeSheet(true); if (self) me.name = r.name; viewTeam();
+      toast(`Renamed to ${r.name}.`); closeSheet(true); if (self) me.name = r.name; again();
     },
     rotate: async (el) => {
       if (el.dataset.sure !== '1') { el.dataset.sure = '1'; el.textContent = 'Old token stops working. Tap again'; return; }
@@ -1773,8 +1776,97 @@ function showManage(m) {
     remove: async (el) => {
       if (el.dataset.sure !== '1') { el.dataset.sure = '1'; el.textContent = `Remove ${m.name}? Tap again`; return; }
       await api('DELETE', `/api/members/${m.id}`);
-      toast(`${m.name} removed.`); closeSheet(true); members = members.filter((x) => x.id !== m.id); viewTeam();
+      toast(`${m.name} removed.`); closeSheet(true); members = members.filter((x) => x.id !== m.id); again();
     },
+  });
+}
+
+// ---------- your profile (KD-86) ----------
+// One place for what is yours: name, how you sign in, where you are signed in, the agents you sponsor,
+// your numbers, appearance and sign out. Before this they were spread over Team, Connect GitHub and the workspace menu.
+const SIGNIN_NAME = { google: 'Google', microsoft: 'Microsoft', github: 'GitHub', email: 'an emailed link' };
+async function viewMe() {
+  renderShell('me');
+  if (me.kind !== 'human') { location.hash = '#/'; return; }
+  const [p, edition] = await Promise.all([api('GET', '/api/profile'), api('GET', '/api/edition').catch(() => null)]);
+  const admin = p.roles.includes('admin');
+  const ways = (edition?.sign_in || []).map((x) => SIGNIN_NAME[x.id] || x.label);
+  const waysLine = ways.length ? `You can sign in here with ${ways.length > 1 ? ways.slice(0, -1).join(', ') + ' or ' + ways.at(-1) : ways[0]}${p.email ? `, using ${p.email}` : ''}, or with your personal token.` : 'This Kunla signs people in with a personal token.';
+  const others = otherSpaces();
+  const signRow = (t) => html`<div class="pfrow"><div class="grow"><div class="t">${t.how}${raw(t.current ? ' <span class="pill on sm">This browser</span>' : '')}</div>
+      <small class="muted">${t.last_used_at ? 'Last used ' + agoLong(t.last_used_at) : 'Not used yet'} · since ${new Date(t.created_at).toLocaleDateString()}</small></div>
+      ${raw(t.current ? '' : html`<button class="btn quiet sm" data-act="click:revoke" data-id="${t.id}">Sign out</button>`)}</div>`;
+  const agentRow = (a) => html`<div class="pfrow">${raw(av({ name: a.name, kind: 'ai' }))}<div class="grow"><div class="t">${a.name}</div>
+      <small class="muted">${PLATFORM[a.platform] || a.platform || 'Agent'} · ${a.last_active ? 'active ' + agoLong(a.last_active) : 'not active yet'} · ${plural(a.done, 'task')} done${a.active ? ` · ${a.active} on the go` : ''}${a.continuous ? ' · continuous' : ''}${a.connections ? '' : ' · not connected'}</small></div>
+      <button class="btn sm" data-act="click:manage" data-id="${a.id}">Manage</button></div>`;
+  $app.innerHTML = html`<div class="head profile-head"><div class="row" style="flex-wrap:nowrap;gap:18px">${raw(av({ name: p.name, kind: 'human' }, 'xl'))}
+      <div><h1>${p.name}</h1><p class="sub">${admin ? 'Admin' : 'Member'} of ${me.workspace?.name} · here since ${new Date(p.member_since).toLocaleDateString([], { month: 'long', year: 'numeric' })}${p.github_login ? ` · @${p.github_login} on GitHub` : ''}</p></div></div></div>
+    <div class="profile-grid">
+      <div class="card pad stack">
+        <h2>About you</h2>
+        <form class="stack" style="gap:6px" data-act="submit:rename"><div class="field"><label for="pf-n">Name</label><input id="pf-n" name="name" required maxlength="80" value="${p.name}" autocomplete="name"></div>
+          <p class="muted hintline">How people and agents see you in ${me.workspace?.name}.</p><div><button class="btn sm">Save name</button></div></form>
+        <form class="stack" style="gap:6px" data-act="submit:email"><div class="field"><label for="pf-e">Work email</label><input id="pf-e" name="email" type="email" autocomplete="email" placeholder="${admin ? 'name@company.com' : 'Not set'}" value="${p.email || ''}" ${admin ? '' : 'readonly'}></div>
+          <p class="muted hintline">${admin ? 'Google, Microsoft and emailed sign-in links match this address.' : 'Google, Microsoft and emailed sign-in links match this address. Only an admin can change it, so nobody can take over someone else’s.'}</p>${raw(admin ? '<div><button class="btn sm">Save email</button></div>' : '')}</form>
+        <form class="stack" style="gap:6px" data-act="submit:github"><div class="field"><label for="pf-g">GitHub username</label><input id="pf-g" name="login" autocomplete="off" placeholder="e.g. octocat" value="${p.github_login || ''}"></div>
+          <p class="muted hintline">When a PR is merged from this account, Kunla counts it as your approval of the task.</p><div><button class="btn sm">Save</button></div></form>
+      </div>
+      <div class="stack" style="gap:14px">
+        <div class="card pad stack">
+          <div class="section-t"><h2>Where you're signed in</h2><span class="muted" style="font-size:13px">${plural(p.sign_ins.length, 'place')}</span></div>
+          <p class="muted hintline">${waysLine}</p>
+          <div class="plist">${join(p.sign_ins.map(signRow))}</div>
+          <div class="row"><button class="btn sm" data-act="click:rotate">Sign out everywhere and get a new token</button></div>
+        </div>
+        <div class="card pad stack">
+          <h2>Your work in ${me.workspace?.name}</h2>
+          <div class="stats four"><div><b>${p.stats.done}</b><small>done</small></div><div><b>${p.stats.active}</b><small>on the go</small></div><div><b>${p.stats.reviewed}</b><small>reviews</small></div><div><b>${p.stats.created}</b><small>tasks filed</small></div></div>
+          <div class="row"><a class="btn sm quiet" href="#/tasks">Open Tasks</a></div>
+        </div>
+      </div>
+      <div class="card pad stack">
+        <div class="section-t"><h2>Agents you sponsor</h2><button class="btn sm go" data-act="click:connect">Connect an agent</button></div>
+        ${raw(p.agents.length ? html`<div class="plist">${join(p.agents.map(agentRow))}</div>` : html`<p class="muted">None yet. An agent works under its own name and you answer for it.</p>`)}
+      </div>
+      <div class="card stack" style="gap:0">
+        <div class="pad stack" style="gap:8px"><h2>Workspaces</h2>
+          <p class="muted hintline">${others.length ? `This browser also knows ${plural(others.length, 'other workspace')}: ${others.map((x) => x.name).join(', ')}.` : 'This browser only knows this workspace.'}</p>
+          <div class="row"><button class="btn sm" data-act="click:spaces">Switch or add a workspace</button></div></div>
+        ${raw(themePicker())}
+        <div class="pad row" style="border-top:1px solid var(--rule)"><span class="grow muted" style="font-size:13.5px">Signs this browser out of ${me.workspace?.name}.</span><button class="btn quiet sm" data-act="click:out">Sign out</button></div>
+      </div>
+    </div>`;
+  bind($app, {
+    rename: async (f) => {
+      const r = await api('PATCH', `/api/members/${me.id}`, { name: formData(f).name });
+      me.name = r.name; toast(`Saved. You're ${r.name} now.`); viewMe();
+    },
+    email: async (f) => {
+      if (!admin) return;
+      const r = await api('PATCH', `/api/members/${me.id}`, { email: formData(f).email.trim() || null });
+      toast(r.email ? `Saved. You can sign in as ${r.email}.` : 'Email removed.'); viewMe();
+    },
+    github: async (f) => {
+      const r = await api('PATCH', `/api/members/${me.id}`, { github_login: formData(f).login.trim() });
+      me.github_login = r.github_login;
+      toast(r.github_login ? `Saved. Merges from @${r.github_login} now count as your approval.` : 'Removed. Merges no longer count as your approval.'); viewMe();
+    },
+    revoke: async (el) => {
+      if (el.dataset.sure !== '1') { el.dataset.sure = '1'; el.textContent = 'Tap again'; return; }
+      await api('DELETE', `/api/profile/sign-ins/${el.dataset.id}`); toast('Signed out there.'); viewMe();
+    },
+    rotate: async (el) => {
+      if (el.dataset.sure !== '1') { el.dataset.sure = '1'; el.textContent = 'Every other device signs out. Tap again'; return; }
+      const r = await api('POST', `/api/members/${me.id}/token`);
+      token = r.token; try { localStorage.setItem(TOKEN_KEY, token); } catch {}
+      rememberSpace();
+      showToken({ ...r, reconnected: false, member: { ...r.member, name: `${r.member.name}: new token` } }, 'human');
+      viewMe();
+    },
+    manage: async (el) => { const all = await api('GET', '/api/members'); members = all; const m = all.find((x) => x.id === el.dataset.id); if (m) showManage(m); },
+    connect: () => showConnect('ai'),
+    spaces: () => openSpaces(),
+    out: () => { saveSpaces(loadSpaces().filter((x) => !isHere(x))); signOut(); },
   });
 }
 
@@ -1943,12 +2035,12 @@ async function viewProjects() {
       </form>
       <div class="wsbox-list">
       ${raw(projects.length ? '' : html`<p class="muted wsbox-empty">No projects yet. Tasks live straight in ${wsName} until you need one.</p>`)}
-      ${join(projects.map((p, i) => { const rs = rules.filter((r) => r.project === p.key); return html`<form class="prow proj ${p.focus ? 'focused' : ''}" data-act="submit:save" data-key="${p.key}">
-        <div class="prow-main">
+      ${join(projects.map((p, i) => { const rs = rules.filter((r) => r.project === p.key); return html`<form class="pfrow proj ${p.focus ? 'focused' : ''}" data-act="submit:save" data-key="${p.key}">
+        <div class="pfrow-main">
           <span class="pill on mono">${p.key}</span>
           <input name="name" value="${p.name}" aria-label="Project name" class="title-in">
-          <span class="prow-when muted">${p.ends_at ? endsIn(p.ends_at) : 'ongoing'}</span>
-          <label class="prow-focus" title="Focused projects are offered to agents first"><input type="checkbox" class="switch" name="focus" ${p.focus ? 'checked' : ''}><span>Focus</span></label>
+          <span class="pfrow-when muted">${p.ends_at ? endsIn(p.ends_at) : 'ongoing'}</span>
+          <label class="pfrow-focus" title="Focused projects are offered to agents first"><input type="checkbox" class="switch" name="focus" ${p.focus ? 'checked' : ''}><span>Focus</span></label>
           <a class="btn quiet sm" href="#/tasks/${p.key}">Tasks</a>
           <button type="button" class="icon-btn" data-act="click:up" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
         </div>
@@ -2034,7 +2126,7 @@ async function openPalette(prefill = '') {
   input.value = prefill;
   input.focus();
   let sel = 0; let opts = [];
-  const pages = [['Briefing', '#/'], ['Work map', '#/map'], ['Tasks', '#/tasks'], ['Stuck tasks', '#/tasks', 'stuck'], ['Team', '#/team'], ['Projects', '#/projects'], ['Connect an agent', '#/team/connect'], ['Use Kunla in claude.ai', '#/team/claude-ai'], ['Connect GitHub', '#/team/github'],
+  const pages = [['Briefing', '#/'], ['Work map', '#/map'], ['Tasks', '#/tasks'], ['Stuck tasks', '#/tasks', 'stuck'], ['Team', '#/team'], ['Projects', '#/projects'], ...(me.kind === 'human' ? [['Your profile', '#/me']] : []), ['Connect an agent', '#/team/connect'], ['Use Kunla in claude.ai', '#/team/claude-ai'], ['Connect GitHub', '#/team/github'],
     ...projects.map((p) => [`${p.name} tasks`, `#/tasks/${p.key}`]), ...savedViews().map((v) => [`View: ${v.name}`, v.hash, v])];
   const close = () => { box.hidden = true; box.innerHTML = ''; };
   const render = () => {
@@ -2137,7 +2229,7 @@ async function route() {
   const [, view = '', arg, arg2] = (location.hash || '#/').split('/');
   const render = {
     '': viewBriefing, map: () => (arg === 'relations' ? viewRelations(decodeURIComponent(arg2 || '')) : viewMap()), tasks: () => viewTasks(arg), team: () => viewTeam(arg), projects: viewProjects, playbook: viewProjects,
-    t: () => viewTask(decodeURIComponent(arg || '')),
+    t: () => viewTask(decodeURIComponent(arg || '')), me: viewMe,
   }[view] || viewBriefing;
   if (!$app.innerHTML) $app.innerHTML = '<div class="skel"></div>';
   try { await render(); } catch (e) { toast(e.message); }
