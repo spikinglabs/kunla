@@ -1876,7 +1876,12 @@ function showClaudeAi() {
 // ---------- projects: the workspace, its projects, focus, playbooks, rules ----------
 async function viewProjects() {
   renderShell('projects');
-  const [rules, ws] = await Promise.all([api('GET', '/api/rules'), api('GET', `/api/projects/${me.workspace.key}`), loadKinds()]);
+  const isAdmin = me.roles?.includes('admin');
+  const [rules, ws, , ms] = await Promise.all([api('GET', '/api/rules'), api('GET', `/api/projects/${me.workspace.key}`), loadKinds(), isAdmin ? api('GET', '/api/signin/microsoft').catch(() => null) : null]);
+  // Microsoft sign-in with no fixed directory: each workspace's admin lists the directories it trusts (KD-70).
+  const msField = ms?.available && !ms.fixed_tenant ? html`<div class="field"><label for="ms-ws">Microsoft sign-in</label>
+    <p class="muted" style="margin:0 0 6px;font-size:13px">Work accounts from these Microsoft directories can sign in to ${me.workspace.name} when their email matches a person here. Give each directory's tenant id, one per line (Microsoft Entra admin center → Overview). Empty means nobody signs in to ${me.workspace.name} with Microsoft.</p>
+    <textarea id="ms-ws" name="ms_tenants" rows="2" spellcheck="false" style="font-family:var(--mono)" placeholder="72f988bf-86f1-41af-91ab-2d7cd011db47">${(ms.tenants || []).join('\n')}</textarea></div>` : '';
   // Kinds of work, one per line: built-ins by name ("Research"); your own as "Name: what to hand in".
   const kindLines = (list) => (list || []).map((d) => (d.builtin && !d.custom_hand_in ? d.label : `${d.label}: ${d.hand_in}`)).join('\n');
   const ownLines = (own) => (own || []).map((d) => {
@@ -1930,6 +1935,7 @@ async function viewProjects() {
             ${raw(kindsField('kd-ws', wsKinds?.own, kindsInfo?.defaults, 'Leave it empty to use Kunla’s kinds (shown faintly). Each project can set its own.'))}
             <div><div class="label" style="margin-bottom:6px">Rules for everyone</div>${raw(ruleRows(wsRules))}</div>
             ${raw(digestField(ws?.digest))}
+            ${raw(msField)}
             ${raw(me.roles?.includes('admin') ? html`<div class="field"><div class="label" style="margin-bottom:6px">Your data</div>
               <p class="muted" style="margin:0 0 6px;font-size:13px">One file with everything in ${wsName}: projects, tasks, history, reviews, rules, people, agents and their tokens. Another Kunla can import it, so the team can move without reconnecting anyone. Keep it safe like a password.</p>
               <div class="row"><button type="button" class="btn sm quiet" data-act="click:exportws">Download everything</button></div></div>` : '')}
@@ -1971,6 +1977,7 @@ async function viewProjects() {
       const d = formData(f);
       const digest = { on: !!d.digest_on, day: Number(d.digest_day ?? 1), format: d.digest_format || 'slack', ...((d.digest_url || '').trim() ? { url: d.digest_url.trim() } : {}) };
       await api('PATCH', `/api/projects/${me.workspace.key}`, { name: d.name, playbook: d.playbook, kinds: kindsValue(d.kinds), repo_url: (d.repo_url || '').trim() || null, repo_forge: d.repo_forge || null, digest });
+      if (d.ms_tenants !== undefined) await api('PUT', '/api/signin/microsoft', { tenants: d.ms_tenants });
       await refresh(); toast('Saved for the whole workspace.'); viewProjects();
     },
     digestpreview: async () => { const el = $('digest-preview'); const r = await api('GET', '/api/digest'); el.textContent = r.text; el.hidden = false; },

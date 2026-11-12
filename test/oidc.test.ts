@@ -40,7 +40,7 @@ describe('sign in with Google or Microsoft', () => {
   it('offers only the providers that are set up', async () => {
     expect((await call(env, 'GET', '/api/edition')).body.sign_in.map((p: any) => p.id)).toEqual(['google']);
     env.MICROSOFT_CLIENT_ID = 'mid'; env.MICROSOFT_CLIENT_SECRET = 'ms';
-    env.MICROSOFT_TENANT = 'common'; // any directory could vouch for any email: refused
+    env.MICROSOFT_TENANT = 'common'; // any directory could vouch for any email: hidden until a workspace trusts one
     expect((await call(env, 'GET', '/api/edition')).body.sign_in.map((p: any) => p.id)).toEqual(['google']);
     env.MICROSOFT_TENANT = 'tenant-1';
     expect((await call(env, 'GET', '/api/edition')).body.sign_in.map((p: any) => p.id)).toEqual(['google', 'microsoft']);
@@ -81,6 +81,47 @@ describe('sign in with Google or Microsoft', () => {
     expect(sent.url).toBe('https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token');
     expect(res.location).toMatch(/^\/app\/#\/use\//);
     expect((await signIn({ ...claims, iss: 'https://login.microsoftonline.com/other/v2.0' }, 'microsoft')).res.location).toMatch(/signin_error=/);
+  });
+
+  it('without a fixed tenant, each workspace lists the Microsoft directories it trusts (KD-70)', async () => {
+    const T1 = '11111111-1111-4111-8111-111111111111', T2 = '22222222-2222-4222-8222-222222222222';
+    Object.assign(env, { MICROSOFT_CLIENT_ID: 'mid', MICROSOFT_CLIENT_SECRET: 'ms' });
+    expect((await call(env, 'GET', '/api/signin/microsoft', admin)).body).toEqual({ available: true, fixed_tenant: null, tenants: [] });
+    expect((await call(env, 'GET', '/api/edition')).body.sign_in.map((p: any) => p.id)).toEqual(['google']);
+    // Only admins, only tenant ids, never the personal-accounts tenant.
+    expect((await call(env, 'PUT', '/api/signin/microsoft', bob.token, { tenants: [T1] })).status).toBe(403);
+    expect((await call(env, 'PUT', '/api/signin/microsoft', admin, { tenants: 'acme.com' })).status).toBe(400);
+    expect((await call(env, 'PUT', '/api/signin/microsoft', admin, { tenants: ['9188040d-6c67-4c5b-b112-36a304b66dad'] })).status).toBe(400);
+    expect((await call(env, 'PUT', '/api/signin/microsoft', admin, { tenants: `${T1.toUpperCase()}\n${T1}` })).body.tenants).toEqual([T1]);
+    expect((await call(env, 'GET', '/api/edition')).body.sign_in.map((p: any) => p.id)).toEqual(['google', 'microsoft']);
+    // A second workspace with Bob in it trusts another directory.
+    const com = (await call(env, 'POST', '/api/workspaces', admin, { name: 'Community', key: 'COM' })).body.token;
+    await call(env, 'POST', '/api/members', com, { name: 'Bobby', kind: 'human', email: 'bob@acme.com' });
+    await call(env, 'PUT', '/api/signin/microsoft', com, { tenants: [T2] });
+
+    const claims = (tid: string) => ({ iss: `https://login.microsoftonline.com/${tid}/v2.0`, tid, aud: 'mid', exp: Date.now() / 1000 + 300, preferred_username: 'bob@acme.com' });
+    const { res, sent, start } = await signIn(claims(T1), 'microsoft');
+    expect(new URL(start.location).pathname).toBe('/organizations/oauth2/v2.0/authorize');
+    expect(sent.url).toBe('https://login.microsoftonline.com/organizations/oauth2/v2.0/token');
+    // Only the workspace that trusts T1 lets Bob in.
+    const m = res.location.match(/^\/app\/#\/use\/([^/]+)$/)!;
+    expect((await call(env, 'GET', '/api/me', decodeURIComponent(m[1]))).body.workspace.key).toBe('WS');
+    const other = (await signIn(claims(T2), 'microsoft')).res.location.match(/^\/app\/#\/use\/([^/]+)$/)!;
+    expect((await call(env, 'GET', '/api/me', decodeURIComponent(other[1]))).body.workspace.key).toBe('COM');
+    // A directory nobody trusts, a token whose issuer doesn't match its tenant, and personal accounts are refused.
+    const T3 = '33333333-3333-4333-8333-333333333333';
+    expect((await signIn(claims(T3), 'microsoft')).res.location).toContain(encodeURIComponent('No workspace here trusts'));
+    expect((await signIn({ ...claims(T1), iss: `https://login.microsoftonline.com/${T3}/v2.0` }, 'microsoft')).res.location).toMatch(/signin_error=/);
+    expect((await signIn(claims('9188040d-6c67-4c5b-b112-36a304b66dad'), 'microsoft')).res.location).toMatch(/signin_error=/);
+  });
+
+  it('routes Microsoft through Kunla Cloud when it has no fixed tenant', async () => {
+    Object.assign(env, { MICROSOFT_CLIENT_ID: 'mid', MICROSOFT_CLIENT_SECRET: 'ms', KUNLA_TENANT: 'acme', KUNLA_CLOUD_HOOK: 'https://cloud.test/hooks/kunla' });
+    const q = new URL((await call(env, 'GET', '/auth/microsoft/start')).location).searchParams;
+    expect(q.get('redirect_uri')).toBe('https://cloud.test/auth/microsoft/callback');
+    expect(q.get('state')).toMatch(/^acme\./);
+    env.MICROSOFT_TENANT = 'tenant-1'; // a team's own directory and app: straight back
+    expect(new URL((await call(env, 'GET', '/auth/microsoft/start')).location).searchParams.get('redirect_uri')).toBe('https://kunla.test/auth/microsoft/callback');
   });
 
   it('only admins set emails, one person per email', async () => {
