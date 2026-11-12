@@ -28,6 +28,8 @@ export interface Env {
   DB: D1Database;
   ASSETS?: Fetcher;
   LEASE_MINUTES?: string;
+  /** "staging" on the staging copy the Deploy workflow makes (KD-85); production when unset. */
+  KUNLA_ENV?: string;
   SETUP_TOKEN?: string;
   PUBLIC_URL?: string;
   /** Licence key for the Enterprise edition (KD-75); unset = Community. */
@@ -99,7 +101,7 @@ const requireAuth = async (c: C, next: () => Promise<void>) => {
 app.use('/api/*', cors({ origin: '*', allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], maxAge: 86400 }));
 
 // ---------- public ----------
-app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: VERSION }));
+app.get('/api/health', (c) => c.json({ ok: true, name: 'kunla', version: VERSION, env: c.env.KUNLA_ENV || 'production' }));
 app.get('/api/setup', async (c) => c.json({ set_up: await core.isSetUp(c.env.DB), needs_setup_token: !!c.env.SETUP_TOKEN }));
 app.post('/api/setup', async (c) => {
   const body = await c.req.json<any>();

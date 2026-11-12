@@ -1,33 +1,72 @@
-# Deploys your copy of Kunla to your Cloudflare account. Runs on demand, or on every push to main if you
-# set the repository variable KUNLA_AUTO_DEPLOY to "true". Needs secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID,
-# and the repository variable KUNLA_D1_ID (from `wrangler d1 create kunla`) unless wrangler.toml already has the id.
-# Optional secret KUNLA_SETUP_TOKEN: only someone who knows it can run first-time setup.
-# Optional variable KUNLA_DOMAIN (e.g. kunla.example.com): serve Kunla on that hostname as a Workers custom
+# Deploys Kunla to your Cloudflare account, to production or to a staging copy (KD-85).
+#
+# Two ways to run it:
+# - Production only (the default for copies): runs on demand, or on every push to main if you set the repository
+#   variable KUNLA_AUTO_DEPLOY to "true".
+# - Staging + releases (on for spikinglabs/kunla; elsewhere set the variable KUNLA_STAGING to "true"):
+#   every push to main deploys a separate staging Worker (kunla-staging) with its own D1 database, and production
+#   is only deployed when the Release workflow tags a new version. Turn it off with KUNLA_STAGING=false.
+# You can always run it by hand from the Actions tab: pick staging or production and any commit, branch or tag
+# (e.g. v0.1.0 to roll production back to that release).
+#
+# Needs secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, and the repository variable KUNLA_D1_ID
+# (from `wrangler d1 create kunla`) unless wrangler.toml already has the id.
+# Optional secret KUNLA_SETUP_TOKEN: only someone who knows it can run first-time setup (staging uses it too).
+# Optional variable KUNLA_DOMAIN (e.g. kunla.example.com): serve production on that hostname as a Workers custom
 # domain. The domain's zone must be in the same Cloudflare account, and the API token needs Zone: Workers Routes
 # Edit, Zone: DNS Edit and Zone: Zone Read for it.
+# Staging: optional variable KUNLA_STAGING_DOMAIN (its hostname; otherwise kunla-staging.<you>.workers.dev) and
+# KUNLA_STAGING_D1_ID. Without an id the workflow finds the D1 database "kunla-staging", or creates it in the EU
+# jurisdiction, so the API token needs D1 Edit.
 # Optional variable KUNLA_USAGE_PING=on: send the daily anonymous usage ping (version and counts only; see the README).
 # Optional variable KUNLA_COLLECT_PINGS=true: only on the Kunla that collects those pings.
 # Optional variable KUNLA_PLACEMENT_REGION (e.g. aws:us-east-1): run the Worker next to that cloud region, where
 # your D1 database lives, instead of letting Smart Placement find it. ENAM databases sit near aws:us-east-1,
 # WEUR near aws:eu-west-1 or aws:eu-central-1.
-# The self-upgrade workflow (upgrade.yml) also calls this one to deploy the release it just merged.
+# The self-upgrade workflow (upgrade.yml) and the Release workflow (release.yml) call this one too.
 name: Deploy
 on:
-  workflow_dispatch:
   push: { branches: [main] }
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Where to deploy
+        type: choice
+        options: [production, staging]
+        default: production
+      ref:
+        description: Commit, branch or tag to deploy (default the newest on the branch you picked above)
+        type: string
+        required: false
   workflow_call:
     inputs:
       ref:
         description: Commit to deploy
         type: string
         required: true
-concurrency: { group: deploy, cancel-in-progress: false }
+      target:
+        description: production (default) or staging
+        type: string
+        required: false
 jobs:
   deploy:
-    if: github.event_name != 'push' || vars.KUNLA_AUTO_DEPLOY == 'true'
+    # A push deploys staging in staging mode, or production when KUNLA_AUTO_DEPLOY is on. Called or by hand: always.
+    # (A called workflow sees its caller's event, so inputs.target is checked first.)
+    if: >-
+      inputs.target != '' || inputs.ref != '' || github.event_name != 'push' ||
+      vars.KUNLA_STAGING == 'true' || (github.repository == 'spikinglabs/kunla' && vars.KUNLA_STAGING != 'false') ||
+      vars.KUNLA_AUTO_DEPLOY == 'true'
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.target || (github.event_name == 'push' && (vars.KUNLA_STAGING == 'true' || (github.repository == 'spikinglabs/kunla' && vars.KUNLA_STAGING != 'false')) && 'staging') || 'production' }}
+    concurrency:
+      group: deploy-${{ inputs.target || (github.event_name == 'push' && (vars.KUNLA_STAGING == 'true' || (github.repository == 'spikinglabs/kunla' && vars.KUNLA_STAGING != 'false')) && 'staging') || 'production' }}
+      cancel-in-progress: false
     env:
+      TARGET: ${{ inputs.target || (github.event_name == 'push' && (vars.KUNLA_STAGING == 'true' || (github.repository == 'spikinglabs/kunla' && vars.KUNLA_STAGING != 'false')) && 'staging') || 'production' }}
       KUNLA_SETUP_TOKEN: ${{ secrets.KUNLA_SETUP_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
         with: { ref: "${{ inputs.ref || github.sha }}" }
@@ -35,28 +74,65 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm test
+      - name: What is deployed where
+        run: |
+          echo "Deploying $(git rev-parse --short HEAD) ($(git describe --tags --always)) to $TARGET"
+          echo "### Kunla → $TARGET" >> "$GITHUB_STEP_SUMMARY"
+          echo "Commit \`$(git rev-parse --short HEAD)\`, $(git describe --tags --always), version $(node -p "require('./package.json').version")" >> "$GITHUB_STEP_SUMMARY"
+
+      # ---- Production settings ----
       - name: Use your D1 database
-        if: vars.KUNLA_D1_ID != ''
+        if: env.TARGET == 'production' && vars.KUNLA_D1_ID != ''
         run: sed -i "s/REPLACE_WITH_YOUR_D1_ID/${{ vars.KUNLA_D1_ID }}/" wrangler.toml
       - name: Use your domain
-        if: vars.KUNLA_DOMAIN != ''
+        if: env.TARGET == 'production' && vars.KUNLA_DOMAIN != ''
         run: sed -i '/^compatibility_date/a routes = [{ pattern = "${{ vars.KUNLA_DOMAIN }}", custom_domain = true }]' wrangler.toml
       - name: Usage ping settings
-        if: vars.KUNLA_USAGE_PING != '' || vars.KUNLA_COLLECT_PINGS != ''
+        if: env.TARGET == 'production' && (vars.KUNLA_USAGE_PING != '' || vars.KUNLA_COLLECT_PINGS != '')
         run: |
           [ -n "${{ vars.KUNLA_USAGE_PING }}" ] && sed -i '/^\[vars\]$/a KUNLA_USAGE_PING = "${{ vars.KUNLA_USAGE_PING }}"' wrangler.toml
           [ -n "${{ vars.KUNLA_COLLECT_PINGS }}" ] && sed -i '/^\[vars\]$/a KUNLA_COLLECT_PINGS = "${{ vars.KUNLA_COLLECT_PINGS }}"' wrangler.toml
           grep -A4 '^\[vars\]' wrangler.toml
+      - name: Note where to restore the database from
+        if: env.TARGET == 'production' && vars.KUNLA_D1_ID != ''
+        continue-on-error: true
+        run: |
+          # D1 Time Travel keeps 30 days of history. If a migration goes wrong, restore with:
+          #   npx wrangler d1 time-travel restore <database> --timestamp <the time below>
+          echo "Before migrating: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 time-travel info DB | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ---- Staging settings: its own Worker, database and address, clearly marked ----
+      - name: Make this the staging copy
+        if: env.TARGET == 'staging'
+        env:
+          D1: ${{ vars.KUNLA_STAGING_D1_ID }}
+          DOMAIN: ${{ vars.KUNLA_STAGING_DOMAIN }}
+        run: |
+          sed -i 's/^name = "kunla"$/name = "kunla-staging"/; s/^database_name = "kunla"$/database_name = "kunla-staging"/' wrangler.toml
+          if [ -z "$D1" ]; then
+            D1=$(npx wrangler d1 list --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s).find(x=>x.name==="kunla-staging");console.log(d?d.uuid:"")})')
+          fi
+          if [ -z "$D1" ]; then
+            echo "Creating the D1 database kunla-staging in the EU jurisdiction"
+            npx wrangler d1 create kunla-staging --jurisdiction eu | tee create.log
+            D1=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' create.log | head -1)
+          fi
+          test -n "$D1"
+          sed -i "s/REPLACE_WITH_YOUR_D1_ID/$D1/" wrangler.toml
+          [ -n "$DOMAIN" ] && sed -i "/^compatibility_date/a routes = [{ pattern = \"$DOMAIN\", custom_domain = true }]" wrangler.toml
+          sed -i '/^\[vars\]$/a KUNLA_ENV = "staging"' wrangler.toml
+          # A ribbon on every page, so nobody mistakes staging for the real thing.
+          ribbon='<div role="note" style="position:fixed;z-index:2147483647;left:50%;bottom:0;transform:translateX(-50%);padding:2px 10px;border-radius:6px 6px 0 0;background:#b45309;color:#fff;font:600 11px/1.6 system-ui,sans-serif;letter-spacing:.04em;pointer-events:none">Staging · '"$(git rev-parse --short HEAD)"'</div>'
+          for f in public/index.html public/authorize.html; do sed -i "s#<body\([^>]*\)>#&\n$ribbon#" "$f"; done
+          grep -c 'Staging ·' public/index.html
+          grep -E '^(name|database_name|database_id|routes|KUNLA_ENV)' wrangler.toml
+          echo "Database $D1" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Pin where the Worker runs
         if: vars.KUNLA_PLACEMENT_REGION != ''
         run: sed -i 's/^mode = "smart"$/region = "${{ vars.KUNLA_PLACEMENT_REGION }}"/' wrangler.toml
       - run: npm run deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Protect first-time setup
         if: env.KUNLA_SETUP_TOKEN != ''
         run: printf '%s' "$KUNLA_SETUP_TOKEN" | npx wrangler secret put SETUP_TOKEN
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
