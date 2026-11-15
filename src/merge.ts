@@ -40,20 +40,25 @@ const waitKey = (db: D1Database, space: string, repo: string, n: number | string
  * work (their title cites other task keys but not this one), so approving never merges someone else's PR.
  */
 export async function taskPr(db: D1Database, taskId: string): Promise<PrRef | null> {
-  const t = await db.prepare('SELECT key FROM tasks WHERE id = ?').bind(taskId).first<{ key: string }>();
-  const rows = (await db.prepare('SELECT url, title FROM deliverables WHERE task_id = ? ORDER BY created_at DESC').bind(taskId).all<{ url: string; title: string | null }>()).results;
-  return prFromLinks(ownLinks(t?.key ?? '', rows));
+  const [keysR, rowsR] = await db.batch([
+    db.prepare('SELECT key FROM tasks WHERE id = ? UNION ALL SELECT key FROM task_aliases WHERE task_id = ?').bind(taskId, taskId),
+    db.prepare('SELECT url, title FROM deliverables WHERE task_id = ? ORDER BY created_at DESC').bind(taskId),
+  ]);
+  const keys = ((keysR.results ?? []) as { key: string }[]).map((r) => r.key);
+  return prFromLinks(ownLinks(keys, (rowsR.results ?? []) as { url: string; title: string | null }[]));
 }
 
 /**
  * A task's own links: drops GitHub PRs whose title cites other tasks but not this one. Older
  * Kunla attached a PR to every task its description mentioned; those stay hidden, not deleted.
  */
-export function ownLinks<T extends { url: string; title?: string | null }>(key: string, rows: T[]): T[] {
+export function ownLinks<T extends { url: string; title?: string | null }>(key: string | string[], rows: T[]): T[] {
+  // A task that moved (KD-88) owns PRs titled with any key it has had.
+  const mine = Array.isArray(key) ? key : [key];
   return rows.filter((r) => {
     if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(r.url ?? '')) return true;
     const k = findKeys(r.title);
-    return !k.length || k.includes(key);
+    return !k.length || k.some((x) => mine.includes(x));
   });
 }
 

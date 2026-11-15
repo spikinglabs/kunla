@@ -550,9 +550,11 @@ export async function removeMember(c: Ctx, memberId: string) {
 
 export async function getTask(c: Ctx, key: string): Promise<Task> {
   // MKT-42, or the full ACME-MKT-42 when ACME is this workspace.
+  // A key it had before a move (KD-88) finds it too; the task that has the key now always comes first.
   const sk = splitKey(key);
-  const t = await c.db.prepare(`SELECT * FROM tasks WHERE (key = ? OR id = ?) AND space_id = ? AND (? IS NULL OR ? = (SELECT key FROM projects WHERE id = tasks.space_id))`)
-    .bind(sk.key, key, c.space, sk.ws, sk.ws).first<Task>();
+  const t = await c.db.prepare(`SELECT * FROM tasks WHERE space_id = ? AND (? IS NULL OR ? = (SELECT key FROM projects WHERE id = tasks.space_id))
+      AND (key = ? OR id = ? OR id IN (SELECT task_id FROM task_aliases WHERE space_id = ? AND key = ?)) ORDER BY key = ? DESC LIMIT 1`)
+    .bind(c.space, sk.ws, sk.ws, sk.key, key, c.space, sk.key, sk.key).first<Task>();
   if (!t) throw new KunlaError(404, `No task ${key}.`);
   return t;
 }
@@ -747,18 +749,20 @@ export async function unparkTask(c: Ctx, key: string, opts: { system?: boolean; 
 export async function updateTask(c: Ctx, key: string, input: {
   note?: string; status?: Status; blocked_question?: string; blocked_on?: string;
   title?: string; brief?: string; criteria?: string[]; priority?: number; assignee?: string | null; reviewer?: string | null; session?: string;
-  cost_usd?: number; tokens?: number; kind?: string;
+  cost_usd?: number; tokens?: number; kind?: string; project?: string | null;
   waiting_on?: unknown[]; waits_met?: unknown[]; not_waiting_on?: unknown[]; assumption?: unknown;
 }, via?: Via) {
   let t = await getTask(c, key);
   // One holder at a time: an agent can comment on someone else's claimed task, but not move it,
   // reassign it or rewrite it. People can, and the holder is told (see claimLost below).
   const heldByOther = holds(t) && t.assignee_id !== c.me.id;
-  const changes = ['status', 'assignee', 'blocked_question', 'title', 'brief', 'criteria', 'priority', 'waiting_on', 'not_waiting_on'].filter((k) => (input as any)[k] !== undefined);
+  const changes = ['status', 'assignee', 'blocked_question', 'title', 'brief', 'criteria', 'priority', 'waiting_on', 'not_waiting_on', 'project'].filter((k) => (input as any)[k] !== undefined);
   if (heldByOther && c.me.kind === 'ai' && changes.length) {
     const holder = (await getMember(c, t.assignee_id!)).name;
     throw new KunlaError(409, `${t.key} is held by ${holder}, so you can't change its ${changes.join(', ')}. Add a note instead, or ask a person to take it over.`);
   }
+  // Moving first, so everything below already sees the task under its new key (KD-88).
+  if (input.project !== undefined) { t = (await moveTask(c, t.id, input.project)).task; key = t.key; }
   await recordSession(c, t.id, input.session);
   // What it waits on, what happened, and what the agent is assuming instead of waiting (KD-84).
   if (input.waiting_on !== undefined && input.waiting_on !== null) await waits.addWaits(c, t, input.waiting_on as unknown[]);
@@ -820,6 +824,48 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (heldByOther && !holds(after, t.assignee_id!)) await claimLost(c, t, input.note ?? null);
   if (fields.status === 'ready' && t.status !== 'ready') await continuous.wakeIdle(c, after);
   return after;
+}
+
+// ---------- moving a task between projects (KD-88) ----------
+
+/**
+ * Put a task into a project, move it to another one, or back to the workspace level (no project, or the
+ * workspace's own key). Workspaces are hard boundaries, so it only moves inside its own. Its sub-tasks go with it.
+ * Keys belong to a project, so each moved task takes the next key there (SL-3 becomes PBI-1); the old key stays
+ * as an alias, so commits, PR titles, links and chats that cite it still reach the task.
+ */
+export async function moveTask(c: Ctx, key: string, project: string | null) {
+  const t = await getTask(c, key);
+  if (t.parent_id) {
+    const parent = await c.db.prepare('SELECT key FROM tasks WHERE id = ?').bind(t.parent_id).first<{ key: string }>();
+    throw new KunlaError(400, `${t.key} is a sub-task, so it stays in its parent's project. Move ${parent?.key ?? 'its parent'} instead; its sub-tasks go with it.`);
+  }
+  const target = project?.trim() ? await getProject(c, project.trim()) : await getWorkspace(c);
+  if (target.id === t.project_id) return { task: t, moved: [] as { from: string; to: string }[] };
+  const from = await getProject(c, t.project_id);
+  const subs = (await c.db.prepare('SELECT * FROM tasks WHERE parent_id = ? ORDER BY created_at').bind(t.id).all<Task>()).results;
+  const all = [t, ...subs];
+  // One number per task, taken in one statement, so two moves at once never get the same keys.
+  const seq = await c.db.prepare('UPDATE projects SET next_seq = next_seq + ? WHERE id = ? RETURNING next_seq').bind(all.length, target.id).first<{ next_seq: number }>();
+  const first = seq!.next_seq - all.length + 1;
+  const at = nowIso(c);
+  const moved = all.map((x, i) => ({ id: x.id, from: x.key, to: `${target.key}-${first + i}` }));
+  const label = (p: Project) => (p.kind === 'workspace' ? `the workspace (${p.key}, no project)` : `${p.name} (${p.key})`);
+  await c.db.batch(moved.flatMap((m) => [
+    // An old key that someone else's alias held (never expected: keys aren't reused) now means this task.
+    c.db.prepare('DELETE FROM task_aliases WHERE space_id = ? AND key = ?').bind(c.space, m.to),
+    c.db.prepare('INSERT OR REPLACE INTO task_aliases (space_id, key, task_id, created_at) VALUES (?,?,?,?)').bind(c.space, m.from, m.id, at),
+    c.db.prepare('UPDATE tasks SET project_id = ?, key = ?, updated_at = ? WHERE id = ?').bind(target.id, m.to, at, m.id),
+    c.db.prepare('INSERT INTO events (task_id, actor_id, type, note, data, space_id, created_at) VALUES (?,?,?,?,?,?,?)').bind(m.id, c.me.id, 'moved',
+      `Moved from ${label(from)} to ${label(target)}: ${m.from} is ${m.to} now, and ${m.from} still finds it.`,
+      JSON.stringify({ from_key: m.from, to_key: m.to, from_project: from.key, to_project: target.key, ...(m.id !== t.id ? { with: t.key } : {}) }), c.space, at),
+  ]));
+  return { task: await getTask(c, t.id), moved: moved.map(({ from, to }) => ({ from, to })) };
+}
+
+/** The keys a task had before it moved, oldest first (KD-88). */
+export async function oldKeys(db: D1Database, taskId: string): Promise<string[]> {
+  return (await db.prepare('SELECT key FROM task_aliases WHERE task_id = ? ORDER BY created_at, rowid').bind(taskId).all<{ key: string }>()).results.map((r) => r.key);
 }
 
 // ---------- sharing work: claims, handoffs, take-overs (KD-36) ----------
@@ -907,7 +953,7 @@ export async function assignMany(c: Ctx, input: { keys?: string[]; to?: string; 
   const skipped: { key: string; reason: string }[] = [];
   const note = input.note?.trim() || null;
   for (const key of keys) {
-    const t = await c.db.prepare('SELECT * FROM tasks WHERE key = ? AND space_id = ?').bind(key, c.space).first<Task>();
+    const t = await getTask(c, key).catch(() => null);
     if (!t) { skipped.push({ key, reason: 'no such task' }); continue; }
     if (t.status !== 'ready') { skipped.push({ key, reason: t.status === 'inbox' ? 'still a proposal; accept it first' : `it is ${t.status.replace('_', ' ')}, not Ready` }); continue; }
     if (t.assignee_id === to.id) { skipped.push({ key, reason: `already with ${to.name}` }); continue; }
@@ -1331,7 +1377,7 @@ export async function taskDetail(c: Ctx, key: string) {
   const t = await getTask(c, key);
   // Everything below depends only on the task, so it goes to D1 in one wave instead of a dozen hops.
   const namesP = memberNames(c);
-  const [p, ws0, defs, parent, names, sharing, repo, deliverables, events, rules, reviews, subtasks, sessions, notes, deps] = await Promise.all([
+  const [p, ws0, defs, parent, names, sharing, repo, deliverables, events, rules, reviews, subtasks, sessions, notes, deps, old] = await Promise.all([
     getProject(c, t.project_id),
     getWorkspace(c),
     kindsFor(c, t.project_id),
@@ -1352,6 +1398,7 @@ export async function taskDetail(c: Ctx, key: string) {
                   LEFT JOIN members m ON m.id = s.member_id WHERE s.task_id = ? ORDER BY s.created_at`).bind(t.id).all(),
     taskNotes(c.db, t.id),
     waits.detail(c, t, namesP),
+    oldKeys(c.db, t.id),
   ]);
   const links = (deliverables.results as { url: string; title: string | null; created_at: string }[]).map((d) => ({ ...d, type: linkType(d.url) }));
   const kind = taskKind(t, links.map((d) => d.url), defs);
@@ -1369,7 +1416,8 @@ export async function taskDetail(c: Ctx, key: string) {
     parent,
     playbook: [ws.playbook, p.kind === 'workspace' ? '' : p.playbook].filter((x) => x?.trim()).join('\n\n'),
     rules: rules.results,
-    deliverables: ownLinks(t.key, links),
+    deliverables: ownLinks([t.key, ...old], links),
+    old_keys: old,
     mentions: mentions(t.brief, repo),
     repo: repo ? `${repo.base}/${repo.path}` : null,
     notes,
@@ -1417,7 +1465,10 @@ export async function listTasks(c: Ctx, f: { project?: string; status?: string; 
   if (f.project) { where.push('p.key = ?'); args.push(f.project.toUpperCase()); }
   if (f.status) { const s = f.status.split(','); where.push(`t.status IN (${s.map(() => '?').join(',')})`); args.push(...s); }
   if (f.assignee) { where.push('t.assignee_id = ?'); args.push(f.assignee === 'me' ? c.me.id : (await getMember(c, f.assignee)).id); }
-  if (f.q) { where.push('(t.title LIKE ? OR t.brief LIKE ? OR t.key = ?)'); args.push(`%${f.q}%`, `%${f.q}%`, f.q.toUpperCase()); }
+  if (f.q) {
+    where.push('(t.title LIKE ? OR t.brief LIKE ? OR t.key = ? OR t.id IN (SELECT task_id FROM task_aliases WHERE space_id = t.space_id AND key = ?))');
+    args.push(`%${f.q}%`, `%${f.q}%`, f.q.toUpperCase(), f.q.toUpperCase());
+  }
   if (f.updated_since) { where.push('t.updated_at > ?'); args.push(f.updated_since); }
   // Older tasks have no stored kind; they are guessed below, so let them through here.
   // Kinds can differ per project, so the filter takes keys or names as given; older tasks have no
@@ -1526,7 +1577,7 @@ export async function inbox(c: Ctx) {
   // Each review card needs its summary, links and notes: three queries for all cards together
   // (ids passed as one JSON array, so any number of cards fits D1's limit on bound values).
   const ids = JSON.stringify(reviews.map((t) => t.id));
-  const [subsR, allDelsR, allNotesR] = reviews.length ? await Promise.all([
+  const [subsR, allDelsR, allNotesR, aliasR] = reviews.length ? await Promise.all([
     c.db.prepare(`SELECT task_id, note FROM events WHERE id IN (SELECT MAX(id) FROM events WHERE task_id IN (SELECT value FROM json_each(?))
                   AND type IN ('submitted','work_logged') GROUP BY task_id)`).bind(ids).all<{ task_id: string; note: string }>(),
     c.db.prepare('SELECT task_id, url, title FROM deliverables WHERE task_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, rowid').bind(ids)
@@ -1534,7 +1585,8 @@ export async function inbox(c: Ctx) {
     c.db.prepare(`SELECT n.task_id, n.id, n.title, n.body, n.created_at, m.name AS author, m.kind AS author_kind FROM task_notes n
                   LEFT JOIN members m ON m.id = n.added_by WHERE n.task_id IN (SELECT value FROM json_each(?)) ORDER BY n.created_at`).bind(ids)
       .all<{ task_id: string; id: string; title: string | null; body: string; created_at: string; author: string | null; author_kind: Kind | null }>(),
-  ]) : [{ results: [] }, { results: [] }, { results: [] }];
+    c.db.prepare('SELECT task_id, key FROM task_aliases WHERE task_id IN (SELECT value FROM json_each(?))').bind(ids).all<{ task_id: string; key: string }>(),
+  ]) : [{ results: [] }, { results: [] }, { results: [] }, { results: [] }];
   const group = <T extends { task_id: string }>(rows: T[]) => {
     const m = new Map<string, Omit<T, 'task_id'>[]>();
     for (const { task_id, ...rest } of rows) { if (!m.has(task_id)) m.set(task_id, []); m.get(task_id)!.push(rest); }
@@ -1542,11 +1594,12 @@ export async function inbox(c: Ctx) {
   };
   const subOf = new Map((subsR.results as { task_id: string; note: string }[]).map((r) => [r.task_id, r.note]));
   const delsOf = group(allDelsR.results as { task_id: string; url: string; title: string | null }[]);
+  const aliasOf = group(aliasR.results as { task_id: string; key: string }[]);
   const notesOf = group(allNotesR.results as { task_id: string; id: string; title: string | null; body: string; created_at: string; author: string | null; author_kind: Kind | null }[]);
   const withSummary = async (t: Task) => {
     const summary = subOf.get(t.id) ?? null;
     const dels = (delsOf.get(t.id) ?? []).map((d) => ({ ...d, type: linkType(d.url) }));
-    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url), byProject.get(t.project_id)), summary, deliverables: ownLinks(t.key, dels), notes: notesOf.get(t.id) ?? [],
+    return { ...publicTask(t, names), kind: taskKind(t, dels.map((d) => d.url), byProject.get(t.project_id)), summary, deliverables: ownLinks([t.key, ...(aliasOf.get(t.id) ?? []).map((a) => a.key)], dels), notes: notesOf.get(t.id) ?? [],
       mentions: mentions(`${t.brief}\n${summary ?? ''}`, await repoFor(t.project_id)) };
   };
   // Briefs and summaries name PRs as "acme/site#12" or "PR #12": hand the links over with the card (refs.ts).

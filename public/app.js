@@ -1069,6 +1069,7 @@ const EVENT = {
   parked: (e) => (e.data?.until ? `put it off until ${new Date(e.data.until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}` : 'put it off for someday'),
   unparked: () => 'brought it back',
   released: (e) => (e.data?.to ? 'handed it on' : 'let it go, back to Ready'), taken_over: () => 'took it over',
+  moved: (e) => (e.data?.with ? `moved it along with ${e.data.with}` : 'moved it') + ` from ${e.data?.from_key} to ${e.data?.to_key}`,
   lease_expired: () => 'went quiet, so the claim lapsed', status: (e) => `${e.data?.via ? 'said in a chat to move it' : 'moved it'} to ${STATUS[e.data?.to] || e.data?.to}`, flagged: () => 'flagged it', note: (e) => (e.data?.kind ? 'changed the kind of work' : 'commented'),
   merged: () => 'merged the PR', merge_waiting: () => 'will merge the PR when checks pass', merge_blocked: () => 'could not merge the PR yet',
   assigned: () => 'handed it over', woke: () => 'woke the agent so it carries on', wake_failed: () => 'could not wake the agent',
@@ -1095,6 +1096,9 @@ function sessionLabel(url) {
 async function viewTask(key) {
   renderShell('tasks');
   const t = await api('GET', `/api/tasks/${encodeURIComponent(key)}`);
+  // Opened by a key it had before a move (KD-88): show the key it has now in the address.
+  const asked = String(key).toUpperCase();
+  if (t.old_keys?.some((k) => asked === k || asked.endsWith(`-${k}`))) history.replaceState(null, '', `#/t/${t.key}`);
   const hist = [...t.history].reverse();
   const isWorker = t.assignee?.id === me.id;
   let decision = '';
@@ -1116,6 +1120,7 @@ async function viewTask(key) {
       <h1>${t.title}</h1>
       <div class="row">${raw(me.kind === 'human' ? statusPick(t) : html`<span class="pill ${statusTone(t.status)}">${STATUS[t.status]}</span>`)}${raw(hint(STATUS_HINT[t.status], `What ${STATUS[t.status]} means`))}
         <label class="kindpick" title="Kind of work"><span class="sr">Kind of work</span><select data-act="change:kind" aria-label="Kind of work">${join([...(t.kinds_here || []), ...((t.kinds_here || []).some((x) => x.key === t.kind) ? [] : [{ key: t.kind, label: kindName(t.kind) }])].map((x) => html`<option value="${x.key}" ${t.kind === x.key ? 'selected' : ''}>${x.label}</option>`))}</select></label>
+        ${raw(projectPick(t))}
         <div class="people"><span>${raw(who(t.assignee, 'Nobody yet'))}</span>${raw(t.reviewer ? html`<span class="muted">reviewed by</span><span>${raw(who(t.reviewer))}</span>` : '')}
         ${raw(t.created_by ? html`<span class="muted">asked by ${t.created_by.name}</span>` : '')}</div></div>
       ${raw(decision ? html`<div class="card" style="margin-top:24px">${raw(decision)}</div>` : '')}
@@ -1169,6 +1174,17 @@ async function viewTask(key) {
       toast(`${t.key} is ${STATUS[to]} now.`); reload();
     },
     kind: async (el) => { await api('PATCH', `/api/tasks/${t.key}`, { kind: el.value }); toast(`${t.key} is ${kindName(el.value).toLowerCase()} work now.`); reload(); },
+    project: async (el) => {
+      const to = el.value;
+      const now = t.project?.key ?? t.workspace.key;
+      if (to === now) return;
+      // No confirm: a move is undone by moving it back, and every key it had keeps working.
+      const n = t.subtasks.length;
+      let r;
+      try { r = await api('PATCH', `/api/tasks/${t.key}`, { project: to }); } catch (err) { el.value = now; throw err; }
+      toast(`Moved${n === 1 ? ' with its sub-task' : n ? ` with its ${n} sub-tasks` : ''}. ${t.key} is ${r.key} now, and ${t.key} still finds it.`);
+      location.hash = `#/t/${r.key}`;
+    },
     unpark: async () => { const r = await api('POST', `/api/tasks/${t.key}/unpark`); toast(`${t.key} is back in ${STATUS[r.status]}.`); reload(); },
     takeit: async () => { await api('POST', `/api/tasks/${t.key}/claim`); toast(`${t.key} is yours. Agents will skip it.`); reload(); },
     release: () => showHandoff(t, 'release', reload),
@@ -1219,6 +1235,17 @@ function depsSection(t) {
     ${raw(blocks.length ? html`<h3 style="margin-top:22px">Holds up · ${blocks.length}</h3><div class="dep-list">${join(blocks.map((b) => html`<div class="dep"><span class="st-dot s-${b.status}"></span><a href="#/t/${b.key}" class="grow"><span class="key">${b.key}</span> ${b.title}</a><span class="muted dep-w">waits on this</span></div>`))}</div>` : '')}
     ${raw(assumed.length ? html`<h3 style="margin-top:22px">Assumptions</h3><div class="dep-list">${join(assumed.map(asm))}</div>` : '')}
     ${raw(open.length || blocks.length || t.subtasks?.length || t.parent ? html`<a class="dep-map muted" href="#/map/relations/${t.key}">See how it connects ↗</a>` : '')}</div>`;
+}
+
+// ---------- project picker (KD-88) ----------
+// Put a task into a project, move it to another, or take it out of any project, inside this workspace.
+// Sub-tasks stay with their parent, so they show their project but can't move on their own.
+function projectPick(t) {
+  const now = t.project?.key ?? t.workspace.key;
+  const choices = projectChoices();
+  if (!choices.some(([k]) => k === now)) choices.unshift([now, t.project?.name ?? 'No project']);
+  const sub = !!t.parent;
+  return html`<label class="kindpick projpick" title="${sub ? `Sub-tasks move with ${t.parent.key}` : 'Project'}"><span class="sr">Project</span><select data-act="change:project" aria-label="Project" ${sub ? 'disabled' : ''}>${join(choices.map(([k, n]) => html`<option value="${k}" ${k === now ? 'selected' : ''}>${n}</option>`))}</select></label>`;
 }
 
 // ---------- status picker (KD-57) ----------

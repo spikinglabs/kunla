@@ -112,16 +112,29 @@ async function tasksFor(c: core.Ctx, raw: string[]) {
   const prefixes = [...new Set(raw.map((k) => core.splitKey(k).ws).filter((x): x is string => !!x))];
   const wsRows = prefixes.length ? (await c.db.prepare(`SELECT id, key FROM projects WHERE kind = 'workspace' AND key IN (${prefixes.map(() => '?').join(',')})`)
     .bind(...prefixes).all<{ id: string; key: string }>()).results : [];
-  const keys = [...new Set(raw.flatMap((k) => {
+  const here = (k: string) => {
     const sk = core.splitKey(k);
-    if (!sk.ws) return [sk.key];
+    if (!sk.ws) return sk.key;
     const w = wsRows.find((r) => r.key === sk.ws);
-    return !w || w.id === c.space ? [sk.key] : [];
-  }))];
+    return !w || w.id === c.space ? sk.key : null;
+  };
+  const keys = [...new Set(raw.map(here).filter((x): x is string => !!x))];
   if (!keys.length) return [];
-  return (await c.db.prepare(
-    `SELECT t.*, p.require_human_review AS rhr FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.space_id = ? AND t.key IN (${keys.map(() => '?').join(',')})`)
-    .bind(c.space, ...keys).all<Task & { rhr: number }>()).results;
+  // A key a task had before it moved (KD-88) still finds it. `hits` are the keys as cited that mean this task.
+  const marks = keys.map(() => '?').join(',');
+  const rows = (await c.db.prepare(
+    `SELECT t.*, p.require_human_review AS rhr, t.key AS hit FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.space_id = ? AND t.key IN (${marks})
+     UNION ALL
+     SELECT t.*, p.require_human_review AS rhr, a.key AS hit FROM task_aliases a JOIN tasks t ON t.id = a.task_id JOIN projects p ON p.id = t.project_id
+     WHERE a.space_id = ? AND t.space_id = a.space_id AND a.key IN (${marks}) AND a.key NOT IN (SELECT key FROM tasks WHERE space_id = a.space_id)`)
+    .bind(c.space, ...keys, c.space, ...keys).all<Task & { rhr: number; hit: string }>()).results;
+  const byId = new Map<string, Task & { rhr: number; hits: string[] }>();
+  for (const { hit, ...t } of rows) {
+    const had = byId.get(t.id);
+    const short = raw.filter((k) => here(k) === hit);
+    if (had) had.hits.push(...short); else byId.set(t.id, { ...t, hits: short });
+  }
+  return [...byId.values()];
 }
 
 /** The person in this workspace who linked this GitHub username, if any. */
@@ -204,7 +217,7 @@ async function onPush(c: core.Ctx, p: any): Promise<Result> {
   const branch = String(p.ref ?? '').replace(/^refs\/heads\//, '');
   const linked: string[] = [];
   for (const t of tasks) {
-    for (const cm of byKey.get(t.key) ?? []) {
+    for (const cm of [...new Set(t.hits.flatMap((k) => byKey.get(k) ?? []))]) {
       const first = String(cm.message).split('\n')[0].slice(0, 120);
       const author = cm.author?.username ? `@${cm.author.username}` : cm.author?.name ?? 'someone';
       const what = `Commit ${String(cm.id).slice(0, 7)} on ${branch}`;
