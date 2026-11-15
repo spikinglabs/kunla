@@ -108,7 +108,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'update_task',
-    description: 'Add a progress note, change status, or mark blocked with a question for a person. A blocked question goes to the decision inbox. Say what the task waits on (waiting_on: another task, a PR, a condition), tick what happened (waits_met), or state an assumption and carry on instead of waiting. Status parked puts a task off ("later"): only do that when a person asks, optionally with until.',
+    description: 'Add a progress note, change status, or mark blocked with a question for a person. Move it into a project or to another one with project (its sub-tasks go along; it gets a key there and the old key keeps working). A blocked question goes to the decision inbox. Say what the task waits on (waiting_on: another task, a PR, a condition), tick what happened (waits_met), or state an assumption and carry on instead of waiting. Status parked puts a task off ("later"): only do that when a person asks, optionally with until.',
     inputSchema: {
       type: 'object', required: ['key'],
       properties: {
@@ -119,6 +119,7 @@ export const TOOLS: Tool[] = [
         blocked_on: { type: 'string', description: 'Who should answer (name); empty means anyone' },
         title: { type: 'string' }, brief: { type: 'string' }, criteria: { type: 'array', items: { type: 'string' } },
         priority: { type: 'number', description: '0 urgent to 3 low' }, kind, session, ...spend,
+        project: { type: 'string', description: 'Move the task into this project (key, e.g. MKT), inside the same workspace. Empty string or the workspace key takes it out of any project. Sub-tasks move with their parent; it gets a key in the new project and the old key still finds it.' },
         waiting_on, assumption,
         waits_met: { type: 'array', items: { type: 'string' }, description: 'What it waited on has happened: wait ids, task keys or the condition words, as get_task lists them under waiting_on. Kunla clears task waits and merged PRs by itself.' },
         not_waiting_on: { type: 'array', items: { type: 'string' }, description: 'Take waits off that were wrong or no longer matter (wait ids, task keys or condition words).' },

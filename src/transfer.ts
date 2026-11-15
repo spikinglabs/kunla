@@ -23,6 +23,7 @@ const TABLES: [string, string][] = [
   ['task_notes', 'SELECT n.* FROM task_notes n JOIN tasks t ON t.id = n.task_id WHERE t.space_id = ?1 ORDER BY n.created_at'],
   ['waits', 'SELECT * FROM waits WHERE space_id = ?1 ORDER BY created_at'],
   ['assumptions', 'SELECT * FROM assumptions WHERE space_id = ?1 ORDER BY created_at'],
+  ['task_aliases', 'SELECT * FROM task_aliases WHERE space_id = ?1 ORDER BY created_at'],
 ];
 
 /** Tables that belong to the deployment, not a workspace, and so stay out of an export. A test makes every new
@@ -75,7 +76,7 @@ export async function importWorkspace(db: D1Database, data: unknown, opts: { fre
   let space = d.workspace.id;
   const wsRow = t('projects').find((p) => p.id === space && p.kind === 'workspace');
   if (!wsRow) throw new KunlaError(400, 'The export has no workspace row.');
-  for (const name of ['projects', 'members', 'tasks', 'events', 'waits', 'assumptions']) {
+  for (const name of ['projects', 'members', 'tasks', 'events', 'waits', 'assumptions', 'task_aliases']) {
     if (t(name).some((r) => r.space_id !== space)) throw new KunlaError(400, `The export mixes workspaces (${name}).`);
   }
 
@@ -184,6 +185,7 @@ export async function deleteWorkspaceData(db: D1Database, space: string) {
     `DELETE FROM task_notes WHERE ${inTasks}`,
     'DELETE FROM waits WHERE space_id = ?1',
     'DELETE FROM assumptions WHERE space_id = ?1',
+    'DELETE FROM task_aliases WHERE space_id = ?1',
     'DELETE FROM events WHERE space_id = ?1',
     'DELETE FROM rules WHERE project_id IN (SELECT id FROM projects WHERE space_id = ?1)',
     'DELETE FROM tasks WHERE space_id = ?1',
