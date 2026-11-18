@@ -39,6 +39,8 @@ describe('chat views (MCP Apps)', () => {
       expect(r.mimeType).toBe('text/html;profile=mcp-app');
       expect(r.text).toContain('ui/initialize');
       expect(r.text).not.toMatch(/<script[^>]+src=|<link[^>]+href=/);
+      // One stray quote in the inline script blanks the whole view in the chat, with no error shown.
+      for (const [, js] of r.text.matchAll(/<script>([\s\S]*?)<\/script>/g)) expect(() => new Function(js)).not.toThrow();
     }
     expect((await mcp(ai, 'resources/read', { uri: 'ui://kunla/nope' })).error.code).toBe(-32002);
   });
