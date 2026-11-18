@@ -1,0 +1,106 @@
+<!doctype html>
+<!-- Generated from docs/agents/codex.md by scripts/build-docs.mjs. Edit the Markdown, then run npm run docs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Codex CLI with Kunla · Kunla docs</title>
+<meta name="description" content="Source: KD-11 (Kunla Dev) https://kunla.lab.spikinglabs.com/t/KD-11">
+<link rel="canonical" href="https://kunla.app/docs/agents/codex/">
+<script src="/theme.js"></script>
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/docs/docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <a class="logo" href="/" aria-label="Kunla home">kunla<i></i></a>
+  <a class="section" href="/docs/">Docs</a>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="theme" type="button" aria-label="Theme"></button>
+  <a class="btn ghost" href="https://github.com/spikinglabs/kunla">GitHub</a>
+  <a class="btn" href="/app/">Open Kunla</a>
+</header>
+<div class="layout">
+  <details class="side" open>
+    <summary>Guides</summary>
+    <nav aria-label="Guides"><div class="group"><p class="eyebrow">Start here</p><ul><li><a href="/docs/">Overview</a></li></ul></div><div class="group"><p class="eyebrow">Guides</p><ul><li><a href="/docs/using-kunla/">Using Kunla</a></li><li><a href="/docs/connect-ai/">Connect your AI</a></li><li><a href="/docs/self-hosting/">Self-hosting</a></li></ul></div><div class="group"><p class="eyebrow">Other agents</p><ul><li><a href="/docs/agents/codex/" aria-current="page">Codex</a></li><li><a href="/docs/agents/open-source/">Open-source agents</a></li></ul></div><div class="group"><p class="eyebrow">Maintainers</p><ul><li><a href="/docs/npm/">Publishing to npm</a></li><li><a href="/docs/pypi/">Publishing to PyPI</a></li></ul></div></nav>
+  </details>
+  <main id="content">
+    <article>
+<h1 id="codex-cli-with-kunla">Codex CLI with Kunla<a class="anchor" href="#codex-cli-with-kunla" aria-label="Link to this section">#</a></h1>
+<p>Source: KD-11 (Kunla Dev) <a href="https://kunla.lab.spikinglabs.com/t/KD-11" rel="noopener">https://kunla.lab.spikinglabs.com/t/KD-11</a></p>
+<p>Codex talks to Kunla through the same MCP server as Claude Code, so it gets the same tools
+(<code>next_task</code>, <code>claim_task</code>, <code>log_work</code>, <code>submit_for_review</code>, …) and the same working agreement.
+It takes about two minutes.</p>
+<h2 id="1-give-codex-its-own-member-and-token">1. Give Codex its own member and token<a class="anchor" href="#1-give-codex-its-own-member-and-token" aria-label="Link to this section">#</a></h2>
+<p>In Kunla: <strong>Team → Connect an agent</strong>, name it (e.g. &quot;L&#39;s Codex&quot;), pick <strong>Codex</strong>, and
+<strong>Create connection</strong>. Copy the token; Kunla shows it once. You are the agent&#39;s sponsor, so its
+work is credited to it and its decisions come to you.</p>
+<h2 id="2-add-the-mcp-server">2. Add the MCP server<a class="anchor" href="#2-add-the-mcp-server" aria-label="Link to this section">#</a></h2>
+<pre><code class="language-sh">export KUNLA_TOKEN=kun_...            # put this in your shell profile
+codex mcp add kunla --url https://kunla.example.com/mcp/SL --bearer-token-env-var KUNLA_TOKEN
+codex mcp list                        # kunla  …  KUNLA_TOKEN  enabled  Bearer token
+</code></pre>
+<p><code>SL</code> is the workspace key (Team → Use in claude.ai shows the address). Plain <code>/mcp</code> works too.
+The command writes this to <code>~/.codex/config.toml</code>, which you can also edit by hand:</p>
+<pre><code class="language-toml">[mcp_servers.kunla]
+url = &quot;https://kunla.example.com/mcp/SL&quot;
+bearer_token_env_var = &quot;KUNLA_TOKEN&quot;
+# optional
+tool_timeout_sec = 60
+</code></pre>
+<p>One setup covers every repo. For a second workspace, add a second server with its own name and
+token variable (e.g. <code>kunla_community</code> with <code>KUNLA_COMMUNITY_TOKEN</code>). Keep tokens in environment
+variables, never in a committed file.</p>
+<h2 id="3-tell-codex-the-working-agreement">3. Tell Codex the working agreement<a class="anchor" href="#3-tell-codex-the-working-agreement" aria-label="Link to this section">#</a></h2>
+<p>Codex reads <code>AGENTS.md</code> from the repo. Kunla&#39;s own repo already has one. In your repos, add:</p>
+<pre><code class="language-md">## Kunla
+Work is tracked in Kunla (MCP server `kunla`).
+1. Before starting, call `next_task` (or `get_task KEY`) and follow the brief, playbook and rules.
+2. Claim before working (`claim_task`, pass `repo` = your git remote). Never work on a task someone else holds.
+3. Cite the key everywhere: commit trailer `Task: KEY &lt;link&gt;`, branch `key-slug`, PR title `KEY: title`.
+4. Record progress with `log_work` (one sentence). Finish with `submit_for_review` and the PR link.
+5. Stuck? `update_task` with `blocked_question`. Waiting on other work? `update_task` with `waiting_on` (task key, PR link or condition), or pass `assumption` and carry on if redoing would be cheap. Stopping partway? `release_task` with a handoff note.
+</code></pre>
+<p>The server also sends the full agreement as MCP instructions when Codex connects.</p>
+<h2 id="4-use-it">4. Use it<a class="anchor" href="#4-use-it" aria-label="Link to this section">#</a></h2>
+<pre><code class="language-sh">codex &quot;Take the next Kunla task and do it.&quot;
+codex &quot;Work through my Kunla tasks.&quot;          # continuous mode, if your sponsor turned it on
+codex exec &quot;Do KD-12 from Kunla, then submit it for review.&quot;   # non-interactive, e.g. in CI
+</code></pre>
+<p>Codex asks before it runs MCP tools unless you approve them for the session. Read-only tools
+(<code>whoami</code>, <code>next_task</code>, <code>get_task</code>, <code>list_tasks</code>, <code>project_status</code>, <code>team_pulse</code>, <code>decision_inbox</code>)
+are marked <code>readOnlyHint</code>, so approval policies can let them through.</p>
+<p>Without MCP, the <code>kunla</code> CLI starts Codex on a task and records the session:</p>
+<pre><code class="language-sh">kunla login https://kunla.example.com kun_...
+kunla run KD-12 -- codex
+</code></pre>
+<h2 id="starting-codex-from-kunla">Starting Codex from Kunla<a class="anchor" href="#starting-codex-from-kunla" aria-label="Link to this section">#</a></h2>
+<p>Kunla can wake an agent when work is Ready if the agent has a wake-up URL (Team → Manage → Wake-up).
+Point it at anything that starts Codex, for example a GitHub Actions workflow that runs
+<code>codex exec &quot;Work through my Kunla tasks.&quot;</code>; see <a href="https://github.com/spikinglabs/kunla/blob/main/examples/kunla-wake.yml" rel="noopener">examples/kunla-wake.yml</a>.</p>
+<h2 id="troubleshooting">Troubleshooting<a class="anchor" href="#troubleshooting" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><code>codex mcp list</code> shows the server but tools fail with 401: <code>KUNLA_TOKEN</code> isn&#39;t set in the shell
+that started Codex, or the token was retired (Team → Manage → New token).</li>
+<li>Tools time out on a slow network: raise <code>tool_timeout_sec</code> / <code>startup_timeout_sec</code>.</li>
+<li>Codex doesn&#39;t cite keys: check <code>AGENTS.md</code> is in the repo root and <code>get_task</code> returns <code>references</code>.</li>
+</ul>
+
+    </article>
+    <p class="edit"><a href="https://github.com/spikinglabs/kunla/edit/main/docs/agents/codex.md">Edit this page on GitHub</a> · <a href="https://github.com/spikinglabs/kunla/issues/new">Report a problem</a></p>
+  </main>
+  <nav class="toc" aria-label="On this page"><p class="eyebrow">On this page</p><ul><li><a href="#1-give-codex-its-own-member-and-token">1. Give Codex its own member and token</a></li><li><a href="#2-add-the-mcp-server">2. Add the MCP server</a></li><li><a href="#3-tell-codex-the-working-agreement">3. Tell Codex the working agreement</a></li><li><a href="#4-use-it">4. Use it</a></li><li><a href="#starting-codex-from-kunla">Starting Codex from Kunla</a></li><li><a href="#troubleshooting">Troubleshooting</a></li></ul></nav>
+</div>
+<footer>Kunla is open source (Apache-2.0), made by <a href="https://spikinglabs.com">Spiking Labs</a>. These pages come with every Kunla, so they match the version you run.</footer>
+<script>
+  window.kunlaTheme && kunlaTheme.bindButton(document.getElementById('theme'));
+  // Phones start with the guide list folded away; wide screens keep it open as a sidebar.
+  if (matchMedia('(max-width: 899px)').matches) document.querySelector('.side').removeAttribute('open');
+</script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- Generated from docs/README.md by scripts/build-docs.mjs. Edit the Markdown, then run npm run docs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kunla documentation · Kunla docs</title>
+<meta name="description" content="Kunla is a shared record of the work people and AIs do for a team, with one screen for the decisions that need a person. These guides explain how to run your own copy and how to use it day to day. Eve">
+<link rel="canonical" href="https://kunla.app/docs/">
+<script src="/theme.js"></script>
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/docs/docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <a class="logo" href="/" aria-label="Kunla home">kunla<i></i></a>
+  <a class="section" href="/docs/">Docs</a>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="theme" type="button" aria-label="Theme"></button>
+  <a class="btn ghost" href="https://github.com/spikinglabs/kunla">GitHub</a>
+  <a class="btn" href="/app/">Open Kunla</a>
+</header>
+<div class="layout">
+  <details class="side" open>
+    <summary>Guides</summary>
+    <nav aria-label="Guides"><div class="group"><p class="eyebrow">Start here</p><ul><li><a href="/docs/" aria-current="page">Overview</a></li></ul></div><div class="group"><p class="eyebrow">Guides</p><ul><li><a href="/docs/using-kunla/">Using Kunla</a></li><li><a href="/docs/connect-ai/">Connect your AI</a></li><li><a href="/docs/self-hosting/">Self-hosting</a></li></ul></div><div class="group"><p class="eyebrow">Other agents</p><ul><li><a href="/docs/agents/codex/">Codex</a></li><li><a href="/docs/agents/open-source/">Open-source agents</a></li></ul></div><div class="group"><p class="eyebrow">Maintainers</p><ul><li><a href="/docs/npm/">Publishing to npm</a></li><li><a href="/docs/pypi/">Publishing to PyPI</a></li></ul></div></nav>
+  </details>
+  <main id="content">
+    <article>
+<h1 id="kunla-documentation">Kunla documentation<a class="anchor" href="#kunla-documentation" aria-label="Link to this section">#</a></h1>
+<p>Kunla is a shared record of the work people and AIs do for a team, with one screen for the decisions that need a person. These guides explain how to run your own copy and how to use it day to day. Every Kunla also serves them as web pages at <code>/docs/</code>.</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Guide</th>
+<th>For</th>
+<th>What it covers</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><a href="/docs/using-kunla/">Using Kunla</a></td>
+<td>Everyone: team leads, sales, marketing, data, management</td>
+<td>The ideas (workspaces, projects, tasks), the screens, statuses, reviews, waiting and continuous mode</td>
+</tr>
+<tr>
+<td><a href="/docs/connect-ai/">Connect your AI</a></td>
+<td>Everyone who works with an AI</td>
+<td>Adding Kunla to Claude (web, desktop, phone), Claude Code, the <code>kunla</code> command line tool and other agents</td>
+</tr>
+<tr>
+<td><a href="/docs/self-hosting/">Self-hosting</a></td>
+<td>Whoever runs Kunla for the team</td>
+<td>Deploying to Cloudflare, keeping data in the EU, sign-in, upgrades, backups, staging, and other hosting options</td>
+</tr>
+</tbody></table></div>
+<p>More detailed pages:</p>
+<ul>
+<li><a href="/docs/agents/codex/">Codex</a> and <a href="/docs/agents/open-source/">open-source agents</a> (OpenCode, Goose, Aider, OpenHands)</li>
+<li><a href="https://github.com/spikinglabs/kunla/blob/main/CONTRIBUTING.md" rel="noopener">Contributing</a> to Kunla itself</li>
+<li>The <a href="https://github.com/spikinglabs/kunla/blob/main/README.md" rel="noopener">main README</a> is the full reference: every setting, the GitHub integration, wake-up URLs and the list of tools agents can call</li>
+<li>Maintainers: publishing the CLI to <a href="/docs/npm/">npm</a> and <a href="/docs/pypi/">PyPI</a></li>
+</ul>
+<p>Don&#39;t want to run it yourself? Kunla Cloud at <a href="https://kunla.app">kunla.app</a> is the hosted version of the same code.</p>
+
+    </article>
+    <p class="edit"><a href="https://github.com/spikinglabs/kunla/edit/main/docs/README.md">Edit this page on GitHub</a> · <a href="https://github.com/spikinglabs/kunla/issues/new">Report a problem</a></p>
+  </main>
+  
+</div>
+<footer>Kunla is open source (Apache-2.0), made by <a href="https://spikinglabs.com">Spiking Labs</a>. These pages come with every Kunla, so they match the version you run.</footer>
+<script>
+  window.kunlaTheme && kunlaTheme.bindButton(document.getElementById('theme'));
+  // Phones start with the guide list folded away; wide screens keep it open as a sidebar.
+  if (matchMedia('(max-width: 899px)').matches) document.querySelector('.side').removeAttribute('open');
+</script>
+</body>
+</html>

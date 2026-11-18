@@ -20,7 +20,9 @@ npm run typecheck
 npm test             # Vitest; runs the Worker against an in-memory SQLite D1 shim
 ```
 
-CI runs `npm run typecheck` and `npm test` on every pull request. Please run both before you push.
+CI runs `npm run typecheck`, `npm test` and `npm run docs:check` on every pull request. Please run them before you push.
+
+The guides in `docs/` are also served as web pages at `/docs/` on every Kunla (for example [kunla.app/docs](https://kunla.app/docs/)). The pages in `public/docs/` are generated: after editing a guide, run `npm run docs` and commit both. New guides show up by themselves; add them to `NAV` in `scripts/build-docs.mjs` to place them in the sidebar.
 
 ## Where things live
 

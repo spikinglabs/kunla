@@ -62,6 +62,7 @@ jobs:
           for f in public/index.html public/app/index.html public/authorize.html; do sed -i "s|<body\([^>]*\)>|&\n$ribbon|" "$f"; done
           # A test copy stays out of search results (the page's canonical link already points at kunla.app).
           sed -i 's|<meta charset="utf-8">|&\n<meta name="robots" content="noindex, nofollow">|' public/index.html
+          find public/docs -name index.html -exec sed -i 's|<meta charset="utf-8">|&\n<meta name="robots" content="noindex, nofollow">|' {} +
           grep -c "$label ·" public/index.html
           grep '^KUNLA_ENV' wrangler.toml
       - name: Pin where the Worker runs
