@@ -122,7 +122,8 @@ describe('people take over', () => {
     wakes = [];
     const r = await call('POST', '/api/tasks/MKT-1/takeover', human, { to: 'Writer' });
     expect(r.body).toMatchObject({ status: 'ready', assignee_id: a2Id });
-    expect(wakes.map((w) => [w.event, w.agent])).toEqual([['taken_over', 'Coder'], ['assigned', 'Writer']]);
+    // Both wakes are delivered in the background at the same time, so they can arrive in either order.
+    expect(wakes.map((w) => [w.event, w.agent]).sort()).toEqual([['assigned', 'Writer'], ['taken_over', 'Coder']]);
   });
 
   it("agents can't take over", async () => {

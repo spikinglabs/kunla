@@ -69,7 +69,7 @@ addEventListener('message',(e)=>{const m=e.data;if(!m||m.jsonrpc!=='2.0')return;
 });
 new ResizeObserver(()=>note('ui/notifications/size-changed',{width:Math.ceil(document.body.scrollWidth),height:Math.ceil(document.body.offsetHeight)})).observe(document.body);
 document.addEventListener('click',(e)=>{const a=e.target.closest('[data-open]');if(a){e.preventDefault();open(a.dataset.open);}});
-(async()=>{try{const r=await req('ui/initialize',{protocolVersion:'2026-01-26',appCapabilities:{availableDisplayModes:['inline']},clientInfo:{name:'kunla-'+VIEW,version:'1'}});theme(r&&r.hostContext);}catch(e){}note('ui/notifications/initialized',{});})();
+(async()=>{try{const r=await req('ui/initialize',{protocolVersion:'2026-01-26',appCapabilities:{availableDisplayModes:['inline']},appInfo:{name:'kunla-'+VIEW,version:'1'}});theme(r&&r.hostContext);}catch(e){}note('ui/notifications/initialized',{});})();
 async function refresh(){const b=$('#refresh');if(b)b.disabled=true;try{data=await tool(VIEW==='inbox'?'decision_inbox':'project_status',VIEW==='progress'&&data&&data.project?{project:data.project.key}:{});render();}catch(e){$('#msg').textContent=e.message;}finally{if(b)b.disabled=false;}}
 const taskLink=(k)=>data&&data.board?data.board+'/t/'+k:null;
 const keyLink=(k)=>{const u=taskLink(k);return u?'<a href="#" data-open="'+esc(u)+'" class="key">'+esc(k)+'</a>':'<span class="key">'+esc(k)+'</span>';};

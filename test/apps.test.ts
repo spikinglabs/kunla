@@ -38,6 +38,8 @@ describe('chat views (MCP Apps)', () => {
       const r = (await mcp(ai, 'resources/read', { uri })).result.contents[0];
       expect(r.mimeType).toBe('text/html;profile=mcp-app');
       expect(r.text).toContain('ui/initialize');
+      // Hosts validate ui/initialize strictly (MCP Apps SDK 2.x): the view must name itself as appInfo, or it never shows.
+      expect(r.text).toMatch(/req\('ui\/initialize',\{.*appInfo:\{name:/);
       expect(r.text).not.toMatch(/<script[^>]+src=|<link[^>]+href=/);
       // One stray quote in the inline script blanks the whole view in the chat, with no error shown.
       for (const [, js] of r.text.matchAll(/<script>([\s\S]*?)<\/script>/g)) expect(() => new Function(js)).not.toThrow();
