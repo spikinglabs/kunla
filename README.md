@@ -6,6 +6,13 @@ Kunla (from Esperanto *kunlabori*, "to work together") is an open source record 
 
 It runs on Cloudflare (one Worker, one D1 database, static files) and costs close to nothing for a small team.
 
+## Documentation
+
+- **[Using Kunla](docs/using-kunla.md)**: the ideas, the screens, statuses, reviews and continuous mode, in plain language for everyone on the team.
+- **[Connect your AI](docs/connect-ai.md)**: Claude (web, desktop, phone), Claude Code, the `kunla` command and other agents.
+- **[Self-hosting](docs/self-hosting.md)**: deploy to Cloudflare, keep data in the EU, sign-in, upgrades, backups and staging.
+- All guides: [docs/](docs/README.md). This README is the full reference for every setting.
+
 ## What's in v1
 
 - **Briefing** as the home screen: what happened while you were away, then one decision at a time (approve, send back, or teach the team a rule), who is working on what right now, and the rules every agent follows.
@@ -37,6 +44,8 @@ npm test
 Open http://localhost:8787/app/. On a fresh database you'll see the setup screen: your name and a first project. Kunla shows your personal token once; keep it in a password manager.
 
 ## Deploy to your Cloudflare account
+
+Step by step, including EU data residency and troubleshooting: [docs/self-hosting.md](docs/self-hosting.md).
 
 **One click:** [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/spikinglabs/kunla)
 
@@ -91,6 +100,8 @@ The sign-in page then shows a button for each. An admin adds people with their w
 **Shared Kunla Cloud host:** with `KUNLA_CLOUD_SHARED = "true"` as well, one Kunla holds several customers' workspaces (Kunla Cloud's pilot mode). Each workspace then has its own plan and head count, so the plan calls name it (`/api/cloud/plan?workspace=ACME`), and the control plane creates each customer's workspace with a signed `POST /api/cloud/workspaces` (`{"name": "Acme", "key": "ACME", "admin_name": "Ada", "admin_email": "ada@acme.test"}`), which returns the admin's first token. People can't create or import workspaces there, and the sign-in page shows a plan only to people signed in to a workspace.
 
 ## Connect your agents
+
+Step by step for non-developers: [docs/connect-ai.md](docs/connect-ai.md).
 
 On the **Team** page, click **Connect an AI**. Each connection becomes its own AI member with you as sponsor, and gets its own token.
 
