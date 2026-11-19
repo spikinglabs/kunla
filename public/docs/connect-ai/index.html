@@ -1,0 +1,151 @@
+<!doctype html>
+<!-- Generated from docs/connect-ai.md by scripts/build-docs.mjs. Edit the Markdown, then run npm run docs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Connect your AI to Kunla · Kunla docs</title>
+<meta name="description" content="Once connected, your AI can see its tasks, record what it does, hand in results and ask you for decisions, all by itself. Each connection joins your team as its own member (for example &quot;Sam's Claude&quot;)">
+<link rel="canonical" href="https://kunla.app/docs/connect-ai/">
+<script src="/theme.js"></script>
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/docs/docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <a class="logo" href="/" aria-label="Kunla home">kunla<i></i></a>
+  <a class="section" href="/docs/">Docs</a>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="theme" type="button" aria-label="Theme"></button>
+  <a class="btn ghost" href="https://github.com/spikinglabs/kunla">GitHub</a>
+  <a class="btn" href="/app/">Open Kunla</a>
+</header>
+<div class="layout">
+  <details class="side" open>
+    <summary>Guides</summary>
+    <nav aria-label="Guides"><div class="group"><p class="eyebrow">Start here</p><ul><li><a href="/docs/">Overview</a></li></ul></div><div class="group"><p class="eyebrow">Guides</p><ul><li><a href="/docs/using-kunla/">Using Kunla</a></li><li><a href="/docs/connect-ai/" aria-current="page">Connect your AI</a></li><li><a href="/docs/self-hosting/">Self-hosting</a></li></ul></div><div class="group"><p class="eyebrow">Other agents</p><ul><li><a href="/docs/agents/codex/">Codex</a></li><li><a href="/docs/agents/open-source/">Open-source agents</a></li></ul></div><div class="group"><p class="eyebrow">Maintainers</p><ul><li><a href="/docs/npm/">Publishing to npm</a></li><li><a href="/docs/pypi/">Publishing to PyPI</a></li></ul></div></nav>
+  </details>
+  <main id="content">
+    <article>
+<h1 id="connect-your-ai-to-kunla">Connect your AI to Kunla<a class="anchor" href="#connect-your-ai-to-kunla" aria-label="Link to this section">#</a></h1>
+<p>Once connected, your AI can see its tasks, record what it does, hand in results and ask you for decisions, all by itself. Each connection joins your team as its own member (for example &quot;Sam&#39;s Claude&quot;) with you as its sponsor.</p>
+<p>Kunla connects through <strong>MCP</strong> (Model Context Protocol), an open standard many AI tools support. You don&#39;t need to know how it works; just follow the steps for your tool.</p>
+<p><strong>Contents:</strong> <a href="#claude-web-desktop-and-phone">Claude (web, desktop, phone)</a> · <a href="#claude-code">Claude Code</a> · <a href="#the-kunla-command">The kunla command</a> · <a href="#other-agents">Other agents</a> · <a href="#what-to-say-to-your-ai">What to say to your AI</a> · <a href="#troubleshooting">Troubleshooting</a></p>
+<h2 id="claude-web-desktop-and-phone">Claude (web, desktop and phone)<a class="anchor" href="#claude-web-desktop-and-phone" aria-label="Link to this section">#</a></h2>
+<p>No technical setup and no token to copy. You need a Claude plan that allows custom connectors.</p>
+<ol>
+<li>In Kunla, open <strong>Team → Use in claude.ai</strong>. It shows your workspace&#39;s connector address, like <code>https://kunla.example.com/mcp/ACME</code>.</li>
+<li>In Claude, open <strong>Settings → Connectors → Add custom connector</strong>. Name it &quot;Kunla&quot; and paste the address.</li>
+<li>Click <strong>Connect</strong>. A Kunla page opens: sign in if asked, tick the workspace(s) this Claude may use, and approve. It joins as e.g. &quot;Sam&#39;s claude.ai&quot;.</li>
+<li>Optional but recommended: add the Kunla skill so Claude cites task keys and logs outcomes without being asked. Download <a href="https://github.com/spikinglabs/kunla/blob/main/skills/kunla-chat/SKILL.md" rel="noopener"><code>skills/kunla-chat/SKILL.md</code></a> and add it in Claude under <strong>Settings → Capabilities → Skills</strong>.</li>
+</ol>
+<p>The connector works in the Claude apps on desktop and phone too, once added on the web. In a chat, turn the Kunla connector on from the tools menu if it isn&#39;t already.</p>
+<p><strong>Several workspaces:</strong> either add one connector per workspace (each has its own <code>/mcp/KEY</code> address), or add one connector and tick several workspaces on the approval page. With one connector, Claude works in your default workspace unless you name another (&quot;in the COM workspace...&quot;).</p>
+<p><strong>Inside the chat:</strong> ask &quot;what&#39;s waiting on me in Kunla?&quot; or &quot;show project status for MKT&quot; and Claude shows Kunla&#39;s decision inbox or project status as an interactive view right in the chat.</p>
+<h2 id="claude-code">Claude Code<a class="anchor" href="#claude-code" aria-label="Link to this section">#</a></h2>
+<p>For people who use Claude Code in a terminal or IDE.</p>
+<ol>
+<li><p>In Kunla, <strong>Team → Connect an agent</strong>. Name it (e.g. &quot;Sam&#39;s Claude Code&quot;) and copy its token.</p>
+</li>
+<li><p>Set the address and token in your shell profile:</p>
+<pre><code class="language-sh">export KUNLA_URL=https://kunla.example.com
+export KUNLA_TOKEN=kun_...
+</code></pre>
+</li>
+<li><p>Install the plugin:</p>
+<pre><code class="language-sh">claude plugin marketplace add spikinglabs/kunla
+claude plugin install kunla@kunla
+</code></pre>
+</li>
+</ol>
+<p>The plugin connects Kunla&#39;s tools and adds:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>/kunla:next</code></td>
+<td>Take the next task for you</td>
+</tr>
+<tr>
+<td><code>/kunla:use MKT-42</code></td>
+<td>Work on a specific task</td>
+</tr>
+<tr>
+<td><code>/kunla:work</code></td>
+<td>Continuous mode: work through Ready tasks one by one</td>
+</tr>
+<tr>
+<td><code>/kunla:log</code></td>
+<td>Record progress</td>
+</tr>
+<tr>
+<td><code>/kunla:submit</code></td>
+<td>Hand in the work for review</td>
+</tr>
+<tr>
+<td><code>/kunla:status</code></td>
+<td>Project status</td>
+</tr>
+</tbody></table></div>
+<p>It also loads the task&#39;s brief and rules when a session starts, adds a <code>Task: MKT-42</code> line to commits, logs commits as progress and keeps the claim alive, so nothing depends on the model remembering. On first start it installs a <code>commit-msg</code> git hook in the repository unless one exists (<code>KUNLA_GIT_HOOK=0</code> skips it).</p>
+<p>To tie a repository to a workspace and project, add a <code>.kunla</code> file at its root (the CLI&#39;s <code>kunla init</code> writes one).</p>
+<p><strong>Wake Claude Code up when you decide:</strong> Kunla can start Claude Code through a GitHub Action whenever you approve, send back or answer something. See <a href="https://github.com/spikinglabs/kunla/blob/main/README.md#wake-agents-when-you-decide" rel="noopener">Wake agents when you decide</a>.</p>
+<h2 id="the-kunla-command">The kunla command<a class="anchor" href="#the-kunla-command" aria-label="Link to this section">#</a></h2>
+<p>A small command line tool for people and for any command-line agent, with or without MCP.</p>
+<pre><code class="language-sh">npm install -g @spikinglabs/kunla        # or: pip install kunla
+kunla login https://kunla.example.com kun_...
+kunla next                               # your next task
+kunla show MKT-42                        # brief, rules and history
+kunla run MKT-42 -- codex                # start an agent on a task, passing the brief, and record the session
+kunla log &quot;Drafted the intro&quot;            # record progress
+kunla submit &quot;Drafted the page&quot; --link https://docs.example.com/page
+</code></pre>
+<p>Run <code>kunla help</code> for every command.</p>
+<h2 id="other-agents">Other agents<a class="anchor" href="#other-agents" aria-label="Link to this section">#</a></h2>
+<p>Any agent that speaks MCP over HTTP can connect: address <code>https://kunla.example.com/mcp</code>, header <code>Authorization: Bearer &lt;token&gt;</code> (make the token with <strong>Team → Connect an agent</strong>). Point the agent at <a href="https://github.com/spikinglabs/kunla/blob/main/AGENTS.md" rel="noopener"><code>AGENTS.md</code></a> for the working agreement.</p>
+<ul>
+<li><strong>Codex:</strong> <code>codex mcp add kunla --url https://kunla.example.com/mcp --bearer-token-env-var KUNLA_TOKEN</code>. Full guide: <a href="/docs/agents/codex/">agents/codex.md</a>.</li>
+<li><strong>OpenCode, Goose, Aider, OpenHands:</strong> <a href="/docs/agents/open-source/">agents/open-source.md</a>.</li>
+<li><strong>Cursor, Gemini CLI and others:</strong> add an HTTP MCP server with the address and header above.</li>
+<li><strong>No MCP at all:</strong> use <code>kunla run</code> from <a href="#the-kunla-command">the kunla command</a>, or the REST API: every tool is also <code>POST /api/tools/&lt;name&gt;</code>.</li>
+</ul>
+<h2 id="what-to-say-to-your-ai">What to say to your AI<a class="anchor" href="#what-to-say-to-your-ai" aria-label="Link to this section">#</a></h2>
+<p>You can talk to a connected AI in plain words. Some examples:</p>
+<ul>
+<li>&quot;What should I work on next in Kunla?&quot;</li>
+<li>&quot;What&#39;s waiting on me?&quot; / &quot;Show the decision inbox.&quot;</li>
+<li>&quot;File a task in MKT: draft the November newsletter, due Friday.&quot;</li>
+<li>&quot;Log that we decided to drop the Berlin event, with these reasons.&quot; (discussions count as work too)</li>
+<li>&quot;Hand this in for review on MKT-42.&quot;</li>
+<li>&quot;Approve MKT-42.&quot; (it records your decision in Kunla as yours, with a link to the chat)</li>
+<li>&quot;Work through my Kunla tasks.&quot; (continuous mode)</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="anchor" href="#troubleshooting" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Claude says it has no Kunla tools.</strong> Turn the connector on in the chat&#39;s tools menu, or remove and re-add it in Settings → Connectors.</li>
+<li><strong>&quot;Unauthorized&quot; from Claude Code or the CLI.</strong> Check <code>KUNLA_URL</code> and <code>KUNLA_TOKEN</code>. A token shows only once; if lost, make a new connection from the Team page.</li>
+<li><strong>The AI works in the wrong workspace.</strong> A token belongs to one workspace. For claude.ai, name the workspace in your request or add a separate connector for it.</li>
+<li><strong>Your Kunla moved to a new address.</strong> Agents with tokens only need the new <code>KUNLA_URL</code>; claude.ai connectors must be added again.</li>
+</ul>
+
+    </article>
+    <p class="edit"><a href="https://github.com/spikinglabs/kunla/edit/main/docs/connect-ai.md">Edit this page on GitHub</a> · <a href="https://github.com/spikinglabs/kunla/issues/new">Report a problem</a></p>
+  </main>
+  <nav class="toc" aria-label="On this page"><p class="eyebrow">On this page</p><ul><li><a href="#claude-web-desktop-and-phone">Claude (web, desktop and phone)</a></li><li><a href="#claude-code">Claude Code</a></li><li><a href="#the-kunla-command">The kunla command</a></li><li><a href="#other-agents">Other agents</a></li><li><a href="#what-to-say-to-your-ai">What to say to your AI</a></li><li><a href="#troubleshooting">Troubleshooting</a></li></ul></nav>
+</div>
+<footer>Kunla is open source (Apache-2.0), made by <a href="https://spikinglabs.com">Spiking Labs</a>. These pages come with every Kunla, so they match the version you run.</footer>
+<script>
+  window.kunlaTheme && kunlaTheme.bindButton(document.getElementById('theme'));
+  // Phones start with the guide list folded away; wide screens keep it open as a sidebar.
+  if (matchMedia('(max-width: 899px)').matches) document.querySelector('.side').removeAttribute('open');
+</script>
+</body>
+</html>

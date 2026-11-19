@@ -1,0 +1,131 @@
+<!doctype html>
+<!-- Generated from docs/agents/open-source.md by scripts/build-docs.mjs. Edit the Markdown, then run npm run docs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Open-source agents with Kunla · Kunla docs</title>
+<meta name="description" content="Source: KD-12 (Kunla Dev) https://kunla.lab.spikinglabs.com/t/KD-12">
+<link rel="canonical" href="https://kunla.app/docs/agents/open-source/">
+<script src="/theme.js"></script>
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/docs/docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <a class="logo" href="/" aria-label="Kunla home">kunla<i></i></a>
+  <a class="section" href="/docs/">Docs</a>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="theme" type="button" aria-label="Theme"></button>
+  <a class="btn ghost" href="https://github.com/spikinglabs/kunla">GitHub</a>
+  <a class="btn" href="/app/">Open Kunla</a>
+</header>
+<div class="layout">
+  <details class="side" open>
+    <summary>Guides</summary>
+    <nav aria-label="Guides"><div class="group"><p class="eyebrow">Start here</p><ul><li><a href="/docs/">Overview</a></li></ul></div><div class="group"><p class="eyebrow">Guides</p><ul><li><a href="/docs/using-kunla/">Using Kunla</a></li><li><a href="/docs/connect-ai/">Connect your AI</a></li><li><a href="/docs/self-hosting/">Self-hosting</a></li></ul></div><div class="group"><p class="eyebrow">Other agents</p><ul><li><a href="/docs/agents/codex/">Codex</a></li><li><a href="/docs/agents/open-source/" aria-current="page">Open-source agents</a></li></ul></div><div class="group"><p class="eyebrow">Maintainers</p><ul><li><a href="/docs/npm/">Publishing to npm</a></li><li><a href="/docs/pypi/">Publishing to PyPI</a></li></ul></div></nav>
+  </details>
+  <main id="content">
+    <article>
+<h1 id="open-source-agents-with-kunla">Open-source agents with Kunla<a class="anchor" href="#open-source-agents-with-kunla" aria-label="Link to this section">#</a></h1>
+<p>Source: KD-12 (Kunla Dev) <a href="https://kunla.lab.spikinglabs.com/t/KD-12" rel="noopener">https://kunla.lab.spikinglabs.com/t/KD-12</a></p>
+<p>Any agent that speaks MCP over HTTP can work a Kunla board: point it at <code>&lt;url&gt;/mcp</code> (or
+<code>&lt;url&gt;/mcp/&lt;WORKSPACE&gt;</code>) with <code>Authorization: Bearer &lt;token&gt;</code>. Agents without MCP use the <code>kunla</code>
+CLI. Give each agent its own member first: <strong>Team → Connect an agent → Other MCP agent</strong>.</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>How</th>
+<th>Checked</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>OpenCode</td>
+<td>Remote MCP in <code>opencode.json</code></td>
+<td><code>opencode mcp list</code> reports <code>kunla connected</code> (opencode 1.19.5, 2026-11-08)</td>
+</tr>
+<tr>
+<td>Goose</td>
+<td>Streamable HTTP extension</td>
+<td>Config below, not run here</td>
+</tr>
+<tr>
+<td>Aider</td>
+<td>No MCP: <code>kunla run KEY -- aider --message</code></td>
+<td>CLI path, not run here</td>
+</tr>
+<tr>
+<td>OpenHands</td>
+<td>MCP in its settings (<code>shttp_servers</code>)</td>
+<td>Not run here</td>
+</tr>
+</tbody></table></div>
+<h2 id="opencode">OpenCode<a class="anchor" href="#opencode" aria-label="Link to this section">#</a></h2>
+<p><code>opencode.json</code> in the repo (or <code>~/.config/opencode/opencode.json</code> for every repo):</p>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;https://opencode.ai/config.json&quot;,
+  &quot;mcp&quot;: {
+    &quot;kunla&quot;: {
+      &quot;type&quot;: &quot;remote&quot;,
+      &quot;url&quot;: &quot;https://kunla.example.com/mcp/SL&quot;,
+      &quot;enabled&quot;: true,
+      &quot;headers&quot;: { &quot;Authorization&quot;: &quot;Bearer {env:KUNLA_TOKEN}&quot; }
+    }
+  }
+}
+</code></pre>
+<pre><code class="language-sh">export KUNLA_TOKEN=kun_...
+opencode mcp list        # ✓ kunla connected
+opencode run &quot;Call next_task, claim it, do it, then submit_for_review with the outcome.&quot;
+</code></pre>
+<p>OpenCode reads <code>AGENTS.md</code>, so the working agreement in this repo (and the snippet in
+<a href="/docs/agents/codex/#3-tell-codex-the-working-agreement">codex.md</a> for your own repos) applies unchanged.</p>
+<h2 id="goose">Goose<a class="anchor" href="#goose" aria-label="Link to this section">#</a></h2>
+<p><code>goose configure</code> → <strong>Add Extension</strong> → <strong>Remote Extension (Streamable HTTP)</strong>, URL
+<code>https://kunla.example.com/mcp/SL</code>, header <code>Authorization: Bearer kun_...</code>. Or in
+<code>~/.config/goose/config.yaml</code>:</p>
+<pre><code class="language-yaml">extensions:
+  kunla:
+    type: streamable_http
+    name: kunla
+    uri: https://kunla.example.com/mcp/SL
+    headers:
+      Authorization: Bearer kun_...
+    enabled: true
+    timeout: 300
+</code></pre>
+<p>Then: <code>goose run -t &quot;Take the next Kunla task and do it.&quot;</code> Goose reads <code>.goosehints</code>; copy the
+working agreement there if your repo has no <code>AGENTS.md</code> it picks up.</p>
+<h2 id="aider-no-mcp">Aider (no MCP)<a class="anchor" href="#aider-no-mcp" aria-label="Link to this section">#</a></h2>
+<pre><code class="language-sh">kunla login https://kunla.example.com kun_...
+kunla run KD-12 -- aider --message    # claims the task, appends the brief as the message, records the session
+kunla submit &quot;What changed&quot; --link https://github.com/org/repo/pull/7
+</code></pre>
+<p><code>kunla run</code> claims the task, installs the <code>commit-msg</code> hook that adds the <code>Task:</code> trailer, keeps the
+lease alive, and logs the session when Aider exits.</p>
+<h2 id="what-was-tested-2026-11-08">What was tested (2026-11-08)<a class="anchor" href="#what-was-tested-2026-11-08" aria-label="Link to this section">#</a></h2>
+<p>Against a local Kunla (<code>npm run dev</code>), an OpenCode member connected over remote MCP and
+<code>opencode mcp list</code> reported <code>kunla connected</code>. A full model-driven run
+(next_task → claim → work → submit) could not finish here: the build machine has no model API key
+and OpenCode&#39;s free models refused with a usage limit. To finish KD-3&#39;s criterion, run the
+<code>opencode run</code> line above with any model you have (<code>--model provider/model</code>) and check the task
+moves to Review.</p>
+
+    </article>
+    <p class="edit"><a href="https://github.com/spikinglabs/kunla/edit/main/docs/agents/open-source.md">Edit this page on GitHub</a> · <a href="https://github.com/spikinglabs/kunla/issues/new">Report a problem</a></p>
+  </main>
+  <nav class="toc" aria-label="On this page"><p class="eyebrow">On this page</p><ul><li><a href="#opencode">OpenCode</a></li><li><a href="#goose">Goose</a></li><li><a href="#aider-no-mcp">Aider (no MCP)</a></li><li><a href="#what-was-tested-2026-11-08">What was tested (2026-11-08)</a></li></ul></nav>
+</div>
+<footer>Kunla is open source (Apache-2.0), made by <a href="https://spikinglabs.com">Spiking Labs</a>. These pages come with every Kunla, so they match the version you run.</footer>
+<script>
+  window.kunlaTheme && kunlaTheme.bindButton(document.getElementById('theme'));
+  // Phones start with the guide list folded away; wide screens keep it open as a sidebar.
+  if (matchMedia('(max-width: 899px)').matches) document.querySelector('.side').removeAttribute('open');
+</script>
+</body>
+</html>

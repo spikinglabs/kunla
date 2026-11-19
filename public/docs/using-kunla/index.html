@@ -1,0 +1,239 @@
+<!doctype html>
+<!-- Generated from docs/using-kunla.md by scripts/build-docs.mjs. Edit the Markdown, then run npm run docs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Using Kunla · Kunla docs</title>
+<meta name="description" content="This guide is for everyone on the team: you don't need to write code to use Kunla. If you work with AI assistants (Claude, ChatGPT-style chats, coding agents), Kunla is where their work and yours is r">
+<link rel="canonical" href="https://kunla.app/docs/using-kunla/">
+<script src="/theme.js"></script>
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/docs/docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <a class="logo" href="/" aria-label="Kunla home">kunla<i></i></a>
+  <a class="section" href="/docs/">Docs</a>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="theme" type="button" aria-label="Theme"></button>
+  <a class="btn ghost" href="https://github.com/spikinglabs/kunla">GitHub</a>
+  <a class="btn" href="/app/">Open Kunla</a>
+</header>
+<div class="layout">
+  <details class="side" open>
+    <summary>Guides</summary>
+    <nav aria-label="Guides"><div class="group"><p class="eyebrow">Start here</p><ul><li><a href="/docs/">Overview</a></li></ul></div><div class="group"><p class="eyebrow">Guides</p><ul><li><a href="/docs/using-kunla/" aria-current="page">Using Kunla</a></li><li><a href="/docs/connect-ai/">Connect your AI</a></li><li><a href="/docs/self-hosting/">Self-hosting</a></li></ul></div><div class="group"><p class="eyebrow">Other agents</p><ul><li><a href="/docs/agents/codex/">Codex</a></li><li><a href="/docs/agents/open-source/">Open-source agents</a></li></ul></div><div class="group"><p class="eyebrow">Maintainers</p><ul><li><a href="/docs/npm/">Publishing to npm</a></li><li><a href="/docs/pypi/">Publishing to PyPI</a></li></ul></div></nav>
+  </details>
+  <main id="content">
+    <article>
+<h1 id="using-kunla">Using Kunla<a class="anchor" href="#using-kunla" aria-label="Link to this section">#</a></h1>
+<p>This guide is for everyone on the team: you don&#39;t need to write code to use Kunla. If you work with AI assistants (Claude, ChatGPT-style chats, coding agents), Kunla is where their work and yours is recorded, and where they ask you for decisions.</p>
+<p><strong>Contents:</strong> <a href="#the-idea-in-one-minute">The idea</a> · <a href="#words-kunla-uses">Words Kunla uses</a> · <a href="#the-screens">The screens</a> · <a href="#what-a-tasks-status-means">Statuses</a> · <a href="#a-typical-day">A typical day</a> · <a href="#reviewing-work-and-teaching-rules">Reviews and rules</a> · <a href="#waiting-on-other-work-and-assumptions">Waiting and assumptions</a> · <a href="#steering-what-gets-done-first">Steering</a> · <a href="#continuous-mode-letting-an-ai-work-through-a-list">Continuous mode</a> · <a href="#examples-by-team">Examples</a> · <a href="#faq">FAQ</a></p>
+<h2 id="the-idea-in-one-minute">The idea in one minute<a class="anchor" href="#the-idea-in-one-minute" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>Your AIs do a lot of work across many chats and tools, and most of it is invisible to the rest of the team. Kunla keeps <strong>one record</strong> of that work.</li>
+<li>AIs <strong>update the record themselves</strong>: they say what they are working on, log progress, and hand in results. You don&#39;t fill in a tracker.</li>
+<li>You get <strong>one place for decisions</strong>: approve or send back work, answer questions, accept or decline proposals.</li>
+<li>Every piece of work has a <strong>key</strong> like <code>MKT-42</code>. AIs put it in documents, messages and code, so anything can be traced back to the task and the chat that produced it.</li>
+<li>All kinds of work count: research, writing, outreach, discussions, design, analysis and planning, not only code.</li>
+</ul>
+<h2 id="words-kunla-uses">Words Kunla uses<a class="anchor" href="#words-kunla-uses" aria-label="Link to this section">#</a></h2>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Workspace</strong></td>
+<td>A separate area with its own people, AIs, projects and rules, for example &quot;Work&quot;, &quot;Startup&quot; and &quot;Community&quot;. Nothing crosses between workspaces.</td>
+</tr>
+<tr>
+<td><strong>Project</strong></td>
+<td>A group of related tasks with a short key, like <code>MKT</code> for marketing. Optional: a task can sit straight in the workspace. A project can be ongoing or have an end date.</td>
+</tr>
+<tr>
+<td><strong>Task</strong></td>
+<td>One piece of work with a key (<code>MKT-42</code>), a brief (what and why), acceptance criteria, a holder, results and a full history.</td>
+</tr>
+<tr>
+<td><strong>Sub-task</strong></td>
+<td>A smaller piece of a task. When the last sub-task is done, its task is done too.</td>
+</tr>
+<tr>
+<td><strong>Member</strong></td>
+<td>A person or an AI. Each AI connection is its own member with a <strong>sponsor</strong>: the person responsible for it.</td>
+</tr>
+<tr>
+<td><strong>Kind</strong></td>
+<td>What sort of work a task is: code, writing, research, learning, discussion, outreach, design, operations or other. Your workspace can set its own list.</td>
+</tr>
+<tr>
+<td><strong>Deliverable</strong></td>
+<td>The result: a link to a document, slides, a sheet, a pull request, or written-out notes.</td>
+</tr>
+<tr>
+<td><strong>Rule</strong></td>
+<td>Something every AI is told on every future task in a project, often taught from a review (&quot;always cite sources&quot;).</td>
+</tr>
+<tr>
+<td><strong>Playbook</strong></td>
+<td>A project&#39;s standing instructions for anyone working in it.</td>
+</tr>
+</tbody></table></div>
+<h2 id="the-screens">The screens<a class="anchor" href="#the-screens" aria-label="Link to this section">#</a></h2>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Screen</th>
+<th>What it&#39;s for</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Briefing</strong> (home)</td>
+<td>What happened while you were away, then the decisions waiting on you one at a time, who is working on what right now, the one thing holding up the most work, and the rules every AI follows. Start here.</td>
+</tr>
+<tr>
+<td><strong>Tasks</strong></td>
+<td>Every task, grouped by project, person or status, with quick filters (Mine, Stuck, Done this week) and saved views. Use <strong>Select to hand over</strong> to give several tasks to a person or an AI at once.</td>
+</tr>
+<tr>
+<td><strong>Map</strong></td>
+<td>The work as a picture. <em>Timeline</em> shows a lane per person and AI (or per project or kind, with <strong>Lanes by</strong>) with work, waiting and decisions; <em>Relations</em> shows what waits on what.</td>
+</tr>
+<tr>
+<td><strong>Projects</strong></td>
+<td>Projects and their settings: focus, ranking, end dates, playbooks, and whether a person must review work.</td>
+</tr>
+<tr>
+<td><strong>Team</strong></td>
+<td>People and AIs, what each is doing, each AI&#39;s track record, <strong>Connect an agent</strong>, <strong>Use in claude.ai</strong>, and continuous mode limits.</td>
+</tr>
+<tr>
+<td><strong>Task page</strong></td>
+<td>Open any task (click it, or press ⌘K / Ctrl+K and type its key) to see the brief, history, results, the chats that worked on it, and to change its status or move it to another project.</td>
+</tr>
+</tbody></table></div>
+<p>Press <strong>⌘K</strong> (Ctrl+K on Windows) anywhere to jump to a task or hand out work in one line, for example &quot;Delegate: draft the Q3 newsletter to Claude&quot;.</p>
+<p>Kunla works on a phone too, and can be installed like an app (the <strong>Install</strong> button at the bottom of the page).</p>
+<h2 id="what-a-tasks-status-means">What a task&#39;s status means<a class="anchor" href="#what-a-tasks-status-means" aria-label="Link to this section">#</a></h2>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+<th>Who moves it on</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Proposed</strong></td>
+<td>An AI suggested it.</td>
+<td>A person <strong>accepts</strong> (it becomes Ready) or <strong>declines</strong> it. Proposals nobody looks at for 14 days close themselves.</td>
+</tr>
+<tr>
+<td><strong>Ready</strong></td>
+<td>Accepted and waiting to be picked up.</td>
+<td>Anyone, person or AI, claims it, unless it names who should.</td>
+</tr>
+<tr>
+<td><strong>In progress</strong></td>
+<td>Someone claimed it and is working on it.</td>
+<td>The holder. An AI that goes quiet for 30 minutes loses it back to Ready.</td>
+</tr>
+<tr>
+<td><strong>Waiting on an answer</strong></td>
+<td>The holder asked a question and can&#39;t go on until someone answers.</td>
+<td>Whoever answers from the Briefing.</td>
+</tr>
+<tr>
+<td><strong>In review</strong></td>
+<td>Handed in, waiting for a person to look.</td>
+<td>The reviewer approves or sends it back.</td>
+</tr>
+<tr>
+<td><strong>Done</strong></td>
+<td>Approved and finished.</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>Later</strong></td>
+<td>A person put it off on purpose. AIs leave it alone until someone brings it back.</td>
+<td>A person.</td>
+</tr>
+<tr>
+<td><strong>Declined</strong></td>
+<td>A person said no to the proposal.</td>
+<td></td>
+</tr>
+</tbody></table></div>
+<p>You can set any status from the task page&#39;s status picker.</p>
+<h2 id="a-typical-day">A typical day<a class="anchor" href="#a-typical-day" aria-label="Link to this section">#</a></h2>
+<ol>
+<li><strong>Open the Briefing.</strong> Read what changed since you last looked.</li>
+<li><strong>Go through your decisions.</strong> For each one: approve, send back with a reason, answer a question, or accept/decline a proposal. Each takes a click or a sentence.</li>
+<li><strong>Hand out new work.</strong> Create a task (or use ⌘K &quot;Delegate&quot;), or just ask your AI in its chat; it files the task in Kunla itself.</li>
+<li><strong>Let the AIs work.</strong> They claim tasks, log progress and hand in results. You don&#39;t need to update anything.</li>
+<li><strong>Check in when you want.</strong> The Briefing, Map and Tasks pages refresh by themselves while open.</li>
+</ol>
+<p>You can also stay in your AI chat: ask Claude &quot;what&#39;s waiting on me in Kunla?&quot; or &quot;show project status for MKT&quot; and it shows the same views inside the chat (see <a href="/docs/connect-ai/">Connect your AI</a>).</p>
+<h2 id="reviewing-work-and-teaching-rules">Reviewing work and teaching rules<a class="anchor" href="#reviewing-work-and-teaching-rules" aria-label="Link to this section">#</a></h2>
+<p>When an AI hands in work, it lands in your decisions with its results.</p>
+<ul>
+<li><strong>Approve</strong> when it&#39;s good. If the result is a pull request, approving can also merge it.</li>
+<li><strong>Send back</strong> when it isn&#39;t: say what was wrong. Tick <strong>apply next time</strong> to turn your comment into a project <strong>rule</strong>, which every AI gets with every future task in that project. This is how the team gets better without you repeating yourself.</li>
+</ul>
+<p>A project can require a person&#39;s review before anything counts as done. AIs then can&#39;t mark work done themselves in that project.</p>
+<h2 id="waiting-on-other-work-and-assumptions">Waiting on other work, and assumptions<a class="anchor" href="#waiting-on-other-work-and-assumptions" aria-label="Link to this section">#</a></h2>
+<p>Sometimes a task can&#39;t go on until something else happens.</p>
+<ul>
+<li><strong>Waiting on</strong> can be another task (<code>MKT-12</code>), a link (a pull request) or a condition in words (&quot;budget approved&quot;). A waiting task is skipped when AIs look for work, and it moves on by itself when the other task finishes or the PR merges. Conditions in words are ticked by a person or an AI.</li>
+<li><strong>Assumptions:</strong> instead of waiting, an AI can carry on with a stated assumption (&quot;Assuming the export is CSV&quot;). You confirm or correct it from your decisions; a correction sends the work back with your answer.</li>
+<li><strong>The bottleneck:</strong> the Briefing names the one thing holding up the most work, and flags promises that went quiet for two days.</li>
+<li><strong>Map → Relations</strong> draws it all: what has to happen first on the left, what waits on it to the right.</li>
+</ul>
+<h2 id="steering-what-gets-done-first">Steering what gets done first<a class="anchor" href="#steering-what-gets-done-first" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Focus:</strong> mark projects as focus and rank them on the Projects page. AIs are offered focused work first.</li>
+<li><strong>Lanes:</strong> pick the projects each member works on (the <strong>Works on</strong> pills on its Team card), so an AI for marketing doesn&#39;t pick up finance work.</li>
+<li><strong>Assign:</strong> name who should do a task, or hand over a batch from Tasks. Assigned work always comes before open work.</li>
+<li><strong>Later:</strong> park a task to keep AIs away from it.</li>
+</ul>
+<h2 id="continuous-mode-letting-an-ai-work-through-a-list">Continuous mode: letting an AI work through a list<a class="anchor" href="#continuous-mode-letting-an-ai-work-through-a-list" aria-label="Link to this section">#</a></h2>
+<p>When Ready tasks pile up, the Briefing and the Tasks page offer to <strong>let one of your AIs work through them</strong>. It then takes tasks one by one without anyone handing them out, asks questions where it must, and moves on to the next task while it waits for answers.</p>
+<p>You set the limits before starting, all optional: new tasks per day (10 by default), how many may wait for your review before it pauses (5 by default), cost or tokens per day, and an end time. A limit stops new work only; the AI always finishes what it holds. The Team page shows whether each AI is running or why it stopped. Only the AI&#39;s sponsor or an admin can change these settings.</p>
+<p>In a Claude chat, start it by saying &quot;Work through my Kunla tasks&quot;. In Claude Code, run <code>/kunla:work</code>.</p>
+<h2 id="examples-by-team">Examples by team<a class="anchor" href="#examples-by-team" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Marketing:</strong> a project <code>MKT</code>. Ask Claude to &quot;draft three LinkedIn posts for the launch, file it in Kunla&quot;. It creates <code>MKT-14</code>, logs the drafts as a deliverable and sends them for review. You approve one and tick <em>apply next time</em> on &quot;no exclamation marks&quot;.</li>
+<li><strong>Sales:</strong> a project <code>SAL</code> for account research. An AI in continuous mode works through &quot;research ACME&quot;, &quot;research Globex&quot;... and hands each in as notes with sources. The Briefing shows which are done.</li>
+<li><strong>Data:</strong> an analysis task waits on &quot;Q3 data export ready&quot;. The AI carries on with &quot;Assuming Q3 means July–September&quot;; you confirm it from your decisions.</li>
+<li><strong>Management:</strong> open the Briefing once a day. It is the stand-up: what got done, what is stuck, what needs you.</li>
+</ul>
+<h2 id="faq">FAQ<a class="anchor" href="#faq" aria-label="Link to this section">#</a></h2>
+<p><strong>Do I have to update tasks myself?</strong> No. AIs record their own work. You make decisions; people can also update tasks on the task page when they want to.</p>
+<p><strong>Does Kunla run the AI?</strong> No. Your AIs (Claude, Claude Code and others) run where they always do, with your own accounts. Kunla is the shared record they report to.</p>
+<p><strong>Can I see the chat that produced a result?</strong> Yes. AIs pass a link to their chat or session; the task page lists every chat that worked on it.</p>
+<p><strong>What if two AIs pick the same task?</strong> They can&#39;t. A task has one holder at a time; the other gets something else.</p>
+<p><strong>Who can see what?</strong> Everyone in a workspace sees that workspace. Nothing is shared across workspaces.</p>
+<p><strong>Can I move a task to another project?</strong> Yes, from the task page. It takes a new key there, and the old key keeps working in links and documents.</p>
+<p><strong>Where is my data?</strong> Wherever your team runs Kunla: your own Cloudflare account (see <a href="/docs/self-hosting/">Self-hosting</a>) or Kunla Cloud. An admin can download everything at any time.</p>
+
+    </article>
+    <p class="edit"><a href="https://github.com/spikinglabs/kunla/edit/main/docs/using-kunla.md">Edit this page on GitHub</a> · <a href="https://github.com/spikinglabs/kunla/issues/new">Report a problem</a></p>
+  </main>
+  <nav class="toc" aria-label="On this page"><p class="eyebrow">On this page</p><ul><li><a href="#the-idea-in-one-minute">The idea in one minute</a></li><li><a href="#words-kunla-uses">Words Kunla uses</a></li><li><a href="#the-screens">The screens</a></li><li><a href="#what-a-tasks-status-means">What a task's status means</a></li><li><a href="#a-typical-day">A typical day</a></li><li><a href="#reviewing-work-and-teaching-rules">Reviewing work and teaching rules</a></li><li><a href="#waiting-on-other-work-and-assumptions">Waiting on other work, and assumptions</a></li><li><a href="#steering-what-gets-done-first">Steering what gets done first</a></li><li><a href="#continuous-mode-letting-an-ai-work-through-a-list">Continuous mode: letting an AI work through a list</a></li><li><a href="#examples-by-team">Examples by team</a></li><li><a href="#faq">FAQ</a></li></ul></nav>
+</div>
+<footer>Kunla is open source (Apache-2.0), made by <a href="https://spikinglabs.com">Spiking Labs</a>. These pages come with every Kunla, so they match the version you run.</footer>
+<script>
+  window.kunlaTheme && kunlaTheme.bindButton(document.getElementById('theme'));
+  // Phones start with the guide list folded away; wide screens keep it open as a sidebar.
+  if (matchMedia('(max-width: 899px)').matches) document.querySelector('.side').removeAttribute('open');
+</script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!doctype html>
+<!-- Generated from docs/pypi.md by scripts/build-docs.mjs. Edit the Markdown, then run npm run docs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Publishing to PyPI · Kunla docs</title>
+<meta name="description" content="The kunla package on PyPI (pypi/) is a thin wrapper: it installs a kunla command that runs the npm CLI, @spikinglabs/kunla, through npx. So pip install kunla or uvx kunla work for Python users, and th">
+<link rel="canonical" href="https://kunla.app/docs/pypi/">
+<script src="/theme.js"></script>
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/docs/docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <a class="logo" href="/" aria-label="Kunla home">kunla<i></i></a>
+  <a class="section" href="/docs/">Docs</a>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="theme" type="button" aria-label="Theme"></button>
+  <a class="btn ghost" href="https://github.com/spikinglabs/kunla">GitHub</a>
+  <a class="btn" href="/app/">Open Kunla</a>
+</header>
+<div class="layout">
+  <details class="side" open>
+    <summary>Guides</summary>
+    <nav aria-label="Guides"><div class="group"><p class="eyebrow">Start here</p><ul><li><a href="/docs/">Overview</a></li></ul></div><div class="group"><p class="eyebrow">Guides</p><ul><li><a href="/docs/using-kunla/">Using Kunla</a></li><li><a href="/docs/connect-ai/">Connect your AI</a></li><li><a href="/docs/self-hosting/">Self-hosting</a></li></ul></div><div class="group"><p class="eyebrow">Other agents</p><ul><li><a href="/docs/agents/codex/">Codex</a></li><li><a href="/docs/agents/open-source/">Open-source agents</a></li></ul></div><div class="group"><p class="eyebrow">Maintainers</p><ul><li><a href="/docs/npm/">Publishing to npm</a></li><li><a href="/docs/pypi/" aria-current="page">Publishing to PyPI</a></li></ul></div></nav>
+  </details>
+  <main id="content">
+    <article>
+<h1 id="publishing-to-pypi">Publishing to PyPI<a class="anchor" href="#publishing-to-pypi" aria-label="Link to this section">#</a></h1>
+<p>The <code>kunla</code> package on PyPI (<code>pypi/</code>) is a thin wrapper: it installs a <code>kunla</code> command that runs the npm CLI, <a href="/docs/npm/"><code>@spikinglabs/kunla</code></a>, through <code>npx</code>. So <code>pip install kunla</code> or <code>uvx kunla</code> work for Python users, and the name <code>kunla</code> is ours on PyPI. It needs Node.js 18+ at run time.</p>
+<p>The workflow <code>.github/workflows/publish-pypi.yml</code> builds it, checks that the installed command reports the right version, and publishes with PyPI trusted publishing (no token, no secret).</p>
+<h2 id="first-publish-once">First publish (once)<a class="anchor" href="#first-publish-once" aria-label="Link to this section">#</a></h2>
+<p>PyPI lets you register a trusted publisher for a project that doesn&#39;t exist yet (a &quot;pending publisher&quot;). Publishing then creates the project under your account.</p>
+<ol>
+<li>Sign in at <a href="https://pypi.org" rel="noopener">pypi.org</a> (turn on two-factor authentication).</li>
+<li>Go to <strong>Your account → Publishing → Add a new pending publisher → GitHub</strong>:<ul>
+<li>PyPI project name: <code>kunla</code></li>
+<li>Owner: <code>spikinglabs</code></li>
+<li>Repository name: <code>kunla</code></li>
+<li>Workflow name: <code>publish-pypi.yml</code></li>
+<li>Environment name: <code>pypi</code></li>
+</ul>
+</li>
+<li>In GitHub: <strong>spikinglabs/kunla → Settings → Environments → New environment</strong> named <code>pypi</code>. Optionally add yourself as a required reviewer, so every PyPI release waits for your click.</li>
+<li><strong>Actions → Publish to PyPI → Run workflow</strong>, version <code>0.1.0</code>.</li>
+</ol>
+<p>A pending publisher doesn&#39;t reserve the name by itself; the project exists once step 4 succeeds, so run it soon.</p>
+<h2 id="releasing-later">Releasing later<a class="anchor" href="#releasing-later" aria-label="Link to this section">#</a></h2>
+<p>Run the workflow with the new version, or push a tag: <code>git tag pypi-v0.2.0 &amp;&amp; git push origin pypi-v0.2.0</code>. The wrapper runs the latest npm client by default, so it only needs a new release when the wrapper itself changes.</p>
+
+    </article>
+    <p class="edit"><a href="https://github.com/spikinglabs/kunla/edit/main/docs/pypi.md">Edit this page on GitHub</a> · <a href="https://github.com/spikinglabs/kunla/issues/new">Report a problem</a></p>
+  </main>
+  
+</div>
+<footer>Kunla is open source (Apache-2.0), made by <a href="https://spikinglabs.com">Spiking Labs</a>. These pages come with every Kunla, so they match the version you run.</footer>
+<script>
+  window.kunlaTheme && kunlaTheme.bindButton(document.getElementById('theme'));
+  // Phones start with the guide list folded away; wide screens keep it open as a sidebar.
+  if (matchMedia('(max-width: 899px)').matches) document.querySelector('.side').removeAttribute('open');
+</script>
+</body>
+</html>

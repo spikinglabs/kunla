@@ -1,6 +1,6 @@
 # Kunla documentation
 
-Kunla is a shared record of the work people and AIs do for a team, with one screen for the decisions that need a person. These guides explain how to run your own copy and how to use it day to day.
+Kunla is a shared record of the work people and AIs do for a team, with one screen for the decisions that need a person. These guides explain how to run your own copy and how to use it day to day. Every Kunla also serves them as web pages at `/docs/`.
 
 | Guide | For | What it covers |
 |---|---|---|

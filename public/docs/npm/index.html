@@ -1,0 +1,66 @@
+<!doctype html>
+<!-- Generated from docs/npm.md by scripts/build-docs.mjs. Edit the Markdown, then run npm run docs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Publishing the CLI to npm · Kunla docs</title>
+<meta name="description" content="The @spikinglabs/kunla package on npm is the command-line client (npm refuses the plain name kunla as too similar to konva; the installed command is still kunla) (plugins/claude-code/bin/kunla.mjs, no">
+<link rel="canonical" href="https://kunla.app/docs/npm/">
+<script src="/theme.js"></script>
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/docs/docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <a class="logo" href="/" aria-label="Kunla home">kunla<i></i></a>
+  <a class="section" href="/docs/">Docs</a>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="theme" type="button" aria-label="Theme"></button>
+  <a class="btn ghost" href="https://github.com/spikinglabs/kunla">GitHub</a>
+  <a class="btn" href="/app/">Open Kunla</a>
+</header>
+<div class="layout">
+  <details class="side" open>
+    <summary>Guides</summary>
+    <nav aria-label="Guides"><div class="group"><p class="eyebrow">Start here</p><ul><li><a href="/docs/">Overview</a></li></ul></div><div class="group"><p class="eyebrow">Guides</p><ul><li><a href="/docs/using-kunla/">Using Kunla</a></li><li><a href="/docs/connect-ai/">Connect your AI</a></li><li><a href="/docs/self-hosting/">Self-hosting</a></li></ul></div><div class="group"><p class="eyebrow">Other agents</p><ul><li><a href="/docs/agents/codex/">Codex</a></li><li><a href="/docs/agents/open-source/">Open-source agents</a></li></ul></div><div class="group"><p class="eyebrow">Maintainers</p><ul><li><a href="/docs/npm/" aria-current="page">Publishing to npm</a></li><li><a href="/docs/pypi/">Publishing to PyPI</a></li></ul></div></nav>
+  </details>
+  <main id="content">
+    <article>
+<h1 id="publishing-the-cli-to-npm">Publishing the CLI to npm<a class="anchor" href="#publishing-the-cli-to-npm" aria-label="Link to this section">#</a></h1>
+<p>The <code>@spikinglabs/kunla</code> package on npm is the command-line client (npm refuses the plain name <code>kunla</code> as too similar to <code>konva</code>; the installed command is still <code>kunla</code>) (<code>plugins/claude-code/bin/kunla.mjs</code>, no dependencies). The server is not published to npm; it deploys from this repository. The workflow <code>.github/workflows/publish-npm.yml</code> builds the package from <code>npm/package.json</code> and publishes it.</p>
+<h2 id="first-publish-once">First publish (once)<a class="anchor" href="#first-publish-once" aria-label="Link to this section">#</a></h2>
+<p>npm only lets you set up token-free publishing on a package that already exists, so the first release uses a short-lived token.</p>
+<ol>
+<li>Sign in at <a href="https://www.npmjs.com" rel="noopener">npmjs.com</a> (create a free account if needed, and turn on two-factor authentication).</li>
+<li>Your account needs two-factor authentication turned on, or npm drops the token&#39;s bypass setting and refuses to publish. The package goes in the <code>spikinglabs</code> org, so the token needs write access to it.</li>
+<li>Create a token: avatar → <strong>Access Tokens</strong> → <strong>Generate New Token</strong> → <strong>Granular Access Token</strong>. Packages and scopes: <strong>Read and write</strong>, <strong>All packages</strong>. A 7-day expiry is plenty. If npm offers &quot;Bypass two-factor authentication&quot;, tick it so Actions can publish.</li>
+<li>In GitHub: <strong>spikinglabs/kunla → Settings → Secrets and variables → Actions → New repository secret</strong>, name <code>NPM_TOKEN</code>, paste the token.</li>
+<li><strong>Actions → Publish CLI to npm → Run workflow</strong>, version <code>0.1.0</code>.</li>
+</ol>
+<h2 id="then-switch-to-trusted-publishing-no-token">Then switch to trusted publishing (no token)<a class="anchor" href="#then-switch-to-trusted-publishing-no-token" aria-label="Link to this section">#</a></h2>
+<ol>
+<li>On npmjs.com open the <code>@spikinglabs/kunla</code> package → <strong>Settings</strong> → <strong>Trusted Publisher</strong> → <strong>GitHub Actions</strong>: organization <code>spikinglabs</code>, repository <code>kunla</code>, workflow <code>publish-npm.yml</code>, no environment. These fields are case-sensitive.</li>
+<li>Optional, same page: <strong>Publishing access</strong> → require two-factor authentication and disallow tokens.</li>
+<li>Delete the <code>NPM_TOKEN</code> secret in GitHub and revoke the token on npmjs.com.</li>
+</ol>
+<h2 id="releasing-later">Releasing later<a class="anchor" href="#releasing-later" aria-label="Link to this section">#</a></h2>
+<p>Run the workflow with the new version, or push a tag: <code>git tag cli-v0.2.0 &amp;&amp; git push origin cli-v0.2.0</code>. Once the repository is public, every release also carries npm provenance linking it to the commit and workflow run (npm refuses provenance from private repositories).</p>
+
+    </article>
+    <p class="edit"><a href="https://github.com/spikinglabs/kunla/edit/main/docs/npm.md">Edit this page on GitHub</a> · <a href="https://github.com/spikinglabs/kunla/issues/new">Report a problem</a></p>
+  </main>
+  <nav class="toc" aria-label="On this page"><p class="eyebrow">On this page</p><ul><li><a href="#first-publish-once">First publish (once)</a></li><li><a href="#then-switch-to-trusted-publishing-no-token">Then switch to trusted publishing (no token)</a></li><li><a href="#releasing-later">Releasing later</a></li></ul></nav>
+</div>
+<footer>Kunla is open source (Apache-2.0), made by <a href="https://spikinglabs.com">Spiking Labs</a>. These pages come with every Kunla, so they match the version you run.</footer>
+<script>
+  window.kunlaTheme && kunlaTheme.bindButton(document.getElementById('theme'));
+  // Phones start with the guide list folded away; wide screens keep it open as a sidebar.
+  if (matchMedia('(max-width: 899px)').matches) document.querySelector('.side').removeAttribute('open');
+</script>
+</body>
+</html>

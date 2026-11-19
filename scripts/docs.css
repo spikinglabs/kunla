@@ -1,0 +1,102 @@
+/* Kunla docs pages (KD-92). Same tokens as the landing page: warm paper, ink, lime as fill only. Copied to public/docs/docs.css by build-docs.mjs. */
+:root {
+  --canvas: #f4f2ec; --surface: #fffdf8; --sunk: #ebe8df;
+  --ink: #121212; --ink-2: #45443f; --muted: #6c6a61;
+  --rule: #e0dcd1; --rule-2: #cfcabd;
+  --lime: #b9ff66; --on-lime: #121212; --lime-soft: #e6f8cf;
+  --link: #2f5bd8; --focus: #3b6cff;
+  --sans: 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --r: 14px; --r-s: 8px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --canvas: #0e0e0d; --surface: #181816; --sunk: #222220;
+    --ink: #f1efe8; --ink-2: #c9c6bc; --muted: #95928a;
+    --rule: #2a2926; --rule-2: #3a3935; --lime-soft: #26331a;
+    --link: #9db4ff; --focus: #7d9bff; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --canvas: #0e0e0d; --surface: #181816; --sunk: #222220;
+  --ink: #f1efe8; --ink-2: #c9c6bc; --muted: #95928a;
+  --rule: #2a2926; --rule-2: #3a3935; --lime-soft: #26331a;
+  --link: #9db4ff; --focus: #7d9bff; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 76px; }
+body { margin: 0; overflow-x: clip; background: var(--canvas); color: var(--ink); font: 16px/1.65 var(--sans); -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.skip { position: absolute; left: -999px; top: 8px; background: var(--ink); color: var(--canvas); padding: 8px 12px; border-radius: var(--r-s); z-index: 10; }
+.skip:focus { left: 8px; }
+.eyebrow { margin: 0 0 6px; font: 500 11px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+
+/* top bar */
+.top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; height: 60px; padding: 0 max(16px, env(safe-area-inset-left));
+  background: color-mix(in srgb, var(--canvas) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--rule); }
+.logo { color: var(--ink); font-weight: 700; font-size: 22px; letter-spacing: -0.04em; text-decoration: none; display: inline-flex; align-items: baseline; gap: 2px; }
+.logo i { width: 8px; height: 8px; border-radius: 50%; background: var(--lime); border: 1.5px solid var(--ink); display: inline-block; }
+.section { color: var(--muted); text-decoration: none; font-weight: 500; padding-left: 12px; border-left: 1px solid var(--rule-2); }
+.spacer { flex: 1; }
+.btn { display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 999px; white-space: nowrap; font: 600 14px/1 var(--sans);
+  text-decoration: none; border: 1px solid var(--ink); background: var(--ink); color: var(--canvas); }
+.btn.ghost { background: transparent; color: var(--ink); border-color: var(--rule-2); }
+.theme-btn { width: 36px; height: 36px; border-radius: 50%; border: 1px solid transparent; background: none; color: var(--ink-2); display: grid; place-items: center; cursor: pointer; padding: 0; flex: none; }
+.theme-btn:hover { background: var(--sunk); color: var(--ink); }
+.theme-btn svg { width: 16px; height: 16px; }
+@media (max-width: 560px) { .top .btn.ghost { display: none; } }
+
+/* three columns on wide screens: guides, page, on this page */
+.layout { display: grid; grid-template-columns: 240px minmax(0, 760px) 220px; gap: 48px; max-width: 1320px; margin: 0 auto; padding: 32px 24px 64px; }
+.side > summary { display: none; }
+.side nav, .toc { position: sticky; top: 92px; max-height: calc(100vh - 110px); overflow: auto; }
+.side .group + .group { margin-top: 22px; }
+.side ul, .toc ul { list-style: none; margin: 0; padding: 0; }
+.side a { display: block; padding: 5px 10px; margin-left: -10px; border-radius: var(--r-s); color: var(--ink-2); text-decoration: none; font-size: 15px; }
+.side a:hover { background: var(--sunk); color: var(--ink); }
+.side a[aria-current="page"] { background: var(--lime-soft); color: var(--ink); font-weight: 600; }
+.toc a { display: block; padding: 3px 0; color: var(--muted); text-decoration: none; font-size: 14px; line-height: 1.4; }
+.toc a:hover { color: var(--ink); }
+@media (max-width: 1199px) { .layout { grid-template-columns: 220px minmax(0, 1fr); } .toc { display: none; } }
+@media (max-width: 899px) {
+  .layout { display: block; padding: 16px 16px 48px; }
+  .side { border: 1px solid var(--rule); border-radius: var(--r); background: var(--surface); margin-bottom: 24px; }
+  .side > summary { display: list-item; padding: 12px 16px; font-weight: 600; cursor: pointer; }
+  .side nav { position: static; max-height: none; padding: 0 16px 14px; }
+  table { font-size: 14px; } th, td { padding: 8px 10px; }
+}
+
+/* the page */
+article { min-width: 0; }
+article > :first-child { margin-top: 0; }
+article h1 { font-size: clamp(30px, 5vw, 42px); line-height: 1.1; letter-spacing: -0.03em; margin: 0 0 18px; }
+article h2 { font-size: 26px; line-height: 1.2; letter-spacing: -0.02em; margin: 48px 0 12px; padding-top: 20px; border-top: 1px solid var(--rule); }
+article h3 { font-size: 19px; line-height: 1.3; margin: 32px 0 8px; }
+article h4 { font-size: 16px; margin: 24px 0 6px; }
+.anchor { margin-left: 8px; color: var(--muted); text-decoration: none; opacity: 0; font-weight: 400; }
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor, h4:hover .anchor, .anchor:focus { opacity: 1; }
+article p, article ul, article ol { margin: 0 0 14px; }
+article ul, article ol { padding-left: 24px; }
+article li { margin: 4px 0; }
+article li > ul, article li > ol { margin: 4px 0; }
+article a { color: var(--link); text-underline-offset: 2px; }
+article strong { font-weight: 600; }
+article hr { border: 0; border-top: 1px solid var(--rule); margin: 32px 0; }
+article blockquote { margin: 0 0 16px; padding: 10px 16px; border-left: 3px solid var(--lime); background: var(--surface); border-radius: 0 var(--r-s) var(--r-s) 0; color: var(--ink-2); }
+article blockquote p:last-child { margin-bottom: 0; }
+article img { max-width: 100%; height: auto; vertical-align: middle; }
+code { font-family: var(--mono); font-size: .88em; background: var(--sunk); padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere; }
+pre { margin: 0 0 16px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--r-s); overflow-x: auto; font-size: 14px; line-height: 1.55; }
+pre code { background: none; padding: 0; font-size: inherit; overflow-wrap: normal; }
+.table { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--rule); border-radius: var(--r-s); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 15px; line-height: 1.5; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+th { background: var(--sunk); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+details { margin: 0 0 14px; }
+.edit { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--rule); font-size: 14px; color: var(--muted); }
+.edit a { color: var(--muted); }
+footer { border-top: 1px solid var(--rule); padding: 24px 16px 40px; text-align: center; font-size: 14px; color: var(--muted); }
+footer a { color: var(--ink-2); }
