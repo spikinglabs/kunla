@@ -138,7 +138,16 @@ export async function mergeApproved(c: Ctx, task: Task, pr: PrRef, fetcher: type
     const m = await gh(token, fetcher)('PUT', `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/merge`, {
       merge_method: 'squash', sha: s.sha, commit_title: `${s.title} (#${pr.number})`, commit_message: `Task: ${task.key} ${c.baseUrl}/t/${task.key}\nApproved in Kunla by ${approver}.`,
     });
-    if (!m.ok) { await sendBack(c, task, pr, m.data?.message || `GitHub said ${m.status}`); return { done: false, reason: 'merge failed' }; }
+    if (!m.ok) {
+      // GitHub is already merging it (another merge or auto-merge got there first): the approval stands,
+      // and the merged webhook finishes the task. Sending it back would ask for the same approval twice.
+      const again = /already in progress/i.test(m.data?.message ?? '') ? 'merging' : await prState(token, pr, fetcher).then((x) => x.state, () => 'open');
+      if (again === 'merged' || again === 'merging') {
+        await note(c, task.id, 'merge_waiting', `GitHub is already merging PR #${pr.number}; ${approver}'s approval stands.`, { pr: pr.url });
+        return { done: true, reason: 'already merging' };
+      }
+      await sendBack(c, task, pr, m.data?.message || `GitHub said ${m.status}`); return { done: false, reason: 'merge failed' };
+    }
     await note(c, task.id, 'merged', `Merged PR #${pr.number} because ${approver} approved it.`, { pr: pr.url, sha: m.data?.sha });
     return { done: true, reason: 'merged' };
   } catch (e) {

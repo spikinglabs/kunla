@@ -137,6 +137,19 @@ async function tasksFor(c: core.Ctx, raw: string[]) {
   return [...byId.values()];
 }
 
+/**
+ * The person whose approval in Kunla still stands for this task's work: the latest review is a person's
+ * approval and nothing was handed in after it. Null when there is none (or it was sent back since).
+ */
+export async function approvedAlready(c: core.Ctx, taskId: string): Promise<string | null> {
+  const r = await c.db.prepare(
+    `SELECT m.name, m.kind, r.verdict, r.created_at FROM reviews r JOIN members m ON m.id = r.reviewer_id
+     WHERE r.task_id = ? ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1`).bind(taskId).first<{ name: string; kind: string; verdict: string; created_at: string }>();
+  if (r?.verdict !== 'approved' || r.kind !== 'human') return null;
+  const later = await c.db.prepare(`SELECT 1 AS x FROM events WHERE task_id = ? AND type = 'submitted' AND created_at > ? LIMIT 1`).bind(taskId, r.created_at).first();
+  return later ? null : r.name;
+}
+
 /** The person in this workspace who linked this GitHub username, if any. */
 async function personFor(c: core.Ctx, login: string | undefined | null): Promise<core.Member | null> {
   if (!login) return null;
@@ -182,11 +195,15 @@ async function onPullRequest(c: core.Ctx, p: any): Promise<Result> {
     // title, or the webhook connected after the PR was opened); then it counts as the PR opening.
     const effective: PrMove = move === 'link' ? (isNew ? (pr.draft ? 'draft' : 'opened') : 'link') : move;
     if (effective === 'link') continue;
-    let to = nextStatus(t.status, effective, !!t.rhr);
+    // Approve once (KD-94): a person who already approved this work in Kunla doesn't approve it again
+    // when its PR merges, whoever pressed merge (the Kunla app on their behalf, an agent, or GitHub).
+    const approvedBy = effective === 'merged' && t.rhr ? await approvedAlready(c, t.id) : null;
+    let to = approvedBy ? (['ready', 'in_progress', 'blocked', 'review'].includes(t.status) ? 'done' as Status : null) : nextStatus(t.status, effective, !!t.rhr);
     const open = to === 'done' ? await core.openSubtasks(c.db, t.id) : [];
     if (open.length) to = null; // a parent finishes only when its last sub-task does
     const verb = { opened: 'opened', draft: 'opened as a draft', merged: 'merged', closed: 'closed without merging', link: '' }[effective];
     const what = open.length ? `${ref} merged; ${t.key} finishes when ${open.join(', ')} ${open.length === 1 ? 'is' : 'are'} done`
+      : approvedBy && to === 'done' ? `${ref} merged; ${approvedBy} had already approved it`
       : effective === 'merged' && (to ?? t.status) === 'review' ? (approver ? `${ref} merged by ${approver.name}, which counts as their approval` : `${ref} merged; waiting for a person's review`) : `${ref} ${verb}`;
     if (to && to !== t.status) {
       const fields: Partial<Task> = { status: to };

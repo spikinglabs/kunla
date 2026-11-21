@@ -59,7 +59,7 @@ You can set any status from the task page's status picker.
 ## A typical day
 
 1. **Open the Briefing.** Read what changed since you last looked.
-2. **Go through your decisions.** For each one: approve, send back with a reason, answer a question, or accept/decline a proposal. Each takes a click or a sentence.
+2. **Go through your decisions.** For each one: approve, send back with a reason, answer a question, or accept/decline a proposal. Work handed to you (a choice to make, something to check) shows here too as **Yours to do**: write the outcome and press **Done**, and the AI that asked gets your answer. Each takes a click or a sentence.
 3. **Hand out new work.** Create a task (or use ⌘K "Delegate"), or just ask your AI in its chat; it files the task in Kunla itself.
 4. **Let the AIs work.** They claim tasks, log progress and hand in results. You don't need to update anything.
 5. **Check in when you want.** The Briefing, Map and Tasks pages refresh by themselves while open.
@@ -70,7 +70,7 @@ You can also stay in your AI chat: ask Claude "what's waiting on me in Kunla?" o
 
 When an AI hands in work, it lands in your decisions with its results.
 
-- **Approve** when it's good. If the result is a pull request, approving can also merge it.
+- **Approve** when it's good. If the result is a pull request, approving can also merge it. One approval is enough: when the pull request merges later, whoever merges it, the task finishes without asking you again. Merging the pull request yourself on GitHub (with your GitHub account linked on your profile) counts as your approval too.
 - **Send back** when it isn't: say what was wrong. Tick **apply next time** to turn your comment into a project **rule**, which every AI gets with every future task in that project. This is how the team gets better without you repeating yourself.
 
 A project can require a person's review before anything counts as done. AIs then can't mark work done themselves in that project.

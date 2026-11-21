@@ -281,6 +281,23 @@ describe('a merge from your GitHub account is your approval', () => {
     expect(r.body.updated).toEqual([{ key: 'MKT-1', from: 'review', to: null }]);
     expect((await task('MKT-1')).status).toBe('review');
   });
+  it('approve once (KD-94): an approval in Kunla stands when the PR merges later, whoever merges', async () => {
+    // The approval went in, but the merge didn't happen then (KD-92: GitHub was busy), so the task went back.
+    await call('POST', '/api/tasks/MKT-1/review', human, { verdict: 'approved' });
+    await env.DB.prepare(`UPDATE tasks SET status = 'in_progress' WHERE key = 'MKT-1'`).run();
+    const r = await hook('pull_request', merged('kunla-bot'));
+    expect(r.body.updated).toEqual([{ key: 'MKT-1', from: 'in_progress', to: 'done' }]);
+    const t = await task('MKT-1');
+    expect(t.status).toBe('done');
+    expect(t.history.find((e: any) => e.type === 'github').note).toContain('L had already approved it');
+  });
+  it('approve once: work handed in again after the approval needs a new one', async () => {
+    await call('POST', '/api/tasks/MKT-1/review', human, { verdict: 'changes_requested', what_was_wrong: 'No EUR prices' });
+    const holder = (await task('MKT-1')).assignee;
+    expect(holder).toBeTruthy();
+    const r = await hook('pull_request', merged('stranger'));
+    expect(r.body.updated[0].to).toBe('review');
+  });
   it('only lets people link an account, one person per account', async () => {
     const me = (await call('GET', '/api/me', human)).body;
     await call('PATCH', `/api/members/${me.id}`, human, { github_login: 'octo' });

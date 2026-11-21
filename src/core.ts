@@ -818,6 +818,9 @@ export async function updateTask(c: Ctx, key: string, input: {
   if (input.note || type !== 'note' || Object.keys(fields).length)
     await event(c, t.id, type, [input.note ?? input.blocked_question, kindNote].filter(Boolean).join('\n') || null, { from: t.status, to: fields.status ?? t.status, ...(fields.kind ? { kind: fields.kind } : {}), ...spend(input), ...(via ? { via } : {}) });
   if (fields.status === 'done' || fields.status === 'declined') await rollUp(c, t.parent_id);
+  // A person finished something an agent filed for them (a decision, a check): the agent hears the outcome (KD-94).
+  if (fields.status === 'done' && t.status !== 'done' && c.me.kind === 'human' && input.note && t.created_by && t.created_by !== c.me.id)
+    await wakeMember(c, t.created_by, 'answered', t, input.note);
   if (fields.assignee_id && fields.assignee_id !== t.assignee_id && (fields.status ?? t.status) === 'ready')
     await wakeMember(c, fields.assignee_id, 'assigned', t, input.note ?? null);
   const after = await getTask(c, t.id);
@@ -1557,7 +1560,7 @@ export async function inbox(c: Ctx) {
   await sweepLeases(c);
   const mine = c.me.id;
   // One wave of reads instead of six sequential ones: on Cloudflare each await is a round trip to D1.
-  const [names, byProject, reviewsR, questionsR, proposalsR, flaggedR, assumed] = await Promise.all([
+  const [names, byProject, reviewsR, questionsR, proposalsR, flaggedR, assumed, todosR] = await Promise.all([
     memberNames(c),
     kindsByProject(c),
     c.db.prepare(
@@ -1572,8 +1575,16 @@ export async function inbox(c: Ctx) {
       `SELECT * FROM tasks WHERE space_id = ? AND review_rounds >= ? AND status = 'in_progress' ORDER BY updated_at`).bind(c.space, MAX_REVIEW_ROUNDS).all<Task>(),
     // Assumptions agents made instead of waiting: only people settle them (KD-84).
     c.me.kind === 'human' ? waits.openAssumptions(c) : Promise.resolve([]),
+    // Work handed to this person (a decision, a skim, a sign-off) is theirs to act on, so it is in the
+    // inbox too (KD-94), unless it waits on something else or on its own sub-tasks.
+    // An agent asking on its sponsor's behalf ("what's waiting on me?") sees its sponsor's.
+    (c.me.kind === 'human' || c.me.sponsor_id) ? c.db.prepare(
+      `SELECT t.* FROM tasks t WHERE t.space_id = ? AND t.assignee_id = ? AND t.status IN ('ready','in_progress')
+       AND NOT ${waits.WAITING_SQL('t')}
+       AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_id = t.id AND s.status NOT IN ('done','declined'))
+       ORDER BY t.priority, t.created_at LIMIT 50`).bind(c.space, c.me.kind === 'human' ? mine : c.me.sponsor_id).all<Task>() : Promise.resolve({ results: [] as Task[] }),
   ]);
-  const [reviews, questions, proposals, flagged] = [reviewsR.results, questionsR.results, proposalsR.results, flaggedR.results];
+  const [reviews, questions, proposals, flagged, todos] = [reviewsR.results, questionsR.results, proposalsR.results, flaggedR.results, todosR.results];
   // Each review card needs its summary, links and notes: three queries for all cards together
   // (ids passed as one JSON array, so any number of cards fits D1's limit on bound values).
   const ids = JSON.stringify(reviews.map((t) => t.id));
@@ -1611,6 +1622,7 @@ export async function inbox(c: Ctx) {
     ...(await Promise.all(questions.map(withMentions))).map((t) => ({ kind: 'question' as const, task: t })),
     ...(await Promise.all(proposals.map(withMentions))).map((t) => ({ kind: 'proposal' as const, task: t })),
     ...flagged.map((t) => ({ kind: 'flagged' as const, task: publicTask(t, names) })),
+    ...(await Promise.all(todos.map(withMentions))).map((t) => ({ kind: 'yours' as const, task: t })),
     ...assumed.map((a: any) => ({ kind: 'assumption' as const, task: publicTask(a, names),
       assumption: { id: a.a_id, text: a.a_text, at: a.a_at, made_by: names.get(a.a_by) ? { id: a.a_by, name: names.get(a.a_by)!.name, kind: names.get(a.a_by)!.kind } : null } })),
   ];
