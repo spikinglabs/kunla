@@ -57,6 +57,18 @@ const setToken = () => linkApp(env.DB);
 const wakeBody = () => calls.find((c) => c.url.includes('agent.test'))?.body;
 
 describe('approve = merge', () => {
+  it('approve once (KD-94): GitHub already merging it is not a reason to send the task back', async () => {
+    await setToken();
+    gh.mergeStatus = 405;
+    const real = (globalThis as any).fetch;
+    vi.stubGlobal('fetch', async (url: string, init: any) => url.endsWith('/pulls/7/merge') ? json({ message: 'Merge already in progress' }, 405) : real(url, init));
+    await approve();
+    const t = await task('MKT-1');
+    expect(t.status).toBe('done');
+    expect(t.history.some((e: any) => e.type === 'merge_blocked')).toBe(false);
+    expect(t.history.find((e: any) => e.type === 'merge_waiting').note).toContain('already merging');
+  });
+
   it('finds the PR among the deliverables', () => {
     expect(prFromLinks([{ url: 'https://docs.x' }, { url: 'https://github.com/a/b/pull/12/files' }])).toMatchObject({ owner: 'a', repo: 'b', number: 12, url: 'https://github.com/a/b/pull/12' });
     expect(prFromLinks([{ url: 'https://github.com/a/b/issues/3' }])).toBeNull();

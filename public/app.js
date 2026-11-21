@@ -444,6 +444,20 @@ function decisionCard(item, { solo = false } = {}) {
         ${raw(hint('An agent made this assumption so it could keep going instead of waiting for an answer. Right just goes in the record. Correct it sends your answer to the agent, and work in review or done goes back to it.', 'What Right and Correct do'))}<span class="spacer"></span>
         <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></form>`;
   }
+  if (item.kind === 'yours') {
+    // Work handed to you (KD-94): a decision, a check or a sign-off an agent or a person filed for you.
+    const from = t.created_by && t.created_by.id !== me.id ? t.created_by : null;
+    return html`<form class="decision ${solo ? '' : 'card'}" data-key="${t.key}" data-act="submit:finish">
+      ${raw(head('Yours to do'))}${raw(title)}
+      <div class="byline">${raw(from ? who(from, 'Someone') : '')}<span>${from ? 'handed this to you' : 'on your list'} ${agoLong(t.created_at)}</span></div>
+      ${raw(t.brief ? html`<p class="said">${prose(t.brief, t.mentions)}</p>` : '')}
+      ${raw(t.mentions?.length ? html`<div class="links">${join(t.mentions.map(linkPill))}</div>` : '')}
+      <div class="field"><label for="f-${t.key}">Outcome or decision</label>
+        <textarea id="f-${t.key}" name="outcome" rows="2" placeholder="${from?.kind === 'ai' ? `Optional. ${callName(from)} gets it on ${t.key}.` : 'Optional. It goes in the record.'}"></textarea></div>
+      <div class="acts"><button class="btn go">Done <kbd>A</kbd></button>
+        <button class="btn" type="button" data-act="click:handback">Hand it on</button><span class="spacer"></span>
+        <button class="btn quiet" type="button" data-act="click:later">Later <kbd>L</kbd></button></div></form>`;
+  }
   return html`<div class="decision ${solo ? '' : 'card'}" data-key="${t.key}">
     ${raw(head('Going in circles'))}${raw(title)}
     <p class="said">${t.review_rounds} review rounds and still not right. Rewrite the brief, add a check, or take it over.</p>
@@ -502,6 +516,17 @@ function decisionHandlers(after, later) {
       if (!text) { box.querySelector('textarea').focus(); throw new Error('Say what is right instead, or press Right.'); }
       const r = await api('POST', `/api/assumptions/${box.dataset.aid}`, { correct: text });
       toast(r.status === 'in_progress' ? `${r.key} went back with your correction.` : `Correction sent on ${r.key}.`); await after();
+    },
+    finish: async (el) => {
+      const k = keyOf(el); const note = (formData(form(el)).outcome || '').trim();
+      await api('PATCH', `/api/tasks/${k}`, { status: 'done', ...(note ? { note } : {}) });
+      toast(`${k} is done.`); await after();
+    },
+    handback: async (el) => {
+      // Back to Ready for anyone (person or agent) to pick up, with the note as the reason.
+      const k = keyOf(el); const note = (formData(form(el)).outcome || '').trim();
+      await api('PATCH', `/api/tasks/${k}`, { status: 'ready', assignee: null, ...(note ? { note } : {}) });
+      toast(`${k} is Ready for anyone to pick up.`); await after();
     },
     later: (el) => showLater(keyOf(el), after, later),
   };
@@ -1107,6 +1132,8 @@ async function viewTask(key) {
     decision = decisionCard({ kind: 'review', task: { ...t, summary: sub?.note, deliverables: t.deliverables, notes: t.notes } }, { solo: true });
   } else if (t.status === 'blocked') decision = decisionCard({ kind: 'question', task: t }, { solo: true });
   else if (t.status === 'inbox') decision = decisionCard({ kind: 'proposal', task: t }, { solo: true });
+  else if (isWorker && me.kind === 'human' && ['ready', 'in_progress'].includes(t.status) && !t.waiting && !t.subtasks?.some((x) => !['done', 'declined'].includes(x.status)))
+    decision = decisionCard({ kind: 'yours', task: t }, { solo: true });
   const mark = new Set(['submitted', 'approved', 'changes_requested', 'blocked', 'answered', 'rule_added']);
   // The person can undo the last decision their agent recorded from a chat, while nothing has moved since.
   const lastDecision = t.history.find((e) => ['approved', 'changes_requested', 'answered', 'status', 'decision_undone'].includes(e.type));

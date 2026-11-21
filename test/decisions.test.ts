@@ -109,3 +109,27 @@ describe('record_decision', () => {
     expect(t.blocked_question).toBe('Which currency?');
   });
 });
+
+describe('work handed to a person is in their inbox (KD-94)', () => {
+  it('shows tasks assigned to me as "yours", for me and for my agent, and Done with a note reaches the agent that filed it', async () => {
+    await tool(ai, 'create_task', { project: 'MKT', title: 'Decide on the Berlin merge', brief: 'Merge duplicate events or not?', assignee: 'L' }); // MKT-2
+    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Not mine', assignee: 'Bob' }); // MKT-3
+    await call('POST', '/api/tasks/MKT-2/triage', human, { accept: true }); // agents propose; accepted, it is L's to do
+    const mine = (await call('GET', '/api/inbox', human)).body;
+    const yours = mine.items.filter((i: any) => i.kind === 'yours').map((i: any) => i.task.key);
+    expect(yours).toEqual(['MKT-2']);
+    // L's Claude asks "what's waiting on me?" on L's behalf.
+    expect((await tool(ai, 'decision_inbox')).data.items.filter((i: any) => i.kind === 'yours').map((i: any) => i.task.key)).toEqual(['MKT-2']);
+    // Bob's inbox has Bob's, not L's.
+    expect((await call('GET', '/api/inbox', bob)).body.items.filter((i: any) => i.kind === 'yours').map((i: any) => i.task.key)).toEqual(['MKT-3']);
+    const done = await call('PATCH', '/api/tasks/MKT-2', human, { status: 'done', note: 'Yes, merge on title + date + venue.' });
+    expect(done.body.status).toBe('done');
+    expect((await call('GET', '/api/inbox', human)).body.items.some((i: any) => i.task.key === 'MKT-2')).toBe(false);
+    expect((await task('MKT-2')).history[0].note).toBe('Yes, merge on title + date + venue.');
+  });
+  it('leaves out work that waits on something else', async () => {
+    await call('POST', '/api/tasks', human, { project: 'MKT', title: 'Sign off the copy', assignee: 'L' }); // MKT-2
+    await call('PATCH', '/api/tasks/MKT-2', human, { waiting_on: ['MKT-1'] });
+    expect((await call('GET', '/api/inbox', human)).body.items.some((i: any) => i.kind === 'yours')).toBe(false);
+  });
+});
